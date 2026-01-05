@@ -1,0 +1,715 @@
+#!/usr/bin/env bash
+#
+# polis-tutorial - Interactive tutorial for learning Polis CLI
+#
+# This script teaches users how to use Polis through simulated
+# command execution. No real changes are made to the system.
+#
+
+set -e
+
+# =============================================================================
+# COLORS AND FORMATTING (matching polis CLI)
+# =============================================================================
+
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+RED='\033[0;31m'
+YELLOW='\033[0;33m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+DIM='\033[2m'
+NC='\033[0m'
+
+# =============================================================================
+# FAKE DATA CONSTANTS
+# =============================================================================
+
+FAKE_AUTHOR="alice@example.com"
+FAKE_SITE="https://alice.example.com"
+FAKE_HASH="sha256:a3b5c7d9e1f2g3h4i5j6k7l8m9n0"
+FAKE_SHORT_HASH="a3b5c7d9"
+FAKE_DATE="2026-01-05"
+FAKE_TIMESTAMP="2026-01-05T10:30:45Z"
+
+# =============================================================================
+# HELPER FUNCTIONS
+# =============================================================================
+
+# Print colored output
+info() {
+    echo -e "${BLUE}[i]${NC} $1"
+}
+
+success() {
+    echo -e "${GREEN}[✓]${NC} $1"
+}
+
+error() {
+    echo -e "${RED}[x]${NC} $1"
+}
+
+hint() {
+    echo -e "${YELLOW}[!]${NC} $1"
+}
+
+# Print a horizontal divider
+divider() {
+    echo -e "${DIM}────────────────────────────────────────────────────────────────${NC}"
+}
+
+# Print section header
+section_header() {
+    local section_num="$1"
+    local section_title="$2"
+    local total_sections=6
+
+    clear
+    echo ""
+    echo -e "${BOLD}${CYAN}══════════════════════════════════════════════════════════════════${NC}"
+    echo -e "${BOLD}  SECTION $section_num of $total_sections: $section_title${NC}"
+    echo -e "${BOLD}${CYAN}══════════════════════════════════════════════════════════════════${NC}"
+    echo ""
+}
+
+# Prompt for command input
+# Usage: prompt_command "expected_command" "hint_text"
+# Returns 0 when correct command entered or Enter pressed
+prompt_command() {
+    local expected="$1"
+    local hint_text="$2"
+    local input
+
+    echo ""
+    echo -e "${DIM}Type: ${NC}${BOLD}$expected${NC}  ${DIM}(or press Enter to continue)${NC}"
+    echo ""
+
+    while true; do
+        echo -ne "${GREEN}>${NC} "
+        read -r input
+
+        # Trim whitespace
+        input=$(echo "$input" | xargs)
+
+        # Accept empty input (Enter) or exact match
+        if [[ -z "$input" ]] || [[ "$input" == "$expected" ]]; then
+            echo ""
+            return 0
+        else
+            echo ""
+            hint "That doesn't look quite right. Try: $expected"
+            echo -e "   ${DIM}(or press Enter to continue)${NC}"
+            echo ""
+        fi
+    done
+}
+
+# Wait for Enter key
+wait_for_enter() {
+    echo ""
+    echo -e "${DIM}Press Enter to continue...${NC}"
+    read -r
+}
+
+# Graceful exit handler
+cleanup() {
+    echo ""
+    echo ""
+    echo -e "${CYAN}Thanks for trying the Polis tutorial!${NC}"
+    echo -e "Run ${BOLD}polis --help${NC} to see all available commands."
+    echo ""
+    exit 0
+}
+
+trap cleanup INT
+
+# =============================================================================
+# SIMULATED COMMAND OUTPUTS
+# =============================================================================
+
+simulate_init() {
+    success "Created .polis/keys directory"
+    success "Generated Ed25519 keypair"
+    success "Created posts directory"
+    success "Created comments directory"
+    success "Created metadata directory"
+    success "Created .well-known/polis"
+    success "Created metadata/public.jsonl"
+    success "Created metadata/blessed-comments.json"
+    success "Created metadata/following.json"
+    echo ""
+    success "Polis initialization complete!"
+}
+
+simulate_version() {
+    echo "polis 0.2.0"
+}
+
+simulate_publish() {
+    info "Publishing posts/my-first-post.md..."
+    info "Extracted title: My First Post"
+    info "Content hash: $FAKE_HASH"
+    info "Signing file with Ed25519 key..."
+    success "Created canonical file: posts/20260105/my-first-post.md"
+    success "Created versions file: posts/20260105/.versions/my-first-post.md"
+    success "Added to public.jsonl index"
+}
+
+simulate_comment() {
+    info "Creating comment on https://bob.example.com/posts/20260101/hello.md..."
+    info "Extracted title: Great thoughts!"
+    info "Content hash: sha256:x9y8z7w6v5u4t3s2r1q0..."
+    info "Signing file with Ed25519 key..."
+    success "Created canonical file: comments/20260105/reply-to-bob.md"
+    success "Added to public.jsonl index"
+    echo ""
+    info "Sending blessing request to bob.example.com..."
+    success "Blessing request sent! Waiting for bob@example.com to approve."
+}
+
+simulate_blessing_requests() {
+    info "Fetching pending blessing requests for $FAKE_AUTHOR..."
+    echo ""
+    echo -e "${BOLD}ID   Author               Comment URL                                                            Timestamp${NC}"
+    echo "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+    echo "42   bob@example.com      https://bob.example.com/comments/great-post.md                          2026-01-05 10:30:45Z"
+    echo "73   carol@example.com    https://carol.example.com/comments/love-this.md                         2026-01-05 09:15:22Z"
+    echo "91   dave@example.com     https://dave.example.com/comments/interesting.md                        2026-01-04 16:45:00Z"
+    echo ""
+    success "Found 3 pending request(s)"
+    info "Run 'polis preview <URL>' to see comment details"
+    info "Run 'polis blessing grant <ID>' to bless or 'polis blessing deny <ID>' to reject"
+}
+
+simulate_blessing_grant() {
+    info "Fetching request details..."
+    echo ""
+    echo -e "${BOLD}Request #42:${NC}"
+    echo "  Author:      bob@example.com"
+    echo "  Comment:     https://bob.example.com/comments/great-post.md"
+    echo "  In reply to: https://alice.example.com/posts/20260101/my-post.md"
+    echo "  Timestamp:   2026-01-05T10:30:45Z"
+    echo ""
+    echo -e "  ${DIM}Preview:${NC}"
+    echo -e "  ${DIM}\"Great post Alice! I especially loved the part about...\"${NC}"
+    echo ""
+    success "Blessing granted for request #42"
+    success "Updated metadata/blessed-comments.json"
+    info "Comment from bob@example.com is now blessed and visible to your audience"
+}
+
+simulate_blessing_deny() {
+    info "Fetching request details..."
+    echo ""
+    echo -e "${BOLD}Request #73:${NC}"
+    echo "  Author:      carol@example.com"
+    echo "  Comment:     https://carol.example.com/comments/love-this.md"
+    echo ""
+    success "Blessing denied for request #73"
+    success "Updated discovery service"
+    info "Comment will not be amplified to your audience"
+}
+
+simulate_follow() {
+    info "Fetching author information from https://bob.example.com..."
+    info "Author email: bob@example.com"
+    echo ""
+    info "Checking for pending comments from bob@example.com..."
+    echo ""
+    echo "  Found 2 unblessed comment(s) from this author on your posts:"
+    echo "    - Request #42: great-post.md (2026-01-05)"
+    echo "    - Request #88: nice-work.md (2026-01-03)"
+    echo ""
+    info "Blessing 2 comment(s)..."
+    echo ""
+    success "Successfully followed https://bob.example.com"
+    echo "    - Added to metadata/following.json"
+    echo "    - Blessed 2 existing comment(s)"
+    echo ""
+    info "Future comments from bob@example.com will be auto-blessed"
+}
+
+simulate_unfollow() {
+    info "Unfollowing: https://bob.example.com"
+    echo ""
+    success "Successfully unfollowed https://bob.example.com"
+    echo "    - Removed from metadata/following.json"
+    echo "    - Removed 5 blessed comment(s) from this author"
+}
+
+simulate_preview_comment() {
+    info "Fetching content from https://bob.example.com/comments/20260105/great-post.md..."
+    info "Detected content type: comment"
+    info "Fetching author info from https://bob.example.com/.well-known/polis..."
+    echo ""
+    echo -e "${DIM}---${NC}"
+    echo -e "${DIM}title: Great Post!${NC}"
+    echo -e "${DIM}type: comment${NC}"
+    echo -e "${DIM}published: 2026-01-05T10:30:45Z${NC}"
+    echo -e "${DIM}current-version: sha256:a3b5c7d9...${NC}"
+    echo -e "${DIM}generator: polis-cli/0.2.0${NC}"
+    echo -e "${DIM}in-reply-to: https://alice.example.com/posts/20260101/hello.md${NC}"
+    echo -e "${DIM}---${NC}"
+    echo ""
+    echo "# Great Post!"
+    echo ""
+    echo "Really enjoyed this Alice! The part about decentralized identity"
+    echo "resonated with me. Looking forward to more posts like this."
+    echo ""
+    echo -e "${DIM}---${NC}"
+    echo -e "${GREEN}✓${DIM} Signature verified${NC}"
+    echo -e "${GREEN}✓${DIM} Content hash verified${NC}"
+    echo ""
+}
+
+simulate_index() {
+    echo '{"type":"post","title":"My First Post","url":"https://alice.example.com/posts/20260105/my-first-post.md","published":"2026-01-05T10:30:45Z"}'
+    echo '{"type":"post","title":"Hello World","url":"https://alice.example.com/posts/20260101/hello.md","published":"2026-01-01T12:00:00Z"}'
+    echo '{"type":"comment","title":"Great thoughts!","url":"https://alice.example.com/comments/20260105/reply-to-bob.md","in_reply_to":"https://bob.example.com/posts/hello.md"}'
+}
+
+simulate_json_publish() {
+    cat << 'EOF'
+{
+  "status": "success",
+  "command": "publish",
+  "data": {
+    "file_path": "posts/20260105/my-first-post.md",
+    "content_hash": "sha256:a3b5c7d9e1f2g3h4i5j6k7l8m9n0",
+    "timestamp": "2026-01-05T10:30:45Z",
+    "canonical_url": "https://alice.example.com/posts/20260105/my-first-post.md"
+  }
+}
+EOF
+}
+
+# =============================================================================
+# TUTORIAL SECTIONS
+# =============================================================================
+
+section_welcome() {
+    clear
+    echo ""
+    echo -e "${BOLD}${CYAN}"
+    echo "  ╔═══════════════════════════════════════════════════════════════╗"
+    echo "  ║                                                               ║"
+    echo "  ║              WELCOME TO THE POLIS TUTORIAL                    ║"
+    echo "  ║                                                               ║"
+    echo "  ║     Decentralized Social Networking for the AI Era           ║"
+    echo "  ║                                                               ║"
+    echo "  ╚═══════════════════════════════════════════════════════════════╝"
+    echo -e "${NC}"
+    echo ""
+    echo "  This interactive tutorial will teach you how to use Polis."
+    echo ""
+    echo "  You'll learn to:"
+    echo "    - Initialize a Polis site"
+    echo "    - Publish posts with cryptographic signatures"
+    echo "    - Comment on other authors' posts"
+    echo "    - Manage blessing requests (curate your comments)"
+    echo "    - Follow authors for automatic blessing"
+    echo ""
+    divider
+    echo ""
+    echo -e "  ${BOLD}How this works:${NC}"
+    echo "    - You'll be asked to type commands"
+    echo "    - Type the exact command shown, or press Enter to skip"
+    echo "    - All output is simulated - no real changes are made"
+    echo "    - Press Ctrl+C at any time to exit"
+    echo ""
+    wait_for_enter
+}
+
+section_getting_started() {
+    section_header "1" "Getting Started"
+
+    echo "Every Polis site starts with initialization. This creates:"
+    echo ""
+    echo "  - Ed25519 keypair for cryptographic signing"
+    echo "  - Directory structure for posts and comments"
+    echo "  - Configuration files for discovery service integration"
+    echo ""
+    divider
+
+    prompt_command "polis init" "Initialize your Polis site"
+    simulate_init
+
+    echo ""
+    divider
+    echo ""
+    echo "Your Polis site is now set up with this structure:"
+    echo ""
+    echo -e "${DIM}  .polis/"
+    echo -e "    └── keys/"
+    echo -e "        ├── id_ed25519       ${NC}# Private key (keep secret!)${DIM}"
+    echo -e "        └── id_ed25519.pub   ${NC}# Public key${DIM}"
+    echo -e "  posts/                     ${NC}# Your posts go here${DIM}"
+    echo -e "  comments/                  ${NC}# Your comments go here${DIM}"
+    echo -e "  metadata/"
+    echo -e "    ├── public.jsonl         ${NC}# Content index${DIM}"
+    echo "    ├── blessed-comments.json"
+    echo "    └── following.json"
+    echo -e "  .well-known/polis          ${NC}# Public metadata${NC}"
+    echo ""
+
+    divider
+    echo ""
+    echo "Let's check the CLI version:"
+
+    prompt_command "polis version" "Check CLI version"
+    simulate_version
+
+    wait_for_enter
+}
+
+section_publishing() {
+    section_header "2" "Publishing Posts"
+
+    echo "Polis posts are markdown files with cryptographic signatures."
+    echo "When you publish, Polis:"
+    echo ""
+    echo "  1. Generates a SHA-256 hash of your content"
+    echo "  2. Signs it with your Ed25519 private key"
+    echo "  3. Adds frontmatter metadata (author, timestamp, signature)"
+    echo "  4. Creates a canonical file in a dated directory"
+    echo "  5. Creates a version history file for future updates"
+    echo "  6. Adds the post to your public.jsonl index"
+    echo ""
+    divider
+    echo ""
+    echo "Let's publish a sample post:"
+    echo ""
+    echo -e "${DIM}  # my-first-post.md"
+    echo "  # My First Post"
+    echo ""
+    echo -e "  Hello, world! This is my first post on Polis.${NC}"
+    echo ""
+
+    prompt_command "polis publish my-first-post.md" "Publish the post"
+    simulate_publish
+
+    echo ""
+    divider
+    echo ""
+    echo "Your post now has frontmatter like this:"
+    echo ""
+    echo -e "${DIM}  ---"
+    echo "  title: My First Post"
+    echo "  canonical_url: https://alice.example.com/posts/20260105/my-first-post.md"
+    echo "  published: 2026-01-05T10:30:45Z"
+    echo "  version: sha256:a3b5c7d9e1f2..."
+    echo "  author: alice@example.com"
+    echo "  signature: -----BEGIN SSH SIGNATURE-----..."
+    echo -e "  ---${NC}"
+    echo ""
+    echo -e "${BOLD}Key concepts:${NC}"
+    echo "  - The signature proves YOU wrote this content"
+    echo "  - Anyone can verify it using your public key (deployed to .well-known/polis)"
+    echo "  - The version hash ensures content integrity"
+    echo ""
+
+    wait_for_enter
+}
+
+section_commenting() {
+    section_header "3" "Commenting on Posts"
+
+    echo "In Polis, comments work differently than traditional platforms:"
+    echo ""
+    echo -e "  ${BOLD}Your comments live on YOUR domain${NC}"
+    echo "  - You publish comments to your own site"
+    echo "  - You request a 'blessing' from the post author"
+    echo "  - If blessed, your comment is amplified to their audience"
+    echo ""
+    divider
+    echo ""
+    echo "Let's comment on Bob's post:"
+    echo ""
+
+    prompt_command "polis comment reply.md https://bob.example.com/posts/20260101/hello.md" "Create a comment"
+    simulate_comment
+
+    echo ""
+    divider
+    echo ""
+    echo -e "${BOLD}What just happened:${NC}"
+    echo ""
+    echo "  1. Your comment was published to YOUR domain"
+    echo "  2. A blessing request was sent to Bob's discovery service"
+    echo "  3. Bob will see your request in 'polis blessing requests'"
+    echo "  4. If Bob approves, your comment becomes visible to his readers"
+    echo ""
+    echo "  This is the blessing model: anti-spam without censorship."
+    echo "  Your comment always exists on your domain - blessing just"
+    echo "  determines if it's amplified to the author's audience."
+    echo ""
+
+    wait_for_enter
+}
+
+section_blessings() {
+    section_header "4" "Managing Blessings"
+
+    echo "When others comment on YOUR posts, you decide which to bless."
+    echo "This is curation, not censorship - unblessed comments still exist."
+    echo ""
+    divider
+    echo ""
+    echo "Let's see all pending blessing requests:"
+
+    prompt_command "polis blessing requests" "View pending requests"
+    simulate_blessing_requests
+
+    echo ""
+    divider
+    echo ""
+    echo -e "${BOLD}Previewing Comments Before Blessing${NC}"
+    echo ""
+    echo "Before blessing a comment, you can preview it to verify its content"
+    echo "and check that the signature is valid. Let's preview Bob's comment:"
+
+    prompt_command "polis preview https://bob.example.com/comments/20260105/great-post.md" "Preview a comment"
+    simulate_preview_comment
+
+    echo ""
+    divider
+    echo ""
+    echo "That looks good! Let's approve Bob's comment (ID 42):"
+
+    prompt_command "polis blessing grant 42" "Grant a blessing"
+    simulate_blessing_grant
+
+    echo ""
+    divider
+    echo ""
+    echo "You can also deny requests you don't want to amplify:"
+
+    prompt_command "polis blessing deny 73" "Deny a blessing"
+    simulate_blessing_deny
+
+    echo ""
+    divider
+    echo ""
+    echo -e "${BOLD}The blessing model gives you control:${NC}"
+    echo ""
+    echo -e "  - ${GREEN}Blessed${NC}: Comment is amplified to your audience"
+    echo -e "  - ${DIM}Unblessed${NC}: Comment exists but isn't promoted by you"
+    echo -e "  - ${RED}Denied${NC}: Explicitly rejected (won't be re-requested)"
+    echo ""
+    echo "  You're curating quality, not controlling speech."
+    echo ""
+
+    wait_for_enter
+}
+
+section_following() {
+    section_header "5" "Following Authors"
+
+    echo "Blessing each comment individually can be tedious."
+    echo "When you FOLLOW an author, their comments are auto-blessed."
+    echo ""
+    echo -e "${BOLD}Trust tiers in Polis:${NC}"
+    echo ""
+    echo -e "  1. ${GREEN}Following${NC} - Auto-bless ALL future comments from this author"
+    echo -e "  2. ${BLUE}Thread trust${NC} - Auto-bless future comments on a specific post"
+    echo -e "  3. ${DIM}One-off${NC} - Bless individual comments manually"
+    echo ""
+    divider
+    echo ""
+    echo "Let's follow Bob:"
+
+    prompt_command "polis follow https://bob.example.com" "Follow an author"
+    simulate_follow
+
+    echo ""
+    divider
+    echo ""
+    echo "If you change your mind, you can unfollow:"
+    echo ""
+    echo -e "${YELLOW}Note:${NC} Unfollowing also removes all previously blessed"
+    echo "comments from that author."
+
+    prompt_command "polis unfollow https://bob.example.com" "Unfollow an author"
+    simulate_unfollow
+
+    wait_for_enter
+}
+
+section_advanced() {
+    section_header "6" "Advanced Topics"
+
+    echo "A few more features for power users:"
+    echo ""
+    divider
+    echo ""
+    echo -e "${BOLD}1. JSON Mode${NC} - Machine-readable output for scripting"
+    echo ""
+
+    prompt_command "polis --json publish my-post.md" "Publish with JSON output"
+    simulate_json_publish
+
+    echo ""
+    divider
+    echo ""
+    echo -e "${BOLD}2. View Your Index${NC} - See all your published content"
+    echo ""
+    echo -e "${DIM}  polis index           # JSONL format (one entry per line)"
+    echo -e "  polis --json index    # JSON format (grouped by type)${NC}"
+    echo ""
+
+    prompt_command "polis index" "View content index"
+    simulate_index
+
+    echo ""
+    divider
+    echo ""
+    echo -e "${BOLD}3. Stdin Support${NC} - Pipe content directly"
+    echo ""
+    echo -e "${DIM}  echo '# Quick Post' | polis publish -"
+    echo "  cat draft.md | polis publish - --filename final.md"
+    echo -e "  curl https://example.com/draft.md | polis publish -${NC}"
+    echo ""
+    divider
+    echo ""
+    echo -e "${BOLD}4. Rebuild Index${NC} - Regenerate public.jsonl from files"
+    echo ""
+    echo -e "${DIM}  polis rebuild${NC}"
+    echo ""
+
+    wait_for_enter
+}
+
+section_completion() {
+    clear
+    echo ""
+    echo -e "${BOLD}${GREEN}"
+    echo "  ╔═══════════════════════════════════════════════════════════════╗"
+    echo "  ║                                                               ║"
+    echo "  ║                  TUTORIAL COMPLETE!                           ║"
+    echo "  ║                                                               ║"
+    echo "  ╚═══════════════════════════════════════════════════════════════╝"
+    echo -e "${NC}"
+    echo ""
+    echo "  You've learned the core concepts of Polis:"
+    echo ""
+    echo "    ✓ Initialize a Polis site with cryptographic keys"
+    echo "    ✓ Publish posts with Ed25519 signatures"
+    echo "    ✓ Comment on posts (your domain, their audience)"
+    echo "    ✓ Manage blessings (curate without censorship)"
+    echo "    ✓ Follow authors for automatic blessing"
+    echo "    ✓ Use advanced features (JSON mode, stdin, index)"
+    echo ""
+    divider
+    echo ""
+    echo -e "  ${BOLD}Next steps:${NC}"
+    echo ""
+    echo "    1. Run ${CYAN}polis init${NC} to create your real site"
+    echo "    2. Set ${CYAN}POLIS_BASE_URL${NC} to your domain"
+    echo "    3. Write a post and run ${CYAN}polis publish${NC}"
+    echo "    4. Deploy to GitHub Pages, Netlify, or any static host"
+    echo ""
+    echo -e "  ${BOLD}Documentation:${NC}"
+    echo ""
+    echo "    - ${CYAN}polis --help${NC}     Full command reference"
+    echo "    - ${CYAN}cli/USAGE.md${NC}     Detailed usage guide"
+    echo "    - ${CYAN}docs/manifesto.md${NC} Why we built Polis"
+    echo ""
+    divider
+    echo ""
+    echo -e "  ${DIM}Your content. Your domain. Your network.${NC}"
+    echo ""
+}
+
+# =============================================================================
+# MAIN MENU
+# =============================================================================
+
+show_menu() {
+    clear
+    echo ""
+    echo -e "${BOLD}${CYAN}"
+    echo "  ╔═══════════════════════════════════════════════════════════════╗"
+    echo "  ║              POLIS INTERACTIVE TUTORIAL                       ║"
+    echo "  ╠═══════════════════════════════════════════════════════════════╣"
+    echo -e "  ║${NC}                                                               ${CYAN}║"
+    echo -e "  ║${NC}   1. Getting Started      ${DIM}(polis init, polis version)${NC}        ${CYAN}║"
+    echo -e "  ║${NC}   2. Publishing Posts     ${DIM}(polis publish)${NC}                    ${CYAN}║"
+    echo -e "  ║${NC}   3. Commenting           ${DIM}(polis comment)${NC}                    ${CYAN}║"
+    echo -e "  ║${NC}   4. Managing Blessings   ${DIM}(polis blessing)${NC}                   ${CYAN}║"
+    echo -e "  ║${NC}   5. Following Authors    ${DIM}(polis follow/unfollow)${NC}            ${CYAN}║"
+    echo -e "  ║${NC}   6. Advanced Topics      ${DIM}(JSON mode, stdin, index)${NC}          ${CYAN}║"
+    echo -e "  ║${NC}                                                               ${CYAN}║"
+    echo -e "  ║${NC}   a. Run all sections sequentially                            ${CYAN}║"
+    echo -e "  ║${NC}   q. Quit                                                     ${CYAN}║"
+    echo -e "  ║${NC}                                                               ${CYAN}║"
+    echo "  ╚═══════════════════════════════════════════════════════════════╝"
+    echo -e "${NC}"
+    echo ""
+}
+
+run_section() {
+    case "$1" in
+        1) section_getting_started ;;
+        2) section_publishing ;;
+        3) section_commenting ;;
+        4) section_blessings ;;
+        5) section_following ;;
+        6) section_advanced ;;
+        *)
+            echo "Invalid section"
+            return 1
+            ;;
+    esac
+}
+
+run_all_sections() {
+    section_welcome
+    section_getting_started
+    section_publishing
+    section_commenting
+    section_blessings
+    section_following
+    section_advanced
+    section_completion
+}
+
+# =============================================================================
+# MAIN ENTRY POINT
+# =============================================================================
+
+main() {
+    # Check if running in a terminal
+    if [[ ! -t 0 ]]; then
+        echo "Error: This tutorial requires an interactive terminal."
+        exit 1
+    fi
+
+    while true; do
+        show_menu
+        echo -ne "  Enter choice: "
+        read -r choice
+
+        case "$choice" in
+            1|2|3|4|5|6)
+                run_section "$choice"
+                ;;
+            a|A)
+                run_all_sections
+                ;;
+            q|Q|quit|exit)
+                cleanup
+                ;;
+            "")
+                # Empty input - run all
+                run_all_sections
+                ;;
+            *)
+                echo ""
+                hint "Invalid choice. Enter 1-6, 'a' for all, or 'q' to quit."
+                sleep 1
+                ;;
+        esac
+    done
+}
+
+main "$@"

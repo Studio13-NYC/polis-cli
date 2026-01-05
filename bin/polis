@@ -1,0 +1,3723 @@
+#!/bin/bash
+#
+# Polis - Decentralized Social Network CLI
+#
+# Dependencies:
+#   - ssh-keygen (OpenSSH 8.0+ for Ed25519 signing with -Y flag)
+#   - jq (JSON processor for index management and JSON mode)
+#   - curl (for API communication with discovery service)
+#   - sha256sum or shasum (for content hashing)
+#   - git (optional, for version control integration)
+#   - Standard Unix tools: date, sed, grep, mktemp, realpath/readlink
+#
+# Installation:
+#   Linux:   sudo apt-get install openssh-client jq curl coreutils git
+#   macOS:   brew install openssh jq curl coreutils git
+#
+
+set -e
+
+# ============================================================================
+# CONFIGURATION LOADING
+# ============================================================================
+# Precedence (highest to lowest):
+#   1. Environment variables
+#   2. .env file
+#   3. .well-known/polis config section
+#   4. Hardcoded defaults
+
+# Fixed constants (never configurable - required for discovery)
+VERSION="0.2.0"
+WELL_KNOWN_DIR=".well-known"
+WELL_KNOWN_FILE="polis"
+
+# Load .env file with validation (does not override existing env vars)
+load_env_file() {
+    local env_file="${1:-.env}"
+    [ ! -f "$env_file" ] && return 0
+
+    while IFS='=' read -r key value || [ -n "$key" ]; do
+        # Skip comments, empty lines
+        [[ "$key" =~ ^[[:space:]]*# ]] && continue
+        [[ -z "$key" ]] && continue
+
+        # Trim whitespace from key
+        key="${key#"${key%%[![:space:]]*}"}"
+        key="${key%"${key##*[![:space:]]}"}"
+
+        # Skip if key is empty or contains invalid characters
+        [[ ! "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && continue
+
+        # Trim whitespace and quotes from value
+        value="${value#"${value%%[![:space:]]*}"}"
+        value="${value%"${value##*[![:space:]]}"}"
+        value="${value%\"}"
+        value="${value#\"}"
+        value="${value%\'}"
+        value="${value#\'}"
+
+        # Only set if not already defined in environment
+        if [ -z "${!key+x}" ]; then
+            export "$key=$value"
+        fi
+    done < "$env_file"
+}
+
+# Load user config from .well-known/polis JSON
+load_wellknown_config() {
+    local config_file="$WELL_KNOWN_DIR/$WELL_KNOWN_FILE"
+    [ ! -f "$config_file" ] && return 0
+
+    # Check if jq is available
+    command -v jq > /dev/null 2>&1 || return 0
+
+    # Extract config values (only if not already set)
+    local config_json
+    config_json=$(jq -r '.config // empty' "$config_file" 2>/dev/null) || return 0
+    [ -z "$config_json" ] && return 0
+
+    # Directory config
+    [ -z "${KEYS_DIR+x}" ] && KEYS_DIR=$(echo "$config_json" | jq -r '.directories.keys // empty')
+    [ -z "${POSTS_DIR+x}" ] && POSTS_DIR=$(echo "$config_json" | jq -r '.directories.posts // empty')
+    [ -z "${COMMENTS_DIR+x}" ] && COMMENTS_DIR=$(echo "$config_json" | jq -r '.directories.comments // empty')
+    [ -z "${VERSIONS_DIR_NAME+x}" ] && VERSIONS_DIR_NAME=$(echo "$config_json" | jq -r '.directories.versions // empty')
+
+    # File config
+    [ -z "${PUBLIC_INDEX+x}" ] && PUBLIC_INDEX=$(echo "$config_json" | jq -r '.files.public_index // empty')
+    [ -z "${BLESSED_COMMENTS+x}" ] && BLESSED_COMMENTS=$(echo "$config_json" | jq -r '.files.blessed_comments // empty')
+    [ -z "${FOLLOWING_INDEX+x}" ] && FOLLOWING_INDEX=$(echo "$config_json" | jq -r '.files.following_index // empty')
+}
+
+# Apply hardcoded defaults for any unset variables
+apply_defaults() {
+    # Developer config defaults
+    : "${POLIS_BASE_URL:=}"
+    : "${POLIS_ENDPOINT_BASE:=https://ltfpezriiaqvjupxbttw.supabase.co/functions/v1}"
+    : "${SUPABASE_ANON_KEY:=}"
+
+    # Derived endpoints (always computed from base)
+    POLIS_BESEECH_ENDPOINT="${POLIS_ENDPOINT_BASE}/comments-blessing-beseech"
+    POLIS_BLESSING_REQUESTS_ENDPOINT="${POLIS_ENDPOINT_BASE}/comments-blessing-requests"
+    POLIS_BLESS_ENDPOINT="${POLIS_ENDPOINT_BASE}/comments-blessing-grant"
+    POLIS_DENY_ENDPOINT="${POLIS_ENDPOINT_BASE}/comments-blessing-deny"
+    POLIS_COMMENTS_ENDPOINT="${POLIS_ENDPOINT_BASE}/comments"
+
+    # User directory defaults
+    : "${KEYS_DIR:=.polis/keys}"
+    : "${POSTS_DIR:=posts}"
+    : "${COMMENTS_DIR:=comments}"
+    : "${VERSIONS_DIR_NAME:=.versions}"
+
+    # User file defaults
+    : "${PUBLIC_INDEX:=metadata/public.jsonl}"
+    : "${BLESSED_COMMENTS:=metadata/blessed-comments.json}"
+    : "${FOLLOWING_INDEX:=metadata/following.json}"
+}
+
+# Main configuration initialization
+init_config() {
+    load_env_file ".env"
+    load_wellknown_config
+    apply_defaults
+}
+
+# Initialize configuration immediately
+init_config
+
+# Colors for output
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+RED='\033[0;31m'
+DIM='\033[2m'
+NC='\033[0m' # No Color
+
+# JSON output mode flag
+JSON_MODE=false
+
+# Helper function for colored output
+info() {
+    echo -e "${BLUE}[i]${NC} $1"
+}
+
+success() {
+    echo -e "${GREEN}[✓]${NC} $1"
+}
+
+error() {
+    echo -e "${RED}[x]${NC} $1" >&2
+    exit 1
+}
+
+# JSON-aware output helpers
+json_success() {
+    local command="$1"
+    local data="$2"
+
+    if [ "$JSON_MODE" = true ]; then
+        jq -n \
+            --arg cmd "$command" \
+            --argjson data "$data" \
+            '{status: "success", command: $cmd, data: $data}'
+    fi
+}
+
+json_error() {
+    local command="$1"
+    local code="$2"
+    local message="$3"
+    local details="${4:-{}}"
+
+    if [ "$JSON_MODE" = true ]; then
+        jq -n \
+            --arg cmd "$command" \
+            --arg code "$code" \
+            --arg msg "$message" \
+            --argjson details "$details" \
+            '{status: "error", command: $cmd, error: {code: $code, message: $msg, details: $details}}' >&2
+    else
+        error "$message"
+    fi
+    exit 1
+}
+
+# Conditional output - only shows in human mode
+info_human() {
+    if [ "$JSON_MODE" = false ]; then
+        info "$1"
+    fi
+}
+
+success_human() {
+    if [ "$JSON_MODE" = false ]; then
+        success "$1"
+    fi
+}
+
+# Print to stderr in JSON mode (for showing defaults)
+log_default() {
+    if [ "$JSON_MODE" = true ]; then
+        echo "[default] $1" >&2
+    fi
+}
+
+# Command: polis init
+cmd_init() {
+    # Parse optional arguments for custom paths
+    local custom_keys_dir=""
+    local custom_posts_dir=""
+    local custom_comments_dir=""
+    local custom_public_index=""
+    local custom_blessed_comments=""
+    local custom_following_index=""
+    local custom_versions_dir=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --keys-dir)
+                custom_keys_dir="$2"
+                shift 2
+                ;;
+            --posts-dir)
+                custom_posts_dir="$2"
+                shift 2
+                ;;
+            --comments-dir)
+                custom_comments_dir="$2"
+                shift 2
+                ;;
+            --public-index)
+                custom_public_index="$2"
+                shift 2
+                ;;
+            --blessed-comments)
+                custom_blessed_comments="$2"
+                shift 2
+                ;;
+            --following-index)
+                custom_following_index="$2"
+                shift 2
+                ;;
+            --versions-dir)
+                custom_versions_dir="$2"
+                shift 2
+                ;;
+            *)
+                error "Unknown option: $1. Use 'polis help init' for usage."
+                ;;
+        esac
+    done
+
+    # Apply custom paths (override defaults for this init)
+    local keys_dir="${custom_keys_dir:-$KEYS_DIR}"
+    local posts_dir="${custom_posts_dir:-$POSTS_DIR}"
+    local comments_dir="${custom_comments_dir:-$COMMENTS_DIR}"
+    local public_index="${custom_public_index:-$PUBLIC_INDEX}"
+    local blessed_comments="${custom_blessed_comments:-$BLESSED_COMMENTS}"
+    local following_index="${custom_following_index:-$FOLLOWING_INDEX}"
+    local versions_dir="${custom_versions_dir:-$VERSIONS_DIR_NAME}"
+
+    # Derive metadata directory from file paths
+    local metadata_dir=$(dirname "$public_index")
+
+    info_human "Initializing Polis directory structure..."
+
+    # Track created items for JSON output
+    local dirs_created=()
+    local files_created=()
+
+    # Create directory structure
+    mkdir -p "$keys_dir"
+    mkdir -p "$posts_dir"
+    mkdir -p "$comments_dir"
+    mkdir -p "$metadata_dir"
+    mkdir -p "$WELL_KNOWN_DIR"
+
+    dirs_created=("$keys_dir" "$posts_dir" "$comments_dir" "$metadata_dir" "$WELL_KNOWN_DIR")
+    success_human "Created directory structure"
+
+    # Generate Ed25519 keypair
+    if [ -f "$keys_dir/id_ed25519" ]; then
+        json_error "init" "INVALID_STATE" "Keys already exist at $keys_dir/id_ed25519"
+    fi
+
+    info_human "Generating Ed25519 keypair..."
+    ssh-keygen -t ed25519 -f "$keys_dir/id_ed25519" -N "" -C "polis@$(hostname)" > /dev/null 2>&1
+    success_human "Generated Ed25519 keypair at $keys_dir/"
+
+    # Get public key for metadata
+    PUBKEY=$(cat "$keys_dir/id_ed25519.pub")
+
+    # Create .well-known/polis metadata file with config section
+    cat > "$WELL_KNOWN_DIR/polis" << EOF
+{
+  "version": "$VERSION",
+  "author": "$(git config user.name || echo 'Unknown')",
+  "email": "$(git config user.email || echo 'unknown@example.com')",
+  "public_key": "$PUBKEY",
+  "created": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+  "config": {
+    "directories": {
+      "keys": "$keys_dir",
+      "posts": "$posts_dir",
+      "comments": "$comments_dir",
+      "versions": "$versions_dir"
+    },
+    "files": {
+      "public_index": "$public_index",
+      "blessed_comments": "$blessed_comments",
+      "following_index": "$following_index"
+    }
+  }
+}
+EOF
+    files_created+=(".well-known/polis")
+    success_human "Created $WELL_KNOWN_DIR/polis metadata"
+
+    # Create empty public.jsonl index
+    > "$public_index"
+    files_created+=("$public_index")
+    success_human "Created $public_index index"
+
+    # Create empty blessed-comments.json
+    cat > "$blessed_comments" << EOF
+{
+  "version": "$VERSION",
+  "comments": []
+}
+EOF
+    files_created+=("$blessed_comments")
+    success_human "Created $blessed_comments"
+
+    # Create empty following.json
+    cat > "$following_index" << EOF
+{
+  "version": "$VERSION",
+  "following": []
+}
+EOF
+    files_created+=("$following_index")
+    success_human "Created $following_index"
+
+    # Create .gitignore if it doesn't exist
+    local private_key_path="$keys_dir/id_ed25519"
+    if [ ! -f ".gitignore" ]; then
+        cat > ".gitignore" << EOF
+/polis
+.env*
+archive/
+$private_key_path
+EOF
+        files_created+=(".gitignore")
+        success_human "Created .gitignore (excludes private key)"
+    fi
+
+    # Output results
+    if [ "$JSON_MODE" = true ]; then
+        local result=$(jq -n \
+            --argjson dirs "$(printf '%s\n' "${dirs_created[@]}" | jq -R . | jq -s .)" \
+            --argjson files "$(printf '%s\n' "${files_created[@]}" | jq -R . | jq -s .)" \
+            --arg private_key "$keys_dir/id_ed25519" \
+            --arg public_key "$keys_dir/id_ed25519.pub" \
+            '{
+                directories_created: $dirs,
+                files_created: $files,
+                key_paths: {
+                    private: $private_key,
+                    public: $public_key
+                }
+            }')
+        json_success "init" "$result"
+    else
+        success "Polis initialization complete!"
+        info "Your public key has been added to $WELL_KNOWN_DIR/polis"
+        info "Private key stored at $keys_dir/id_ed25519 (not committed to git)"
+    fi
+}
+
+# Check if file has frontmatter
+has_frontmatter() {
+    local file="$1"
+    [ "$(head -n 1 "$file")" = "---" ]
+}
+
+# Extract content without frontmatter
+extract_content_without_frontmatter() {
+    local file="$1"
+    # Skip everything from first --- to second ---, then output the rest
+    awk '/^---$/{if(++count==2){skip=0; next} skip=1; next} !skip' "$file"
+}
+
+# Extract frontmatter field value
+extract_frontmatter_field() {
+    local file="$1"
+    local field="$2"
+    awk -v field="$field:" '/^---$/{if(++count==2) exit} count==1 && $0 ~ "^"field{sub("^"field" *", ""); print; exit}' "$file"
+}
+
+# Extract version history lines
+extract_version_history() {
+    local file="$1"
+    # More robust: extract all lines that are version entries
+    # Start after version-history: and stop at next top-level field
+    sed -n '/^version-history:/,/^[a-z-]/p' "$file" | grep '^  - sha256:' || true
+}
+
+# Extract in-reply-to section (for comments)
+extract_in_reply_to() {
+    local file="$1"
+    # Extract the url and version lines from in-reply-to section
+    sed -n '/^in-reply-to:/,/^[a-z-]/p' "$file" | grep -E '^  (url|version):' || true
+}
+
+# Extract title from first # heading in markdown file
+extract_title() {
+    local file="$1"
+    # Find first line starting with # and extract the title
+    local title=$(grep -m 1 '^#\s' "$file" | sed 's/^#\s*//')
+    if [ -z "$title" ]; then
+        # Fallback to filename without extension
+        title=$(basename "$file" .md | sed 's/-/ /g' | awk '{for(i=1;i<=NF;i++)sub(/./,toupper(substr($i,1,1)),$i)}1')
+    fi
+    echo "$title"
+}
+
+# Calculate SHA-256 hash of file content
+hash_content() {
+    local file="$1"
+    # Hash the entire file content
+    if command -v sha256sum > /dev/null; then
+        sha256sum "$file" | awk '{print $1}'
+    elif command -v shasum > /dev/null; then
+        shasum -a 256 "$file" | awk '{print $1}'
+    else
+        error "Neither sha256sum nor shasum found. Please install coreutils."
+    fi
+}
+
+# Generate unified diff between two files (reverse: new -> old)
+generate_version_diff() {
+    local new_file="$1"
+    local old_file="$2"
+    # Generate unified diff from old to new (reverse direction for backward reconstruction)
+    diff -u "$old_file" "$new_file" || true
+}
+
+# Get versions file path for a canonical file
+# New structure: versions subdirectory in same directory as file
+# Example: posts/2025/01/my-post.md -> posts/2025/01/.versions/my-post.md
+# Directory name is configurable via VERSIONS_DIR_NAME
+get_versions_file_path() {
+    local canonical_file="$1"
+    local dir=$(dirname "$canonical_file")
+    local filename=$(basename "$canonical_file")
+    echo "$dir/$VERSIONS_DIR_NAME/$filename"
+}
+
+# Initialize version history with full content (called on publish)
+initialize_version_history() {
+    local canonical_file="$1"
+    local content_hash="$2"
+    local timestamp="$3"
+    local content="$4"
+
+    # Determine versions file path
+    local versions_file=$(get_versions_file_path "$canonical_file")
+    local versions_dir=$(dirname "$versions_file")
+
+    # Create .versions directory structure if it doesn't exist
+    mkdir -p "$versions_dir"
+
+    # Create versions file with header and first version as full content
+    cat > "$versions_file" << EOF
+# VERSION_FILE_FORMAT=1.0
+# CANONICAL_FILE=$canonical_file
+# CURRENT_HASH=sha256:$content_hash
+
+[VERSION sha256:$content_hash]
+TIMESTAMP=$timestamp
+PARENT=none
+FULL_CONTENT_START
+$content
+FULL_CONTENT_END
+
+EOF
+}
+
+# Append version diff to history file
+# NOTE: The diff format stored in .versions files is compatible with the standard
+# Unix diff/patch utilities. Diffs are stored in unified diff format and can be
+# applied using 'patch -R' to reconstruct previous versions.
+append_version_to_history() {
+    local canonical_file="$1"
+    local old_hash="$2"
+    local new_hash="$3"
+    local timestamp="$4"
+    local diff_content="$5"
+
+    # Determine versions file path
+    local versions_file=$(get_versions_file_path "$canonical_file")
+    local versions_dir=$(dirname "$versions_file")
+
+    # Create .versions directory structure if it doesn't exist
+    mkdir -p "$versions_dir"
+
+    # Create versions file if it doesn't exist
+    if [ ! -f "$versions_file" ]; then
+        cat > "$versions_file" << EOF
+# VERSION_FILE_FORMAT=1.0
+# CANONICAL_FILE=$canonical_file
+# CURRENT_HASH=sha256:$new_hash
+
+EOF
+    else
+        # Update CURRENT_HASH in header
+        sed -i "s/^# CURRENT_HASH=.*/# CURRENT_HASH=sha256:$new_hash/" "$versions_file"
+    fi
+
+    # Append new version section
+    cat >> "$versions_file" << EOF
+[VERSION sha256:$new_hash]
+TIMESTAMP=$timestamp
+PARENT=sha256:$old_hash
+DIFF_START
+$diff_content
+DIFF_END
+
+EOF
+}
+
+# Extract diff for specific version from versions file
+extract_diff_for_version() {
+    local versions_file="$1"
+    local version_hash="$2"
+
+    # Extract content between DIFF_START and DIFF_END for the specified version
+    awk -v version="$version_hash" '
+        /^\[VERSION sha256:/ {
+            if ($0 ~ version) {
+                found=1
+            } else {
+                found=0
+            }
+        }
+        found && /^DIFF_START$/ {
+            in_diff=1
+            next
+        }
+        found && in_diff && /^DIFF_END$/ {
+            exit
+        }
+        found && in_diff {
+            print
+        }
+    ' "$versions_file"
+}
+
+# Extract full content for specific version from versions file
+extract_full_content_for_version() {
+    local versions_file="$1"
+    local version_hash="$2"
+
+    # Extract content between FULL_CONTENT_START and FULL_CONTENT_END
+    awk -v version="$version_hash" '
+        /^\[VERSION sha256:/ {
+            if ($0 ~ version) {
+                found=1
+            } else {
+                found=0
+            }
+        }
+        found && /^FULL_CONTENT_START$/ {
+            in_content=1
+            next
+        }
+        found && in_content && /^FULL_CONTENT_END$/ {
+            exit
+        }
+        found && in_content {
+            print
+        }
+    ' "$versions_file"
+}
+
+# Extract parent hash for specific version
+extract_parent_hash() {
+    local versions_file="$1"
+    local version_hash="$2"
+
+    # Find the PARENT= line for the specified version
+    awk -v version="$version_hash" '
+        /^\[VERSION sha256:/ {
+            if ($0 ~ version) {
+                found=1
+            } else {
+                found=0
+            }
+        }
+        found && /^PARENT=/ {
+            sub(/^PARENT=/, "")
+            print
+            exit
+        }
+    ' "$versions_file"
+}
+
+# Verify content matches expected hash
+verify_version_integrity() {
+    local content_file="$1"
+    local expected_hash="$2"
+
+    local actual_hash=$(hash_content "$content_file")
+
+    if [ "sha256:$actual_hash" = "$expected_hash" ]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Reconstruct specific version from canonical file and diffs
+reconstruct_version() {
+    local canonical_file="$1"
+    local target_hash="$2"
+    local output_file="$3"
+
+    local versions_file=$(get_versions_file_path "$canonical_file")
+
+    # Check if versions file exists
+    if [ ! -f "$versions_file" ]; then
+        error "No version history found for $filename"
+    fi
+
+    # Get current version hash from versions file
+    local current_hash=$(grep "^# CURRENT_HASH=" "$versions_file" | sed 's/^# CURRENT_HASH=//')
+
+    # Check if target is the base version (has full content stored)
+    local target_parent=$(extract_parent_hash "$versions_file" "$target_hash")
+    if [ "$target_parent" = "none" ]; then
+        # Target is base version - extract full content directly
+        extract_full_content_for_version "$versions_file" "$target_hash" > "$output_file"
+        # Verify integrity
+        if ! verify_version_integrity "$output_file" "$target_hash"; then
+            error "Integrity check failed for reconstructed version $target_hash"
+        fi
+        return 0
+    fi
+
+    # Extract current content (without frontmatter)
+    local temp_current=$(mktemp)
+    extract_content_without_frontmatter "$canonical_file" > "$temp_current"
+
+    # Walk backward through version chain
+    local current_version="$current_hash"
+    local temp_work=$(mktemp)
+    cp "$temp_current" "$temp_work"
+
+    while [ "$current_version" != "$target_hash" ]; do
+        # Get parent version first to check if we're at the base
+        local parent_version=$(extract_parent_hash "$versions_file" "$current_version")
+
+        # If parent is "none", we've reached the base but haven't found target
+        if [ "$parent_version" = "none" ]; then
+            rm -f "$temp_current" "$temp_work"
+            error "Version $target_hash not found in history"
+        fi
+
+        # Extract diff for current version
+        local diff_content=$(extract_diff_for_version "$versions_file" "$current_version")
+
+        if [ -z "$diff_content" ]; then
+            rm -f "$temp_current" "$temp_work"
+            error "Version $target_hash not found in history"
+        fi
+
+        # Apply reverse patch (go backward in time)
+        local temp_diff=$(mktemp)
+        echo "$diff_content" > "$temp_diff"
+
+        local temp_patched=$(mktemp)
+        if patch -R -s -o "$temp_patched" "$temp_work" "$temp_diff" 2>/dev/null; then
+            cp "$temp_patched" "$temp_work"
+            rm -f "$temp_patched" "$temp_diff"
+        else
+            rm -f "$temp_current" "$temp_work" "$temp_patched" "$temp_diff"
+            error "Failed to apply patch for version ${current_version:0:13}..."
+        fi
+
+        # Move to parent version
+        current_version="$parent_version"
+
+        if [ -z "$current_version" ]; then
+            rm -f "$temp_current" "$temp_work"
+            error "Version chain broken while looking for $target_hash"
+        fi
+    done
+
+    # Copy reconstructed content to output
+    cp "$temp_work" "$output_file"
+
+    # Cleanup
+    rm -f "$temp_current" "$temp_work"
+
+    # Verify integrity
+    if ! verify_version_integrity "$output_file" "$target_hash"; then
+        error "Integrity check failed for reconstructed version $target_hash"
+    fi
+}
+
+# ============================================================================
+# BLESSING HELPER FUNCTIONS
+# ============================================================================
+
+# Extract author email from .well-known/polis
+extract_author_from_wellknown() {
+    if [ ! -f "$WELL_KNOWN_DIR/polis" ]; then
+        error "Polis not initialized. Run 'polis init' first."
+    fi
+
+    local author=$(grep -m 1 '"email"' "$WELL_KNOWN_DIR/polis" | sed 's/.*"email": *"\([^"]*\)".*/\1/')
+
+    if [ -z "$author" ]; then
+        error "Could not extract author email from .well-known/polis"
+    fi
+
+    echo "$author"
+}
+
+# Extract domain from POLIS_BASE_URL
+extract_domain_from_url() {
+    local url="$1"
+    # Remove protocol (http:// or https://)
+    local domain=$(echo "$url" | sed 's|https\?://||')
+    # Remove path and trailing slash
+    domain=$(echo "$domain" | sed 's|/.*||')
+    echo "$domain"
+}
+
+# Fetch comment content and extract excerpt (first ~100 chars)
+fetch_comment_excerpt() {
+    local comment_url="$1"
+    local max_length=100
+
+    # Fetch with timeout
+    local content=$(curl -s --max-time 10 "$comment_url" 2>/dev/null)
+
+    if [ -z "$content" ]; then
+        echo "[Could not fetch]"
+        return
+    fi
+
+    # Use existing helper to extract body (handles frontmatter correctly)
+    local body=$(extract_body_from_content "$content")
+
+    # If no body found, return placeholder
+    if [ -z "$body" ]; then
+        echo "[No content]"
+        return
+    fi
+
+    # Get first meaningful line, strip markdown headers, trim whitespace
+    body=$(echo "$body" | grep -v '^$' | head -1 | sed 's/^#* *//' | tr -d '\n')
+
+    # Truncate to max_length and add ellipsis if longer
+    if [ ${#body} -gt $max_length ]; then
+        echo "${body:0:$max_length}..."
+    else
+        echo "$body"
+    fi
+}
+
+# Fetch request details from blessing-requests API
+fetch_request_details() {
+    local comment_id="$1"
+
+    # Fetch specific request by ID (works for any status)
+    local response=$(curl -s \
+        --header "Authorization: Bearer $SUPABASE_ANON_KEY" \
+        "${POLIS_BLESSING_REQUESTS_ENDPOINT}?id=${comment_id}")
+
+    # Debug: show raw response (comment out after debugging)
+    # echo "DEBUG: Raw response: $response" >&2
+
+    # Check for API errors
+    local error_msg=$(echo "$response" | jq -r '.error // empty' 2>/dev/null)
+    if [ -n "$error_msg" ]; then
+        echo "ERROR: API returned error: $error_msg" >&2
+        return 1
+    fi
+
+    # Extract the request from the response
+    local request_data=$(echo "$response" | jq -r ".requests[0] // empty")
+
+    # Debug: show extracted data (comment out after debugging)
+    # echo "DEBUG: Extracted request: $request_data" >&2
+
+    echo "$request_data"
+}
+
+# Prompt user for confirmation
+prompt_confirmation() {
+    local comment_id="$1"
+    local request_json="$2"
+
+    # Parse request details
+    local author=$(echo "$request_json" | jq -r '.author')
+    local comment_url=$(echo "$request_json" | jq -r '.comment_url')
+    local in_reply_to=$(echo "$request_json" | jq -r '.in_reply_to')
+    local timestamp=$(echo "$request_json" | jq -r '.timestamp')
+
+    # Fetch comment content
+    local excerpt=$(fetch_comment_excerpt "$comment_url")
+
+    # Display request details
+    echo ""
+    info "Request #${comment_id}:"
+    echo "    Author: $author"
+    echo "    Comment: $comment_url"
+    echo "    In reply to: $in_reply_to"
+    echo "    Timestamp: $timestamp"
+    echo ""
+    echo "    Preview:"
+    echo "    $excerpt"
+    echo ""
+}
+
+# Display request details (for blessing operations)
+display_request_details() {
+    prompt_confirmation "$@"
+}
+
+# Update blessed-comments.json file
+update_blessed_comments_json() {
+    local comment_url="$1"
+    local comment_version="$2"
+    local in_reply_to="$3"
+    local blessed_at="$4"
+
+    local blessed_file="$BLESSED_COMMENTS"
+
+    if [ ! -f "$blessed_file" ]; then
+        error "blessed-comments.json not found. Run 'polis init' first."
+    fi
+
+    # Check if jq is available
+    if ! command -v jq > /dev/null 2>&1; then
+        error "jq is required but not installed. Please install jq to continue."
+    fi
+
+    local temp_file="${blessed_file}.tmp"
+
+    # Use jq to update JSON
+    jq --arg post "$in_reply_to" \
+       --arg url "$comment_url" \
+       --arg version "$comment_version" \
+       --arg timestamp "$blessed_at" \
+       '
+       .comments |= (
+         if any(.[]; .post == $post) then
+           map(if .post == $post then
+             .blessed += [{
+               url: $url,
+               version: $version,
+               blessed_at: $timestamp
+             }]
+           else . end)
+         else
+           . + [{
+             post: $post,
+             blessed: [{
+               url: $url,
+               version: $version,
+               blessed_at: $timestamp
+             }]
+           }]
+         end
+       )
+       ' "$blessed_file" > "$temp_file"
+
+    # Atomic replace
+    mv "$temp_file" "$blessed_file"
+
+    # Stage in git if repo exists
+    if git rev-parse --git-dir > /dev/null 2>&1; then
+        git add "$blessed_file" 2>/dev/null
+    fi
+}
+
+# Remove comment from blessed-comments.json file
+remove_from_blessed_comments_json() {
+    local comment_url="$1"
+    local in_reply_to="$2"
+
+    local blessed_file="$BLESSED_COMMENTS"
+
+    if [ ! -f "$blessed_file" ]; then
+        # File doesn't exist, nothing to remove
+        return 0
+    fi
+
+    # Check if jq is available
+    if ! command -v jq > /dev/null 2>&1; then
+        error "jq is required but not installed. Please install jq to continue."
+    fi
+
+    local temp_file="${blessed_file}.tmp"
+
+    # Use jq to remove the comment from blessed array
+    jq --arg post "$in_reply_to" \
+       --arg url "$comment_url" \
+       '
+       .comments |= map(
+         if .post == $post then
+           .blessed |= map(select(.url != $url))
+         else . end
+       ) |
+       # Remove post entries with empty blessed arrays
+       .comments |= map(select(.blessed | length > 0))
+       ' "$blessed_file" > "$temp_file"
+
+    # Atomic replace
+    mv "$temp_file" "$blessed_file"
+
+    # Stage in git if repo exists
+    if git rev-parse --git-dir > /dev/null 2>&1; then
+        git add "$blessed_file" 2>/dev/null
+    fi
+}
+
+# Fetch author email from author's .well-known/polis
+# Args: $1 = author_url (e.g., "https://alice.com")
+# Returns: email address (echoed to stdout)
+# Exits: with error if fetch fails
+fetch_author_email_from_wellknown() {
+    local author_url="$1"
+
+    # Normalize URL (remove trailing slash)
+    author_url="${author_url%/}"
+
+    # Construct .well-known URL
+    local wellknown_url="${author_url}/.well-known/polis"
+
+    # Fetch with curl
+    local response=$(curl -s --max-time 10 "$wellknown_url" 2>&1)
+
+    if [ $? -ne 0 ]; then
+        error "Failed to fetch $wellknown_url
+Check that the URL is accessible and the author has Polis initialized."
+    fi
+
+    # Parse JSON to extract email
+    local email=$(echo "$response" | jq -r '.email // empty' 2>/dev/null)
+
+    if [ -z "$email" ]; then
+        error "No email found in $wellknown_url
+Author may not have Polis properly configured."
+    fi
+
+    echo "$email"
+}
+
+# Fetch all blessing requests for a specific author on current user's posts
+# Args: $1 = author_email, $2 = blessing_status_filter (optional: "pending", "blessed", "rejected", or empty for all)
+# Returns: JSON array of request objects (echoed to stdout)
+fetch_comments_by_author() {
+    local author_email="$1"
+    local status_filter="$2"  # optional
+
+    # Extract current user's domain
+    local user_domain=$(extract_domain_from_url "$POLIS_BASE_URL")
+
+    if [ -z "$user_domain" ]; then
+        error "Invalid POLIS_BASE_URL. Cannot extract domain."
+    fi
+
+    # Fetch all requests for user's domain
+    local response=$(curl -s \
+        --header "Authorization: Bearer $SUPABASE_ANON_KEY" \
+        "${POLIS_BLESSING_REQUESTS_ENDPOINT}?in_reply_to_domain=${user_domain}")
+
+    if [ $? -ne 0 ]; then
+        error "Failed to connect to blessing requests endpoint"
+    fi
+
+    # Filter by author email (and optionally blessing_status)
+    local filtered_result
+    if [ -n "$status_filter" ]; then
+        filtered_result=$(echo "$response" | jq --arg author "$author_email" --arg status "$status_filter" \
+            '.requests | map(select(.author == $author and .blessing_status == $status))')
+    else
+        filtered_result=$(echo "$response" | jq --arg author "$author_email" \
+            '.requests | map(select(.author == $author))')
+    fi
+
+    echo "$filtered_result"
+}
+
+# Extract base URL (protocol + domain) from a content URL
+# Input:  https://alice.com/posts/2025/01/hello.md
+# Output: https://alice.com
+extract_base_url() {
+    local url="$1"
+    echo "$url" | sed -E 's|(https?://[^/]+).*|\1|'
+}
+
+# Fetch content from a remote URL
+# Returns: content string or empty on error
+fetch_remote_content() {
+    local url="$1"
+    curl -s --max-time 30 "$url" 2>/dev/null
+}
+
+# Fetch public key from author's .well-known/polis
+# Input:  https://alice.com
+# Output: ssh-ed25519 AAAA... (public key string)
+fetch_remote_public_key() {
+    local base_url="$1"
+    local wellknown_url="${base_url}/.well-known/polis"
+    local response=$(curl -s --max-time 10 "$wellknown_url" 2>/dev/null)
+
+    if [ -z "$response" ]; then
+        echo ""
+        return 1
+    fi
+
+    local public_key=$(echo "$response" | jq -r '.public_key // empty')
+    echo "$public_key"
+}
+
+# Extract frontmatter field from content string (not file)
+# Args: $1=content, $2=field_name
+extract_frontmatter_field_from_content() {
+    local content="$1"
+    local field="$2"
+    echo "$content" | awk -v field="$field:" '/^---$/{if(++count==2) exit} count==1 && $0 ~ "^"field{sub("^"field" *", ""); print; exit}'
+}
+
+# Extract content body (without frontmatter) from content string
+extract_body_from_content() {
+    local content="$1"
+    echo "$content" | awk '/^---$/{if(++count==2){skip=0; getline; print; next} skip=1; next} !skip'
+}
+
+# Verify signature of remote content
+# Args: $1=content, $2=public_key, $3=author_email
+# Returns: 0 if valid, 1 if invalid
+verify_remote_signature() {
+    local content="$1"
+    local public_key="$2"
+    local author_email="$3"
+
+    # Extract signature from frontmatter (signature: only appears in frontmatter)
+    local signature=$(echo "$content" | grep '^signature:' | sed 's/^signature: *//')
+
+    if [ -z "$signature" ]; then
+        return 1
+    fi
+
+    # Create temp files
+    local temp_content=$(mktemp)
+    local temp_sig=$(mktemp)
+    local temp_allowed=$(mktemp)
+
+    # Write public key to allowed_signers file format: email key-type key-data [comment]
+    # The namespace "file" is specified via -n flag to ssh-keygen, not in allowed_signers
+    echo "$author_email $public_key" > "$temp_allowed"
+
+    # Write signature to temp file (restore PEM format)
+    echo "-----BEGIN SSH SIGNATURE-----" > "$temp_sig"
+    echo "$signature" >> "$temp_sig"
+    echo "-----END SSH SIGNATURE-----" >> "$temp_sig"
+
+    # Reconstruct the content without signature field (what was originally signed)
+    echo "$content" | sed '/^signature:/d' > "$temp_content"
+
+    # Verify using ssh-keygen
+    local result=1
+    if ssh-keygen -Y verify -f "$temp_allowed" -I "$author_email" -n file -s "$temp_sig" < "$temp_content" >/dev/null 2>&1; then
+        result=0
+    fi
+
+    # Cleanup
+    rm -f "$temp_content" "$temp_sig" "$temp_allowed"
+
+    return $result
+}
+
+# Add an author URL to following.json
+# Args: $1 = author_url, $2 = timestamp
+add_to_following_json() {
+    local author_url="$1"
+    local timestamp="$2"
+    local following_file="$FOLLOWING_INDEX"
+
+    if [ ! -f "$following_file" ]; then
+        error "following.json not found. Run 'polis init' first."
+    fi
+
+    # Check if jq is available
+    if ! command -v jq > /dev/null 2>&1; then
+        error "jq is required but not installed. Please install jq to continue."
+    fi
+
+    local temp_file="${following_file}.tmp"
+
+    # Use jq to add author to following list (unique by URL)
+    jq --arg url "$author_url" \
+       --arg ts "$timestamp" \
+       '.following |= (. + [{url: $url, followed_at: $ts}] | unique_by(.url))' \
+       "$following_file" > "$temp_file"
+
+    # Atomic replace
+    mv "$temp_file" "$following_file"
+
+    # Stage in git if repo exists
+    if git rev-parse --git-dir > /dev/null 2>&1; then
+        git add "$following_file" 2>/dev/null
+    fi
+}
+
+# Remove an author URL from following.json
+# Args: $1 = author_url
+remove_from_following_json() {
+    local author_url="$1"
+    local following_file="$FOLLOWING_INDEX"
+
+    if [ ! -f "$following_file" ]; then
+        # File doesn't exist, nothing to remove
+        return 0
+    fi
+
+    # Check if jq is available
+    if ! command -v jq > /dev/null 2>&1; then
+        error "jq is required but not installed. Please install jq to continue."
+    fi
+
+    local temp_file="${following_file}.tmp"
+
+    # Use jq to remove author from following list
+    jq --arg url "$author_url" \
+       '.following |= map(select(.url != $url))' \
+       "$following_file" > "$temp_file"
+
+    # Atomic replace
+    mv "$temp_file" "$following_file"
+
+    # Stage in git if repo exists
+    if git rev-parse --git-dir > /dev/null 2>&1; then
+        git add "$following_file" 2>/dev/null
+    fi
+}
+
+# Check if currently following an author
+# Args: $1 = author_url
+# Returns: 0 (true) if following, 1 (false) otherwise
+is_following() {
+    local author_url="$1"
+    local following_file="$FOLLOWING_INDEX"
+
+    if [ ! -f "$following_file" ]; then
+        return 1
+    fi
+
+    # Check if URL exists in following array
+    local count=$(jq --arg url "$author_url" \
+        '.following | map(select(.url == $url)) | length' \
+        "$following_file")
+
+    [ "$count" -gt 0 ]
+}
+
+# Get comment ID by URL
+# Args: $1 = comment_url
+# Returns: comment id (echoed to stdout), or empty string if not found
+get_comment_id_by_url() {
+    local comment_url="$1"
+
+    # URL encode the comment_url
+    local encoded_url=$(jq -rn --arg url "$comment_url" '$url | @uri')
+
+    # Call comments endpoint
+    local response=$(curl -s \
+        --header "Authorization: Bearer $SUPABASE_ANON_KEY" \
+        "${POLIS_COMMENTS_ENDPOINT}?url=${encoded_url}")
+
+    # Check if we got a valid response
+    local comment_id=$(echo "$response" | jq -r '.id // empty' 2>/dev/null)
+
+    if [ -z "$comment_id" ] || [ "$comment_id" = "null" ]; then
+        return 1
+    fi
+
+    echo "$comment_id"
+}
+
+# Get all blessed comment URLs from a specific author domain
+# Args: $1 = author_url (e.g., "https://polis-poc.vercel.app/")
+# Returns: JSON array of comment URLs
+get_blessed_comment_urls_by_author() {
+    local author_url="$1"
+    local blessed_file="$BLESSED_COMMENTS"
+
+    if [ ! -f "$blessed_file" ]; then
+        echo "[]"
+        return
+    fi
+
+    # Normalize URL (remove trailing slash)
+    author_url="${author_url%/}"
+
+    # Extract all blessed comment URLs that start with author_url
+    jq --arg author_prefix "${author_url}/" \
+        '[.comments[].blessed[] | select(.url | startswith($author_prefix)) | .url]' \
+        "$blessed_file"
+}
+
+# Format blessing requests as a table
+format_blessing_table() {
+    local requests_json="$1"
+
+    # Validate JSON and check if there are any requests
+    local count=$(echo "$requests_json" | jq -r '.count // 0' 2>/dev/null)
+
+    # Handle invalid JSON or null count
+    if [ -z "$count" ] || [ "$count" = "null" ]; then
+        count=0
+    fi
+
+    # Check if count is zero
+    if [ "$count" -eq 0 ] 2>/dev/null || [ "$count" = "0" ]; then
+        info "No pending blessing requests found"
+        return
+    fi
+
+    # Print header
+    printf "\n%-4s %-20s %-70s %s\n" "ID" "Author" "Comment URL" "Timestamp"
+    printf "%.s─" {1..120}
+    echo ""
+
+    # Process each request (with null check)
+    local requests_data=$(echo "$requests_json" | jq -r '.requests // [] | .[] | "\(.id)|\(.author)|\(.comment_url)|\(.timestamp)"' 2>/dev/null)
+
+    if [ -z "$requests_data" ]; then
+        info "No pending blessing requests found"
+        return
+    fi
+
+    echo "$requests_data" | while IFS='|' read -r id author url timestamp; do
+        # Skip empty lines
+        [ -z "$id" ] && continue
+
+        # Truncate long fields for display
+        local display_author=$(echo "$author" | cut -c1-20)
+        local display_url=$(echo "$url" | cut -c1-70)
+        # Format timestamp: replace T with space, keep timezone
+        local display_timestamp=$(echo "$timestamp" | tr 'T' ' ')
+
+        printf "%-4s %-20s %-70s %s\n" "$id" "$display_author" "$display_url" "$display_timestamp"
+    done
+
+    echo ""
+    success "Found $count pending request(s)"
+    info "Run 'polis preview <URL>' to see comment details"
+    info "Run 'polis blessing grant <ID>' to bless or 'polis blessing deny <ID>' to reject"
+}
+
+# Rebuild public.json index from all posts and comments
+rebuild_index() {
+    info "Rebuilding public.jsonl index..."
+
+    # Check if jq is available
+    if ! command -v jq > /dev/null 2>&1; then
+        error "jq not found. Please install jq: sudo apt-get install jq (or brew install jq on macOS)"
+    fi
+
+    # Truncate the index file
+    > "$PUBLIC_INDEX"
+
+    # Counters
+    local post_count=0
+    local comment_count=0
+
+    # Helper function to process a file and append JSONL entry
+    process_file() {
+        local file="$1"
+        local filename=$(basename "$file")
+
+        # Skip hash snapshot files (format: abc123-xyz789.md) and files in versions directory
+        if [[ "$filename" =~ ^[a-f0-9]{6}-[a-f0-9]{6}\.md$ ]] || [[ "$file" =~ /$VERSIONS_DIR_NAME/ ]]; then
+            return
+        fi
+
+        # Extract frontmatter fields
+        local title=$(grep -m 1 '^title:' "$file" | sed 's/^title: *//')
+        local published=$(grep -m 1 '^published:' "$file" | sed 's/^published: *//')
+        local version=$(grep -m 1 '^current-version:' "$file" | sed 's/^current-version: *//')
+        local content_type=$(grep -m 1 '^type:' "$file" | sed 's/^type: *//')
+
+        # Skip if missing required fields
+        if [ -z "$title" ] || [ -z "$published" ] || [ -z "$version" ]; then
+            return
+        fi
+
+        # Create JSONL entry based on content type
+        if [ "$content_type" = "comment" ]; then
+            # Extract in-reply-to for comments
+            local reply_url=$(grep -m 1 '^  url:' "$file" | sed 's/^  url: *//')
+            local reply_version=$(grep -m 1 '^  version:' "$file" | sed 's/^  version: *//')
+
+            jq -nc \
+                --arg type "comment" \
+                --arg path "$file" \
+                --arg title "$title" \
+                --arg published "$published" \
+                --arg current_version "$version" \
+                --arg reply_url "$reply_url" \
+                --arg reply_version "$reply_version" \
+                '{
+                    type: $type,
+                    path: $path,
+                    title: $title,
+                    published: $published,
+                    current_version: $current_version,
+                    in_reply_to: {
+                        url: $reply_url,
+                        version: ($reply_version // null)
+                    }
+                }' >> "$PUBLIC_INDEX"
+
+            comment_count=$((comment_count + 1))
+        else
+            jq -nc \
+                --arg type "post" \
+                --arg path "$file" \
+                --arg title "$title" \
+                --arg published "$published" \
+                --arg current_version "$version" \
+                '{
+                    type: $type,
+                    path: $path,
+                    title: $title,
+                    published: $published,
+                    current_version: $current_version
+                }' >> "$PUBLIC_INDEX"
+
+            post_count=$((post_count + 1))
+        fi
+    }
+
+    # Process all markdown files in posts/
+    if [ -d "$POSTS_DIR" ]; then
+        while IFS= read -r -d '' file; do
+            process_file "$file"
+        done < <(find "$POSTS_DIR" -name "*.md" -type f -print0 | sort -z)
+    fi
+
+    # Process all markdown files in comments/
+    if [ -d "$COMMENTS_DIR" ]; then
+        while IFS= read -r -d '' file; do
+            process_file "$file"
+        done < <(find "$COMMENTS_DIR" -name "*.md" -type f -print0 | sort -z)
+    fi
+
+    local total_count=$((post_count + comment_count))
+    success "Rebuilt public.jsonl ($total_count entries: $post_count posts, $comment_count comments)"
+}
+
+# Append a single entry to public.jsonl
+# Used by publish/comment for incremental updates
+append_to_index() {
+    local file_path="$1"
+    local entry_type="$2"  # "post" or "comment"
+
+    # Extract frontmatter fields
+    local title=$(grep -m 1 '^title:' "$file_path" | sed 's/^title: *//')
+    local published=$(grep -m 1 '^published:' "$file_path" | sed 's/^published: *//')
+    local current_version=$(grep -m 1 '^current-version:' "$file_path" | sed 's/^current-version: *//')
+
+    if [ "$entry_type" = "comment" ]; then
+        # Extract in-reply-to for comments
+        local reply_url=$(grep -m 1 '^  url:' "$file_path" | sed 's/^  url: *//')
+        local reply_version=$(grep -m 1 '^  version:' "$file_path" | sed 's/^  version: *//')
+
+        jq -nc \
+            --arg type "comment" \
+            --arg path "$file_path" \
+            --arg title "$title" \
+            --arg published "$published" \
+            --arg current_version "$current_version" \
+            --arg reply_url "$reply_url" \
+            --arg reply_version "$reply_version" \
+            '{
+                type: $type,
+                path: $path,
+                title: $title,
+                published: $published,
+                current_version: $current_version,
+                in_reply_to: {
+                    url: $reply_url,
+                    version: ($reply_version // null)
+                }
+            }' >> "$PUBLIC_INDEX"
+    else
+        jq -nc \
+            --arg type "post" \
+            --arg path "$file_path" \
+            --arg title "$title" \
+            --arg published "$published" \
+            --arg current_version "$current_version" \
+            '{
+                type: $type,
+                path: $path,
+                title: $title,
+                published: $published,
+                current_version: $current_version
+            }' >> "$PUBLIC_INDEX"
+    fi
+}
+
+# Sign file with Ed25519 key
+sign_file() {
+    local file="$1"
+    local keyfile="$KEYS_DIR/id_ed25519"
+
+    if [ ! -f "$keyfile" ]; then
+        error "Private key not found. Run 'polis init' first."
+    fi
+
+    # Use ssh-keygen -Y sign to sign the file
+    # The signature will be written to $file.sig
+    ssh-keygen -Y sign -f "$keyfile" -n file "$file" > /dev/null 2>&1
+
+    # Extract the signature (skip the header/footer lines, get base64 content)
+    local sig=$(grep -v '^-----' "$file.sig" | tr -d '\n')
+
+    # Clean up signature file
+    rm -f "$file.sig"
+
+    echo "$sig"
+}
+
+# Command: polis beseech <filename>
+# Request blessing from post author for a comment
+# Internal function for file-based beseech (used by auto-beseech in comment/republish)
+_internal_beseech_from_file() {
+    local input_file="$1"
+
+    if [ -z "$input_file" ]; then
+        json_error "beseech" "INVALID_INPUT" "Usage: _internal_beseech_from_file <filename>"
+    fi
+
+    if [ ! -f "$input_file" ]; then
+        json_error "beseech" "FILE_NOT_FOUND" "File not found: $input_file"
+    fi
+
+    # Check if file has frontmatter
+    if ! has_frontmatter "$input_file"; then
+        json_error "beseech" "INVALID_INPUT" "File has no frontmatter"
+    fi
+
+    # Check if file is a comment (only comments can be beseeched)
+    local content_type=$(extract_frontmatter_field "$input_file" "type")
+    if [ "$content_type" != "comment" ]; then
+        json_error "beseech" "INVALID_INPUT" "File is not a comment. Only comments can request blessing from discovery service."
+    fi
+
+    info_human "Requesting blessing from discovery service..."
+    if [ "$JSON_MODE" = false ]; then
+        echo ""
+    fi
+
+    # Extract comment metadata
+    local title=$(extract_frontmatter_field "$input_file" "title")
+    local published=$(extract_frontmatter_field "$input_file" "published")
+    local version=$(extract_frontmatter_field "$input_file" "current-version")
+    local in_reply_to=$(extract_in_reply_to "$input_file")
+
+    # Parse in-reply-to section
+    local reply_url=$(echo "$in_reply_to" | grep 'url:' | sed 's/.*url: *//')
+    local reply_version=$(echo "$in_reply_to" | grep 'version:' | sed 's/.*version: *//')
+
+    # Get author info from .well-known/polis
+    local author=""
+    if [ -f "$WELL_KNOWN_DIR/polis" ]; then
+        author=$(grep -m 1 '"email"' "$WELL_KNOWN_DIR/polis" | sed 's/.*"email": *"\([^"]*\)".*/\1/')
+    fi
+
+    # Validation checks
+    if [ -z "$version" ]; then
+        json_error "beseech" "INVALID_INPUT" "Missing current-version in frontmatter"
+    fi
+    if [ -z "$reply_url" ]; then
+        json_error "beseech" "INVALID_INPUT" "Missing in-reply-to URL in frontmatter"
+    fi
+    if [ -z "$published" ]; then
+        json_error "beseech" "INVALID_INPUT" "Missing published date in frontmatter"
+    fi
+    if [ -z "$author" ]; then
+        json_error "beseech" "INVALID_INPUT" "Missing author email. Set it in .well-known/polis config file."
+    fi
+
+    # Get configuration from environment variables
+    local base_url="$POLIS_BASE_URL"
+    local discovery_endpoint="$POLIS_BESEECH_ENDPOINT"
+
+    if [ -z "$base_url" ]; then
+        json_error "beseech" "INVALID_INPUT" "POLIS_BASE_URL not set. Set it with: export POLIS_BASE_URL=https://yourdomain.com"
+    fi
+
+    if [ -z "$discovery_endpoint" ]; then
+        json_error "beseech" "INVALID_INPUT" "POLIS_BESEECH_ENDPOINT not set. Set it with: export POLIS_BESEECH_ENDPOINT=https://xxx.supabase.co/functions/v1/beseech"
+    fi
+
+    # Construct proper HTTPS comment URL
+    # Convert local file path to public URL
+    # Example: comments/my-comment.md -> https://yourdomain.com/comments/my-comment.md
+    local comment_url="$base_url/$input_file"
+
+    # Build canonical JSON payload (WITHOUT signature field)
+    # This is what we'll sign
+    # IMPORTANT: Use printf (not heredoc) to avoid trailing newline
+    local canonical_payload
+    if [ -n "$reply_version" ]; then
+        canonical_payload=$(printf '{"comment_url":"%s","comment_version":"%s","in_reply_to":"%s","in_reply_to_version":"%s","author":"%s","timestamp":"%s"}' \
+            "$comment_url" "$version" "$reply_url" "$reply_version" "$author" "$published")
+    else
+        canonical_payload=$(printf '{"comment_url":"%s","comment_version":"%s","in_reply_to":"%s","author":"%s","timestamp":"%s"}' \
+            "$comment_url" "$version" "$reply_url" "$author" "$published")
+    fi
+
+    # Sign the canonical JSON
+    # Create a temporary file with the canonical payload
+    local temp_file=$(mktemp)
+    echo -n "$canonical_payload" > "$temp_file"
+
+    # Sign using ssh-keygen
+    local keyfile="$KEYS_DIR/id_ed25519"
+    if [ ! -f "$keyfile" ]; then
+        rm -f "$temp_file"
+        error "Private key not found. Run 'polis init' first."
+    fi
+
+    ssh-keygen -Y sign -f "$keyfile" -n file "$temp_file" > /dev/null 2>&1
+    if [ $? -ne 0 ]; then
+        rm -f "$temp_file" "$temp_file.sig"
+        json_error "beseech" "SIGNATURE_ERROR" "Failed to sign payload. Check your private key."
+    fi
+
+    # Read the full signature (including PEM headers)
+    local signature=""
+    if [ -f "$temp_file.sig" ]; then
+        signature=$(cat "$temp_file.sig")
+    fi
+
+    # Clean up temporary files
+    rm -f "$temp_file" "$temp_file.sig"
+
+    if [ -z "$signature" ]; then
+        json_error "beseech" "SIGNATURE_ERROR" "Failed to generate signature"
+    fi
+
+    # Build final JSON payload with signature
+    # Need to escape the signature properly for JSON
+    local signature_escaped=$(echo "$signature" | sed ':a;N;$!ba;s/\n/\\n/g' | sed 's/"/\\"/g')
+
+    local final_payload
+    if [ -n "$reply_version" ]; then
+        final_payload=$(cat << EOF
+{
+  "comment_url": "$comment_url",
+  "comment_version": "$version",
+  "in_reply_to": "$reply_url",
+  "in_reply_to_version": "$reply_version",
+  "author": "$author",
+  "timestamp": "$published",
+  "signature": "$signature_escaped"
+}
+EOF
+)
+    else
+        final_payload=$(cat << EOF
+{
+  "comment_url": "$comment_url",
+  "comment_version": "$version",
+  "in_reply_to": "$reply_url",
+  "author": "$author",
+  "timestamp": "$published",
+  "signature": "$signature_escaped"
+}
+EOF
+)
+    fi
+
+    # Send HTTP POST request to discovery service
+    info_human "Sending blessing request to discovery service..."
+    if [ "$JSON_MODE" = false ]; then
+        echo "  URL: $comment_url"
+        echo "  Reply to: $reply_url"
+        echo ""
+    fi
+
+    local response
+    local http_code
+
+    # Make the HTTP request and capture both response body and status code
+    response=$(curl -s -w "\n%{http_code}" \
+        --location --request POST "$discovery_endpoint" \
+        --header "${SUPABASE_ANON_KEY:+Authorization: Bearer $SUPABASE_ANON_KEY}" \
+        --header 'Content-Type: application/json' \
+        --data "$final_payload" 2>&1)
+
+    # Extract HTTP status code (last line)
+    http_code=$(echo "$response" | tail -n 1)
+    # Extract response body (everything except last line)
+    response=$(echo "$response" | sed '$d')
+
+    # Handle response based on HTTP status code
+    case "$http_code" in
+        201)
+            if [ "$JSON_MODE" = true ]; then
+                local result=$(jq -n \
+                    --arg url "$comment_url" \
+                    --arg version "$version" \
+                    --arg reply_to "$reply_url" \
+                    --arg msg "Beseech request recorded" \
+                    --arg status "pending" \
+                    '{
+                        comment_url: $url,
+                        comment_version: $version,
+                        in_reply_to: $reply_to,
+                        discovery_response: {
+                            success: true,
+                            message: $msg,
+                            status: $status
+                        }
+                    }')
+                json_success "beseech" "$result"
+            else
+                success "Blessing request sent successfully!"
+                echo ""
+                info "Your comment is now pending blessing from the post author."
+                info "Once blessed, it will appear in the public comment feed."
+            fi
+            ;;
+        403)
+            json_error "beseech" "SIGNATURE_ERROR" "Signature verification failed (HTTP 403). Possible causes: 1) Public key doesn't match private key, 2) .well-known/polis not accessible, 3) Public key format is incorrect. Response: $response"
+            ;;
+        409)
+            if [ "$JSON_MODE" = true ]; then
+                local result=$(jq -n \
+                    --arg url "$comment_url" \
+                    --arg version "$version" \
+                    --arg reply_to "$reply_url" \
+                    --arg msg "Comment version already submitted" \
+                    --arg status "duplicate" \
+                    '{
+                        comment_url: $url,
+                        comment_version: $version,
+                        in_reply_to: $reply_to,
+                        discovery_response: {
+                            success: true,
+                            message: $msg,
+                            status: $status
+                        }
+                    }')
+                json_success "beseech" "$result"
+            else
+                warning "This comment version was already submitted (HTTP 409)"
+                echo ""
+                info "This is normal if you've already requested blessing for this exact version before."
+            fi
+            ;;
+        400)
+            json_error "beseech" "INVALID_INPUT" "Invalid data sent to discovery service (HTTP 400): $response"
+            ;;
+        401)
+            json_error "beseech" "API_ERROR" "Authentication failed (HTTP 401). Check your SUPABASE_ANON_KEY."
+            ;;
+        500|502|503|504)
+            json_error "beseech" "API_ERROR" "Discovery service error (HTTP $http_code). Please try again later."
+            ;;
+        *)
+            if [ -z "$http_code" ] || [ "$http_code" = "000" ]; then
+                json_error "beseech" "API_ERROR" "Failed to connect to discovery service. Check your internet connection and POLIS_BESEECH_ENDPOINT."
+            else
+                json_error "beseech" "API_ERROR" "Unexpected response from discovery service (HTTP $http_code): $response"
+            fi
+            ;;
+    esac
+}
+
+# Command: polis blessing beseech <request-id>
+# Retry or check a blessing request by ID
+# This command is RARELY needed - polis comment/republish auto-request blessings
+cmd_blessing_beseech() {
+    local comment_id="$1"
+
+    # Validate input
+    if [ -z "$comment_id" ]; then
+        json_error "blessing-beseech" "INVALID_INPUT" \
+            "Usage: polis blessing beseech <request-id>"
+    fi
+
+    # Validate comment_id is numeric
+    if ! [[ "$comment_id" =~ ^[0-9]+$ ]]; then
+        json_error "blessing-beseech" "INVALID_INPUT" \
+            "Request ID must be a number (e.g., 42)"
+    fi
+
+    # Check prerequisites
+    if [ -z "$POLIS_BESEECH_ENDPOINT" ]; then
+        json_error "blessing-beseech" "INVALID_STATE" \
+            "POLIS_BESEECH_ENDPOINT not set. See 'polis help' for configuration."
+    fi
+
+    info_human "Fetching blessing request #$comment_id from discovery service..."
+
+    # Construct requests endpoint (derive from beseech endpoint)
+    local requests_endpoint="${POLIS_BESEECH_ENDPOINT/beseech/requests}"
+
+    # Fetch request by ID
+    local response=$(curl -s \
+        "${requests_endpoint}?id=${comment_id}" \
+        ${SUPABASE_ANON_KEY:+-H "Authorization: Bearer $SUPABASE_ANON_KEY"})
+
+    # Parse response
+    local count=$(echo "$response" | jq -r '.count // 0')
+
+    if [ "$count" -eq 0 ]; then
+        json_error "blessing-beseech" "NOT_FOUND" \
+            "Request #$comment_id not found in discovery service"
+    fi
+
+    # Extract request data
+    local comment_url=$(echo "$response" | jq -r '.requests[0].comment_url')
+    local comment_version=$(echo "$response" | jq -r '.requests[0].comment_version')
+    local in_reply_to=$(echo "$response" | jq -r '.requests[0].in_reply_to')
+    local blessing_status=$(echo "$response" | jq -r '.requests[0].blessing_status // "unknown"')
+
+    info_human "Found request #$comment_id (status: $blessing_status)"
+    info_human "Comment: $comment_url"
+    info_human "Reply to: $in_reply_to"
+
+    # Display current status (if already blessed/rejected)
+    if [ "$blessing_status" = "blessed" ]; then
+        success_human "This request is already blessed!"
+        info_human "No action needed - comment is approved."
+        if [ "$JSON_MODE" = true ]; then
+            json_success "blessing-beseech" '{"status":"already_blessed","comment_id":'$comment_id'}'
+        fi
+        return 0
+    fi
+
+    if [ "$blessing_status" = "rejected" ]; then
+        info_human "This request was previously rejected."
+        info_human "Re-submitting will create a new blessing request..."
+    fi
+
+    # Try to map comment_url to local file path
+    # Example: https://example.com/comments/2025/01/my-comment.md → comments/2025/01/my-comment.md
+    local local_file=""
+    if [ -n "$POLIS_BASE_URL" ]; then
+        local_file="${comment_url#$POLIS_BASE_URL/}"
+    fi
+
+    if [ -f "$local_file" ]; then
+        info_human "Found local file: $local_file"
+        info_human "Re-reading file and creating new beseech request..."
+
+        # Call the internal beseech logic with the local file
+        _internal_beseech_from_file "$local_file"
+    else
+        info_human "Local file not found: $local_file"
+        error "Cannot re-beseech without local file.
+
+To retry this blessing request, ensure the comment file exists locally at:
+  $local_file
+
+Or set POLIS_BASE_URL to match your comment URL domain."
+    fi
+}
+
+# Command: polis comment <filename>
+cmd_comment() {
+    # Parse command-specific flags first
+    local explicit_filename=""
+    local explicit_title=""
+    local explicit_reply_to=""
+    local positional_args=()
+
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --filename)
+                explicit_filename="$2"
+                shift 2
+                ;;
+            --title)
+                explicit_title="$2"
+                shift 2
+                ;;
+            --reply-to)
+                explicit_reply_to="$2"
+                shift 2
+                ;;
+            *)
+                positional_args+=("$1")
+                shift
+                ;;
+        esac
+    done
+
+    # Restore positional arguments
+    set -- "${positional_args[@]}"
+
+    local input_file="$1"
+
+    if [ -z "$input_file" ]; then
+        json_error "comment" "INVALID_INPUT" "Usage: polis comment <filename> [<reply-to-url>]\n       polis comment - <reply-to-url> [--filename <name>] [--title <title>]"
+    fi
+
+    if [ ! -f "$KEYS_DIR/id_ed25519" ]; then
+        json_error "comment" "INVALID_STATE" "Polis not initialized. Run 'polis init' first."
+    fi
+
+    # Check for stdin mode
+    local stdin_mode=false
+    local temp_stdin=""
+
+    if [ "$input_file" = "-" ]; then
+        stdin_mode=true
+
+        # Verify stdin is not a terminal (has actual content)
+        if [ -t 0 ]; then
+            json_error "comment" "INVALID_INPUT" "No stdin content. Use: echo 'content' | polis comment - <reply-to-url>"
+        fi
+
+        # Create temp file and read stdin
+        temp_stdin=$(mktemp)
+        cat > "$temp_stdin"
+
+        # Verify content
+        if [ ! -s "$temp_stdin" ]; then
+            rm -f "$temp_stdin"
+            json_error "comment" "INVALID_INPUT" "Stdin content is empty"
+        fi
+
+        # Point input_file to temp file
+        input_file="$temp_stdin"
+
+        info_human "Reading content from stdin..."
+    else
+        # Regular file mode - check file exists
+        if [ ! -f "$input_file" ]; then
+            json_error "comment" "FILE_NOT_FOUND" "File not found: $input_file"
+        fi
+    fi
+
+    # Ensure temp file cleanup on exit or error
+    cleanup_stdin() {
+        if [ -n "$temp_stdin" ] && [ -f "$temp_stdin" ]; then
+            rm -f "$temp_stdin"
+        fi
+    }
+    trap cleanup_stdin EXIT ERR
+
+    # Check if file already has frontmatter (already published)
+    # Skip this check for stdin mode as stdin content is always new
+    if [ "$stdin_mode" = false ] && has_frontmatter "$input_file"; then
+        json_error "comment" "INVALID_STATE" "File already has frontmatter. Use a new file for comments."
+    fi
+
+    # Store original file path for cleanup later
+    local original_file="$input_file"
+
+    # Determine base filename
+    local base_filename
+    if [ "$stdin_mode" = true ]; then
+        if [ -n "$explicit_filename" ]; then
+            base_filename="$explicit_filename"
+            # Ensure .md extension
+            [[ ! "$base_filename" =~ \.md$ ]] && base_filename="${base_filename}.md"
+        else
+            # Generate synthetic filename
+            local timestamp_filename=$(date +%Y%m%d-%H%M%S)
+            base_filename="stdin-${timestamp_filename}.md"
+        fi
+    else
+        # Regular file mode - convert to absolute path for comparison
+        if command -v realpath > /dev/null 2>&1; then
+            input_file=$(realpath "$input_file")
+        elif command -v readlink > /dev/null 2>&1; then
+            input_file=$(readlink -f "$input_file" 2>/dev/null || echo "$input_file")
+        fi
+        base_filename=$(basename "$input_file")
+    fi
+
+    if [ "$stdin_mode" = true ]; then
+        info_human "Creating comment from stdin as $base_filename..."
+    else
+        info_human "Creating comment from $original_file..."
+    fi
+    if [ "$JSON_MODE" = false ]; then
+        echo ""
+    fi
+
+    # Determine reply-to URL from flag or positional arg or prompt
+    local reply_to_url
+    if [ -n "$explicit_reply_to" ]; then
+        reply_to_url="$explicit_reply_to"
+        log_default "Using reply-to URL from --reply-to flag: $reply_to_url"
+    elif [ "$JSON_MODE" = true ]; then
+        # In JSON mode, reply-to URL must be provided as second argument
+        reply_to_url="$2"
+        if [ -z "$reply_to_url" ]; then
+            json_error "comment" "INVALID_INPUT" "Usage: polis --json comment <filename> <reply-to-url>"
+        fi
+        log_default "Using reply-to URL from argument: $reply_to_url"
+    elif [ "$stdin_mode" = true ]; then
+        # Stdin mode requires reply-to as second positional arg
+        reply_to_url="$2"
+        if [ -z "$reply_to_url" ]; then
+            json_error "comment" "INVALID_INPUT" "Usage: polis comment - <reply-to-url> [--filename <name>] [--title <title>]"
+        fi
+        log_default "Using reply-to URL from argument: $reply_to_url"
+    else
+        # Regular file mode with interactive prompt
+        echo "Enter the URL of the post or comment you're replying to:"
+        echo "(Example: https://alice.com/posts/20251229/hello-world.md)"
+        read -r reply_to_url
+
+        if [ -z "$reply_to_url" ]; then
+            error "URL is required"
+        fi
+    fi
+
+    if [ "$JSON_MODE" = false ]; then
+        echo ""
+    fi
+    info_human "In reply to: $reply_to_url"
+
+    # Extract or use explicit title
+    local title
+    if [ -n "$explicit_title" ]; then
+        title="$explicit_title"
+    else
+        title=$(extract_title "$input_file")
+        # If stdin and title is temp filename fallback, use base_filename instead
+        if [ "$stdin_mode" = true ] && [[ "$title" =~ ^tmp\. ]]; then
+            # Convert filename to readable title
+            title=$(echo "$base_filename" | sed 's/\.md$//' | sed 's/-/ /g' | \
+                    awk '{for(i=1;i<=NF;i++)sub(/./,toupper(substr($i,1,1)),$i)}1')
+        fi
+    fi
+    info_human "Extracted title: $title"
+
+    # Get current timestamp
+    local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+    # Read original content
+    local content=$(cat "$input_file")
+
+    # Hash the content
+    local content_hash=$(hash_content "$input_file")
+    local hash_short="${content_hash:0:6}-${content_hash: -6}"
+
+    info_human "Content hash: sha256:$content_hash"
+    info_human "Short hash: $hash_short"
+
+    # Create date-stamped subdirectory in comments/
+    local date_dir="$COMMENTS_DIR/$(date +%Y%m%d)"
+    mkdir -p "$date_dir"
+
+    # Note: base_filename is already set above in the stdin/file mode section
+
+    # Create frontmatter (without signature first)
+    local frontmatter_template="---
+title: $title
+type: comment
+published: $timestamp
+generator: polis-cli/$VERSION
+in-reply-to:
+  url: $reply_to_url
+current-version: sha256:$content_hash
+version-history:
+  - sha256:$content_hash ($timestamp)
+---"
+
+    # Create temporary file with frontmatter + content (for signing)
+    local temp_file=$(mktemp)
+    echo "$frontmatter_template" > "$temp_file"
+    echo "" >> "$temp_file"
+    cat "$input_file" >> "$temp_file"
+
+    # Sign the file
+    info_human "Signing file..."
+    local signature=$(sign_file "$temp_file")
+
+    # Create final frontmatter with signature
+    local frontmatter="---
+title: $title
+type: comment
+published: $timestamp
+generator: polis-cli/$VERSION
+in-reply-to:
+  url: $reply_to_url
+current-version: sha256:$content_hash
+version-history:
+  - sha256:$content_hash ($timestamp)
+signature: $signature
+---"
+
+    # Write canonical file
+    local canonical_path="$date_dir/$base_filename"
+    echo "$frontmatter" > "$canonical_path"
+    echo "" >> "$canonical_path"
+    cat "$input_file" >> "$canonical_path"
+    success_human "Created canonical comment: $canonical_path"
+
+    # Initialize version history with full content
+    initialize_version_history "$canonical_path" "$content_hash" "$timestamp" "$content"
+    local versions_file=$(get_versions_file_path "$canonical_path")
+    success_human "Created versions file: $versions_file"
+
+    # Clean up temp file
+    rm -f "$temp_file"
+
+    # Handle cleanup based on mode
+    if [ "$stdin_mode" = true ]; then
+        # Cleanup handled by trap - just inform user
+        success_human "Created comment from stdin: $canonical_path"
+    else
+        # Remove original file if it's not already in the comments directory
+        local canonical_abs=$(realpath "$canonical_path" 2>/dev/null || readlink -f "$canonical_path" 2>/dev/null || echo "$canonical_path")
+        if [ "$input_file" != "$canonical_abs" ]; then
+            rm -f "$original_file"
+            success_human "Moved original file into comments/"
+        fi
+    fi
+
+    # Append to public.jsonl index
+    append_to_index "$canonical_path" "comment"
+
+    # Request blessing from discovery service with comment
+    if [ "$JSON_MODE" = false ]; then
+        echo ""
+    fi
+    info_human "Automatically requesting blessing for comment..."
+    _internal_beseech_from_file "$canonical_path"
+    local beseech_status="pending"
+
+    # Stage files in git (if git repo exists)
+    if git rev-parse --git-dir > /dev/null 2>&1; then
+        git add "$canonical_path" "$versions_file" "$PUBLIC_INDEX"
+        success_human "Staged files in git"
+        info_human "Files ready to commit. Run 'git commit' when ready."
+    else
+        info_human "Not a git repository - files created but not staged"
+    fi
+
+    # Output results
+    if [ "$JSON_MODE" = true ]; then
+        local result=$(jq -n \
+            --arg path "$canonical_path" \
+            --arg hash "sha256:$content_hash" \
+            --arg reply_to "$reply_to_url" \
+            --arg timestamp "$timestamp" \
+            --arg status "$beseech_status" \
+            '{
+                file_path: $path,
+                content_hash: $hash,
+                in_reply_to: $reply_to,
+                timestamp: $timestamp,
+                beseech_status: $status
+            }')
+        json_success "comment" "$result"
+    else
+        echo ""
+        success "Comment created!"
+        echo ""
+        info "Canonical: $canonical_path"
+        info "Versions:  $versions_file"
+    fi
+}
+
+# Command: polis preview <url>
+# Preview content at a URL with signature verification
+cmd_preview() {
+    local content_url="$1"
+
+    # Validate input
+    if [ -z "$content_url" ]; then
+        json_error "preview" "INVALID_INPUT" "Usage: polis preview <url>"
+    fi
+
+    # Validate URL format (must be HTTPS)
+    if [[ ! "$content_url" =~ ^https:// ]]; then
+        json_error "preview" "INVALID_INPUT" "URL must use HTTPS (e.g., https://example.com/posts/hello.md)"
+    fi
+
+    info_human "Fetching content from $content_url..."
+
+    # Fetch content
+    local content=$(fetch_remote_content "$content_url")
+
+    if [ -z "$content" ]; then
+        json_error "preview" "FETCH_ERROR" "Failed to fetch content from $content_url"
+    fi
+
+    # Check for frontmatter
+    if ! echo "$content" | head -1 | grep -q '^---$'; then
+        json_error "preview" "INVALID_CONTENT" "Content has no frontmatter (not a valid Polis post/comment)"
+    fi
+
+    # Auto-detect content type (post vs comment)
+    local content_type="post"
+    if echo "$content" | grep -q '^type: *comment'; then
+        content_type="comment"
+    elif echo "$content" | grep -q '^in-reply-to:'; then
+        content_type="comment"
+    fi
+
+    info_human "Detected content type: $content_type"
+
+    # Extract frontmatter fields
+    local title=$(extract_frontmatter_field_from_content "$content" "title")
+    local published=$(extract_frontmatter_field_from_content "$content" "published")
+    local current_version=$(extract_frontmatter_field_from_content "$content" "current-version")
+    local signature=$(extract_frontmatter_field_from_content "$content" "signature")
+    local generator=$(extract_frontmatter_field_from_content "$content" "generator")
+
+    # For comments, get in-reply-to URL
+    local in_reply_to=""
+    if [ "$content_type" = "comment" ]; then
+        in_reply_to=$(echo "$content" | grep -A1 '^in-reply-to:' | grep 'url:' | sed 's/.*url: *//')
+    fi
+
+    # Extract base URL and fetch author info
+    local base_url=$(extract_base_url "$content_url")
+    info_human "Fetching author info from ${base_url}/.well-known/polis..."
+
+    local public_key=$(fetch_remote_public_key "$base_url")
+    local author_email=$(fetch_author_email_from_wellknown "$base_url" 2>/dev/null || echo "")
+
+    # Signature verification
+    local signature_status="unknown"
+    local signature_message=""
+
+    if [ -z "$public_key" ]; then
+        signature_status="error"
+        signature_message="Could not fetch public key from $base_url/.well-known/polis"
+    elif [ -z "$signature" ]; then
+        signature_status="missing"
+        signature_message="Content has no signature"
+    else
+        # Verify signature
+        if verify_remote_signature "$content" "$public_key" "$author_email"; then
+            signature_status="valid"
+            signature_message="Signature verified against author's public key"
+        else
+            signature_status="invalid"
+            signature_message="SIGNATURE DOES NOT MATCH - content may have been tampered with"
+        fi
+    fi
+
+    # Extract body content
+    local body=$(extract_body_from_content "$content")
+
+    # Verify content hash
+    local hash_status="unknown"
+    if [ -n "$current_version" ]; then
+        local temp_body=$(mktemp)
+        # Strip leading empty line (frontmatter adds blank line after closing ---)
+        # The original file didn't have this leading newline
+        echo "$body" | tail -n +2 > "$temp_body"
+        local actual_hash=$(hash_content "$temp_body")
+        rm -f "$temp_body"
+
+        local expected_hash="${current_version#sha256:}"
+        if [ "$actual_hash" = "$expected_hash" ]; then
+            hash_status="valid"
+        else
+            hash_status="mismatch"
+        fi
+    fi
+
+    # Collect validation issues
+    local validation_issues="[]"
+    local issues_array=()
+    [ -z "$title" ] && issues_array+=("missing_title")
+    [ -z "$published" ] && issues_array+=("missing_published")
+    [ -z "$current_version" ] && issues_array+=("missing_current_version")
+    [ -z "$signature" ] && issues_array+=("missing_signature")
+    if [ "$content_type" = "comment" ] && [ -z "$in_reply_to" ]; then
+        issues_array+=("missing_in_reply_to")
+    fi
+    if [ ${#issues_array[@]} -gt 0 ]; then
+        validation_issues=$(printf '%s\n' "${issues_array[@]}" | jq -R . | jq -s .)
+    fi
+
+    # Output results
+    if [ "$JSON_MODE" = true ]; then
+        local result=$(jq -n \
+            --arg url "$content_url" \
+            --arg type "$content_type" \
+            --arg title "$title" \
+            --arg published "$published" \
+            --arg version "$current_version" \
+            --arg generator "$generator" \
+            --arg reply_to "$in_reply_to" \
+            --arg author "$author_email" \
+            --arg sig_status "$signature_status" \
+            --arg sig_msg "$signature_message" \
+            --arg hash_status "$hash_status" \
+            --argjson issues "$validation_issues" \
+            --arg body "$body" \
+            '{
+                url: $url,
+                type: $type,
+                title: $title,
+                published: $published,
+                current_version: $version,
+                generator: $generator,
+                in_reply_to: (if $reply_to == "" then null else $reply_to end),
+                author: $author,
+                signature: {
+                    status: $sig_status,
+                    message: $sig_msg
+                },
+                hash: {
+                    status: $hash_status
+                },
+                validation_issues: $issues,
+                body: $body
+            }')
+        json_success "preview" "$result"
+    else
+        # Human-readable output
+        echo ""
+
+        # Display frontmatter (dimmed)
+        echo -e "${DIM}---${NC}"
+        echo -e "${DIM}title: $title${NC}"
+        echo -e "${DIM}type: $content_type${NC}"
+        echo -e "${DIM}published: $published${NC}"
+        echo -e "${DIM}current-version: $current_version${NC}"
+        if [ -n "$generator" ]; then
+            echo -e "${DIM}generator: $generator${NC}"
+        fi
+        if [ -n "$in_reply_to" ]; then
+            echo -e "${DIM}in-reply-to: $in_reply_to${NC}"
+        fi
+        echo -e "${DIM}---${NC}"
+
+        # Display body content
+        echo "$body"
+
+        # Light divider before verification (all dimmed)
+        echo -e "${DIM}---${NC}"
+
+        # Compact verification status (dimmed for valid, red for errors)
+        case "$signature_status" in
+            valid)
+                echo -e "${GREEN}✓${DIM} Signature verified${NC}"
+                ;;
+            invalid)
+                echo -e "${RED}✗ Signature INVALID - content may have been tampered with${NC}"
+                ;;
+            missing)
+                echo -e "${RED}✗ Signature missing${NC}"
+                ;;
+            error)
+                echo -e "${RED}! Could not verify signature${NC}"
+                ;;
+        esac
+
+        case "$hash_status" in
+            valid)
+                echo -e "${GREEN}✓${DIM} Content hash verified${NC}"
+                ;;
+            mismatch)
+                echo -e "${RED}✗ Content hash MISMATCH - content may have been modified${NC}"
+                ;;
+            *)
+                echo -e "${DIM}? Could not verify hash${NC}"
+                ;;
+        esac
+
+        # Validation issues (if any)
+        if [ "$validation_issues" != "[]" ]; then
+            echo "$validation_issues" | jq -r '.[]' | while read issue; do
+                echo -e "${RED}! $issue${NC}"
+            done
+        fi
+
+        echo ""
+    fi
+}
+
+# Command: polis republish <filename>
+cmd_republish() {
+    local input_file="$1"
+
+    if [ -z "$input_file" ]; then
+        json_error "republish" "INVALID_INPUT" "Usage: polis republish <filename>"
+    fi
+
+    if [ ! -f "$input_file" ]; then
+        json_error "republish" "FILE_NOT_FOUND" "File not found: $input_file"
+    fi
+
+    if [ ! -f "$KEYS_DIR/id_ed25519" ]; then
+        json_error "republish" "INVALID_STATE" "Polis not initialized. Run 'polis init' first."
+    fi
+
+    # Check if file has frontmatter (already published)
+    if ! has_frontmatter "$input_file"; then
+        json_error "republish" "INVALID_STATE" "File not published yet (no frontmatter). Use 'polis publish' for new files."
+    fi
+
+    info_human "Republishing $input_file..."
+
+    # Extract existing metadata
+    local title=$(extract_frontmatter_field "$input_file" "title")
+    local original_published=$(extract_frontmatter_field "$input_file" "published")
+    local content_type=$(extract_frontmatter_field "$input_file" "type")
+
+    if [ "$content_type" = "comment" ]; then
+        info_human "Republishing comment: $title"
+    else
+        info_human "Republishing post: $title"
+    fi
+
+    # Get current timestamp for this version
+    local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+    # Get old hash (current version before update)
+    local old_hash=$(extract_frontmatter_field "$input_file" "current-version")
+    old_hash="${old_hash#sha256:}"
+
+    # Extract NEW content without frontmatter (user has edited the file)
+    local content_only=$(mktemp)
+    extract_content_without_frontmatter "$input_file" > "$content_only"
+
+    # Create temp file for old content (will be filled from .versions file)
+    local old_content=$(mktemp)
+
+    # Hash the new content
+    local new_hash=$(hash_content "$content_only")
+    local hash_short="${new_hash:0:6}-${new_hash: -6}"
+
+    info_human "New content hash: sha256:$new_hash"
+    info_human "Short hash: $hash_short"
+
+    # Extract existing version history
+    local version_history=$(extract_version_history "$input_file")
+
+    # Extract in-reply-to section if this is a comment
+    local in_reply_to=""
+    if [ "$content_type" = "comment" ]; then
+        in_reply_to=$(extract_in_reply_to "$input_file")
+        if [ -z "$in_reply_to" ]; then
+            error "Comment file missing in-reply-to section"
+        fi
+    fi
+
+    # Get directory and filename
+    local file_dir=$(dirname "$input_file")
+    local base_filename=$(basename "$input_file")
+
+    # Build new version history (old entries + new entry)
+    # Only add newline separator if there are existing entries
+    local version_history_new
+    if [ -z "$version_history" ]; then
+        version_history_new="  - sha256:$new_hash ($timestamp)"
+    else
+        version_history_new="$version_history"$'\n'"  - sha256:$new_hash ($timestamp)"
+    fi
+
+    # Create frontmatter (without signature first)
+    # Different structure for comments vs posts
+    local frontmatter_template
+    if [ "$content_type" = "comment" ]; then
+        frontmatter_template="---
+title: $title
+type: comment
+published: $original_published
+generator: polis-cli/$VERSION
+in-reply-to:
+$in_reply_to
+current-version: sha256:$new_hash
+version-history:
+$version_history_new
+---"
+    else
+        frontmatter_template="---
+title: $title
+published: $original_published
+generator: polis-cli/$VERSION
+current-version: sha256:$new_hash
+version-history:
+$version_history_new
+---"
+    fi
+
+    # Create temporary file with frontmatter + content (for signing)
+    local temp_file=$(mktemp)
+    echo "$frontmatter_template" > "$temp_file"
+    echo "" >> "$temp_file"
+    cat "$content_only" >> "$temp_file"
+
+    # Sign the file
+    info "Signing file..."
+    local signature=$(sign_file "$temp_file")
+
+    # Create final frontmatter with signature
+    # Different structure for comments vs posts
+    local frontmatter
+    if [ "$content_type" = "comment" ]; then
+        frontmatter="---
+title: $title
+type: comment
+published: $original_published
+generator: polis-cli/$VERSION
+in-reply-to:
+$in_reply_to
+current-version: sha256:$new_hash
+version-history:
+$version_history_new
+signature: $signature
+---"
+    else
+        frontmatter="---
+title: $title
+published: $original_published
+generator: polis-cli/$VERSION
+current-version: sha256:$new_hash
+version-history:
+$version_history_new
+signature: $signature
+---"
+    fi
+
+    # Generate diff before writing updated canonical
+    local diff_content=""
+    local versions_file=$(get_versions_file_path "$input_file")
+
+    # Reconstruct old version from .versions file
+    if [ -f "$versions_file" ]; then
+        if reconstruct_version "$input_file" "sha256:$old_hash" "$old_content" 2>/dev/null; then
+            diff_content=$(generate_version_diff "$content_only" "$old_content")
+            info_human "Generated diff from sha256:${old_hash:0:13}... to sha256:${new_hash:0:13}..."
+        else
+            json_error "republish" "INVALID_STATE" "Failed to reconstruct version sha256:${old_hash:0:13}... from .versions file"
+        fi
+    else
+        error "No .versions file found. This file may have been published with an older version of polis. Please run 'polis publish' on the original file again."
+    fi
+
+    # Write updated canonical file
+    echo "$frontmatter" > "$input_file"
+    echo "" >> "$input_file"
+    cat "$content_only" >> "$input_file"
+    success_human "Updated canonical file: $input_file"
+
+    # Append diff to version history (if we generated one)
+    if [ -n "$diff_content" ]; then
+        append_version_to_history "$input_file" "$old_hash" "$new_hash" "$timestamp" "$diff_content"
+        success_human "Added version sha256:${new_hash:0:13}... to .versions file"
+    fi
+
+    # Clean up temp files
+    rm -f "$temp_file" "$content_only" "$old_content"
+
+    # Rebuild public.json index
+    rebuild_index
+
+    # Request blessing from discovery service if this is a comment
+    if [ "$content_type" = "comment" ]; then
+        if [ "$JSON_MODE" = false ]; then
+            echo ""
+        fi
+        info_human "Automatically requesting blessing for updated comment..."
+        _internal_beseech_from_file "$input_file"
+    fi
+
+    # Stage files in git (if git repo exists)
+    if git rev-parse --git-dir > /dev/null 2>&1; then
+        git add "$input_file" "$PUBLIC_INDEX"
+        # Also add .versions file if it exists
+        if [ -f "$versions_file" ]; then
+            git add "$versions_file"
+        fi
+        success_human "Staged files in git"
+        info_human "Files ready to commit. Run 'git commit' when ready."
+    else
+        info_human "Not a git repository - files created but not staged"
+    fi
+
+    # Output results
+    if [ "$JSON_MODE" = true ]; then
+        local result=$(jq -n \
+            --arg path "$input_file" \
+            --arg old_hash "sha256:$old_hash" \
+            --arg new_hash "sha256:$new_hash" \
+            --arg timestamp "$timestamp" \
+            --arg sig "$signature" \
+            '{
+                file_path: $path,
+                previous_version: $old_hash,
+                new_version: $new_hash,
+                timestamp: $timestamp,
+                signature: $sig
+            }')
+        json_success "republish" "$result"
+    else
+        echo ""
+        success "Republishing complete!"
+        echo ""
+        info "Canonical: $input_file"
+        if [ -f "$versions_file" ]; then
+            info "Versions:  $versions_file"
+        fi
+    fi
+}
+
+# Command: polis rebuild
+cmd_rebuild() {
+    if [ ! -f "$PUBLIC_INDEX" ]; then
+        error "public.jsonl not found. Run 'polis init' first."
+    fi
+
+    rebuild_index
+
+    # Stage in git if repo exists
+    if git rev-parse --git-dir > /dev/null 2>&1; then
+        git add "$PUBLIC_INDEX"
+        success "Staged public.jsonl in git"
+    fi
+
+    success "Rebuild complete!"
+}
+
+# Command: polis index [--json]
+# View the content index in JSONL or JSON format (read-only)
+cmd_index() {
+    local format="jsonl"  # default
+
+    # Parse flags
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --json)
+                format="json"
+                shift
+                ;;
+            *)
+                json_error "index" "INVALID_INPUT" "Unknown option: $1. Use: polis index [--json]"
+                ;;
+        esac
+    done
+
+    # Check if index exists
+    if [ ! -f "$PUBLIC_INDEX" ]; then
+        json_error "index" "FILE_NOT_FOUND" "Index file not found. Run 'polis rebuild' first."
+    fi
+
+    # Output based on format
+    if [ "$format" = "json" ]; then
+        # Convert JSONL to grouped JSON for readability
+        jq -s --arg version "$VERSION" '{
+            version: $version,
+            posts: [.[] | select(.type == "post") | del(.type)],
+            comments: [.[] | select(.type == "comment") | del(.type)]
+        }' "$PUBLIC_INDEX"
+    else
+        # Output raw JSONL
+        cat "$PUBLIC_INDEX"
+    fi
+}
+
+# Command: polis version
+# Print CLI version
+cmd_version() {
+    if [ "$JSON_MODE" = true ]; then
+        jq -n --arg version "$VERSION" '{ status: "success", command: "version", data: { version: $version } }'
+    else
+        echo "polis $VERSION"
+    fi
+}
+
+# Command: polis get-version <file> <hash>
+cmd_get_version() {
+    local file="$1"
+    local target_hash="$2"
+
+    if [ -z "$file" ] || [ -z "$target_hash" ]; then
+        error "Usage: polis get-version <file> <hash>"
+    fi
+
+    if [ ! -f "$file" ]; then
+        error "File not found: $file"
+    fi
+
+    # Ensure hash has sha256: prefix
+    if [[ ! "$target_hash" =~ ^sha256: ]]; then
+        target_hash="sha256:$target_hash"
+    fi
+
+    info "Reconstructing version $target_hash..."
+
+    # Create temporary output file
+    local output=$(mktemp)
+
+    # Reconstruct the version
+    reconstruct_version "$file" "$target_hash" "$output"
+
+    # Output to stdout
+    cat "$output"
+
+    # Clean up
+    rm -f "$output"
+}
+
+# Command: polis reset
+cmd_reset() {
+    info "Archiving current Polis state..."
+
+    # Create archive directory with date and sequential number
+    local date_stamp=$(date +%Y%m%d)
+    local archive_base="archive/$date_stamp"
+    local n=1
+    local archive_dir="$archive_base-$n"
+
+    # Find next available sequential number
+    while [ -d "$archive_dir" ]; do
+        n=$((n + 1))
+        archive_dir="$archive_base-$n"
+    done
+
+    mkdir -p "$archive_dir"
+    success "Created archive directory: $archive_dir"
+
+    # Check if git repo
+    local use_git=false
+    if git rev-parse --git-dir > /dev/null 2>&1; then
+        use_git=true
+        info "Git repository detected - using git mv where possible"
+    fi
+
+    # Function to move item (uses git mv if tracked, otherwise regular mv)
+    move_item() {
+        local item="$1"
+        local dest="$2"
+
+        if [ ! -e "$item" ]; then
+            return 1
+        fi
+
+        if [ "$use_git" = true ]; then
+            # Check if item is tracked by git
+            if git ls-files --error-unmatch "$item" > /dev/null 2>&1; then
+                # Try git mv (fall back to regular mv if it fails)
+                if git mv "$item" "$dest" 2>/dev/null; then
+                    return 0
+                fi
+            fi
+        fi
+
+        # Fall back to regular mv
+        mv "$item" "$dest"
+        return 0
+    }
+
+    # Archive items
+    local archived_something=false
+
+    if [ -d "posts" ]; then
+        move_item "posts" "$archive_dir/posts"
+        success "Archived posts/"
+        archived_something=true
+    fi
+
+    if [ -d "comments" ]; then
+        move_item "comments" "$archive_dir/comments"
+        success "Archived comments/"
+        archived_something=true
+    fi
+
+    if [ -d ".well-known" ]; then
+        move_item ".well-known" "$archive_dir/.well-known"
+        success "Archived .well-known/"
+        archived_something=true
+    fi
+
+    if [ -d ".polis" ]; then
+        move_item ".polis" "$archive_dir/.polis"
+        success "Archived .polis/ (including keys)"
+        archived_something=true
+    fi
+
+    if [ -f "$PUBLIC_INDEX" ]; then
+        if [ "$use_git" = true ] && git ls-files --error-unmatch "$PUBLIC_INDEX" > /dev/null 2>&1; then
+            git mv "$PUBLIC_INDEX" "$archive_dir/archive.json" 2>/dev/null || mv "$PUBLIC_INDEX" "$archive_dir/archive.json"
+        else
+            mv "$PUBLIC_INDEX" "$archive_dir/archive.json"
+        fi
+        success "Archived public.json â†’ archive.json"
+        archived_something=true
+    fi
+
+    if [ -f "$BLESSED_COMMENTS" ]; then
+        move_item "$BLESSED_COMMENTS" "$archive_dir/blessed-comments.json"
+        success "Archived blessed-comments.json"
+        archived_something=true
+    fi
+
+    if [ "$archived_something" = false ]; then
+        info "Nothing to archive - directory is clean"
+        rmdir "$archive_dir" 2>/dev/null
+        rmdir "archive" 2>/dev/null
+        return
+    fi
+
+    # Stage all changes in git (handles both tracked moves and new archive directory)
+    if [ "$use_git" = true ]; then
+        git add -A
+        success "Staged all changes in git"
+    fi
+
+    success "Reset complete! All files archived to $archive_dir"
+    info "Run 'polis init' to start fresh"
+}
+
+# ============================================================================
+# BLESSING COMMANDS
+# ============================================================================
+
+# Command: polis blessing requests
+cmd_blessing_requests() {
+    # Check initialization
+    if [ ! -f "$WELL_KNOWN_DIR/polis" ]; then
+        json_error "blessing-requests" "INVALID_STATE" "Polis not initialized. Run 'polis init' first."
+    fi
+
+    # Extract author and domain
+    local author=$(extract_author_from_wellknown)
+    local domain=$(extract_domain_from_url "$POLIS_BASE_URL")
+
+    # Construct endpoint URL
+    local endpoint="${POLIS_BLESSING_REQUESTS_ENDPOINT}"
+
+    info_human "Fetching pending blessing requests for ${author} from ${endpoint} ..."
+
+    # Fetch requests
+    local response=$(curl -s \
+        --header "Authorization: Bearer $SUPABASE_ANON_KEY" \
+        "${endpoint}?in_reply_to_domain=${domain}")
+
+    if [ $? -ne 0 ]; then
+        json_error "blessing-requests" "API_ERROR" "Failed to connect to discovery service. Check your internet connection and POLIS_BESEECH_ENDPOINT."
+    fi
+
+    # Check if jq is available
+    if ! command -v jq > /dev/null 2>&1; then
+        json_error "blessing-requests" "MISSING_DEPENDENCY" "jq is required but not installed. Please install jq to continue."
+    fi
+
+    # Check for API errors
+    local error_msg=$(echo "$response" | jq -r '.error // empty' 2>/dev/null)
+    if [ -n "$error_msg" ]; then
+        json_error "blessing-requests" "API_ERROR" "API error: $error_msg"
+    fi
+
+    # In JSON mode, return the API response directly
+    if [ "$JSON_MODE" = true ]; then
+        # Extract requests array and count
+        local requests=$(echo "$response" | jq -c '.requests // []')
+        local count=$(echo "$response" | jq -r '.count // 0')
+
+        local result=$(jq -n \
+            --argjson count "$count" \
+            --argjson requests "$requests" \
+            '{
+                count: $count,
+                requests: $requests
+            }')
+        json_success "blessing-requests" "$result"
+    else
+        # Format and display table
+        format_blessing_table "$response"
+    fi
+}
+
+# Command: polis blessing grant <request-id>
+cmd_blessing_grant() {
+    local comment_id="$1"
+
+    # Validate arguments
+    if [ -z "$comment_id" ]; then
+        json_error "blessing-grant" "INVALID_INPUT" "Usage: polis blessing grant <request-id>"
+    fi
+
+    # Validate comment_id is numeric
+    if ! [[ "$comment_id" =~ ^[0-9]+$ ]]; then
+        json_error "blessing-grant" "INVALID_INPUT" "Request ID must be a number"
+    fi
+
+    # Check initialization
+    if [ ! -f "$WELL_KNOWN_DIR/polis" ]; then
+        json_error "blessing-grant" "INVALID_STATE" "Polis not initialized. Run 'polis init' first."
+    fi
+
+    # Extract blessed_by (author email)
+    local blessed_by=$(extract_author_from_wellknown)
+
+    # Fetch and display request details in human mode
+    if [ "$JSON_MODE" = false ]; then
+        info "Fetching request details..."
+        local request_json=$(fetch_request_details "$comment_id")
+
+        if [ -z "$request_json" ] || [ "$request_json" = "null" ]; then
+            error "Request #$comment_id not found"
+        fi
+
+        # Display request details (without confirmation)
+        display_request_details "$comment_id" "$request_json"
+    fi
+
+    # Prepare POST payload
+    local payload=$(jq -n \
+        --argjson id "$comment_id" \
+        --arg by "$blessed_by" \
+        '{comment_id: $id, blessed_by: $by}')
+
+    # Call bless endpoint
+    local response=$(curl -s -w "\n%{http_code}" \
+        --location --request POST "$POLIS_BLESS_ENDPOINT" \
+        --header "Authorization: Bearer $SUPABASE_ANON_KEY" \
+        --header 'Content-Type: application/json' \
+        --data "$payload")
+
+    # Extract HTTP status code
+    local http_code=$(echo "$response" | tail -n 1)
+    local body=$(echo "$response" | sed '$d')
+
+    # Handle response
+    case "$http_code" in
+        200)
+            # Extract comment details from response
+            local comment_url=$(echo "$body" | jq -r '.request.comment_url')
+            local comment_version=$(echo "$body" | jq -r '.request.comment_version')
+            local in_reply_to=$(echo "$body" | jq -r '.request.in_reply_to')
+            local blessed_at=$(echo "$body" | jq -r '.request.blessed_at')
+            local author=$(echo "$body" | jq -r '.request.author')
+
+            # Update blessed-comments.json
+            update_blessed_comments_json "$comment_url" "$comment_version" "$in_reply_to" "$blessed_at"
+
+            if [ "$JSON_MODE" = true ]; then
+                local result=$(jq -n \
+                    --argjson id "$comment_id" \
+                    --arg url "$comment_url" \
+                    --arg blessed_at "$blessed_at" \
+                    --arg blessed_by "$blessed_by" \
+                    '{
+                        comment_id: $id,
+                        comment_url: $url,
+                        blessed_at: $blessed_at,
+                        blessed_by: $blessed_by
+                    }')
+                json_success "blessing-grant" "$result"
+            else
+                success "Blessing granted for request #$comment_id"
+                success "Updated blessed-comments.json"
+                info "Comment from $author is now blessed"
+            fi
+            ;;
+        403)
+            json_error "blessing-grant" "PERMISSION_ERROR" "Authorization failed: You can only bless comments on your own posts. Response: $body"
+            ;;
+        404)
+            json_error "blessing-grant" "INVALID_INPUT" "Request #$comment_id not found. Response: $body"
+            ;;
+        400)
+            json_error "blessing-grant" "INVALID_INPUT" "Invalid request. Response: $body"
+            ;;
+        *)
+            json_error "blessing-grant" "API_ERROR" "Failed to grant blessing (HTTP $http_code). Response: $body"
+            ;;
+    esac
+}
+
+# Command: polis blessing deny <request-id>
+cmd_blessing_deny() {
+    local comment_id="$1"
+
+    # Validate arguments
+    if [ -z "$comment_id" ]; then
+        json_error "blessing-deny" "INVALID_INPUT" "Usage: polis blessing deny <request-id>"
+    fi
+
+    # Validate comment_id is numeric
+    if ! [[ "$comment_id" =~ ^[0-9]+$ ]]; then
+        json_error "blessing-deny" "INVALID_INPUT" "Request ID must be a number"
+    fi
+
+    # Check initialization
+    if [ ! -f "$WELL_KNOWN_DIR/polis" ]; then
+        json_error "blessing-deny" "INVALID_STATE" "Polis not initialized. Run 'polis init' first."
+    fi
+
+    # Extract blessed_by (author email)
+    local blessed_by=$(extract_author_from_wellknown)
+
+    # Fetch and display request details in human mode
+    if [ "$JSON_MODE" = false ]; then
+        info "Fetching request details..."
+        local request_json=$(fetch_request_details "$comment_id")
+
+        if [ -z "$request_json" ] || [ "$request_json" = "null" ]; then
+            error "Request #$comment_id not found"
+        fi
+
+        # Display request details (without confirmation)
+        display_request_details "$comment_id" "$request_json"
+    fi
+
+    # Prepare POST payload
+    local payload=$(jq -n \
+        --argjson id "$comment_id" \
+        --arg by "$blessed_by" \
+        '{comment_id: $id, blessed_by: $by}')
+
+    # Call deny endpoint
+    local response=$(curl -s -w "\n%{http_code}" \
+        --location --request POST "$POLIS_DENY_ENDPOINT" \
+        --header "Authorization: Bearer $SUPABASE_ANON_KEY" \
+        --header 'Content-Type: application/json' \
+        --data "$payload")
+
+    # Extract HTTP status code
+    local http_code=$(echo "$response" | tail -n 1)
+    local body=$(echo "$response" | sed '$d')
+
+    # Handle response
+    case "$http_code" in
+        200)
+            # Extract comment details from response
+            local comment_url=$(echo "$body" | jq -r '.request.comment_url')
+            local in_reply_to=$(echo "$body" | jq -r '.request.in_reply_to')
+            local denied_at=$(echo "$body" | jq -r '.request.denied_at // .request.blessed_at // ""')
+            local author=$(echo "$body" | jq -r '.request.author')
+
+            # Remove from blessed-comments.json if it was previously blessed
+            remove_from_blessed_comments_json "$comment_url" "$in_reply_to"
+
+            if [ "$JSON_MODE" = true ]; then
+                local result=$(jq -n \
+                    --argjson id "$comment_id" \
+                    --arg url "$comment_url" \
+                    --arg denied_at "$denied_at" \
+                    --arg denied_by "$blessed_by" \
+                    '{
+                        comment_id: $id,
+                        comment_url: $url,
+                        denied_at: $denied_at,
+                        denied_by: $denied_by
+                    }')
+                json_success "blessing-deny" "$result"
+            else
+                success "Blessing denied for request #$comment_id"
+                info "Removed from blessed-comments.json (if present)"
+                info "Comment from $author has been rejected"
+            fi
+            ;;
+        403)
+            json_error "blessing-deny" "PERMISSION_ERROR" "Authorization failed: You can only deny comments on your own posts. Response: $body"
+            ;;
+        404)
+            json_error "blessing-deny" "INVALID_INPUT" "Request #$comment_id not found. Response: $body"
+            ;;
+        400)
+            json_error "blessing-deny" "INVALID_INPUT" "Invalid request. Response: $body"
+            ;;
+        *)
+            json_error "blessing-deny" "API_ERROR" "Failed to deny blessing (HTTP $http_code). Response: $body"
+            ;;
+    esac
+}
+
+# Command: polis follow <author-url>
+cmd_follow() {
+    local author_url="$1"
+
+    # Validate author_url
+    if [ -z "$author_url" ]; then
+        json_error "follow" "INVALID_INPUT" "Usage: polis follow <author-url>"
+    fi
+
+    # Validate URL format (must be HTTPS)
+    if [[ ! "$author_url" =~ ^https:// ]]; then
+        json_error "follow" "INVALID_INPUT" "Author URL must use HTTPS (e.g., https://example.com)"
+    fi
+
+    # Check initialization
+    if [ ! -f "$WELL_KNOWN_DIR/polis" ]; then
+        json_error "follow" "INVALID_STATE" "Polis not initialized. Run 'polis init' first."
+    fi
+
+    # Extract blessed_by (current user's email)
+    local blessed_by=$(extract_author_from_wellknown)
+
+    # Fetch author email from their .well-known/polis
+    info_human "Fetching author information from $author_url..."
+    local author_email=$(fetch_author_email_from_wellknown "$author_url")
+
+    if [ -z "$author_email" ]; then
+        json_error "follow" "API_ERROR" "Failed to fetch author email from $author_url"
+    fi
+
+    info_human "Author email: $author_email"
+
+    # Fetch unblessed comments from this author
+    info_human "Fetching comments from $author_email..."
+    local pending_comments=$(fetch_comments_by_author "$author_email" "pending")
+    local rejected_comments=$(fetch_comments_by_author "$author_email" "rejected")
+
+    # Combine pending and rejected into one array
+    local unblessed_comments=$(jq -s 'add' <(echo "$pending_comments") <(echo "$rejected_comments"))
+    local comment_count=$(echo "$unblessed_comments" | jq 'length')
+
+    # Display summary in human mode
+    if [ "$JSON_MODE" = false ]; then
+        echo ""
+        info "Following: $author_url ($author_email)"
+
+        if [ "$comment_count" -gt 0 ]; then
+            echo "Found $comment_count unblessed comment(s) from this author on your posts:"
+            echo ""
+
+            # Show first 5 comments as preview
+            local preview_count=$comment_count
+            if [ "$comment_count" -gt 5 ]; then
+                preview_count=5
+            fi
+
+            echo "$unblessed_comments" | jq -r --arg count "$preview_count" \
+                'limit($count | tonumber; .[]) | "  - Request #\(.id): \(.comment_url | split("/")[-1]) (\(.timestamp[:10]))"'
+
+            if [ "$comment_count" -gt 5 ]; then
+                echo "  ... and $((comment_count - 5)) more"
+            fi
+
+            echo ""
+            echo "All these comments will be blessed."
+        else
+            echo "No unblessed comments found from this author."
+            echo "Future comments from this author can be manually blessed."
+        fi
+        echo ""
+    fi
+
+    # Bless all unblessed comments
+    local blessed_count=0
+    local failed_count=0
+
+    if [ "$comment_count" -gt 0 ]; then
+        info_human "Blessing $comment_count comment(s)..."
+
+        # Loop through each comment
+        while IFS= read -r comment_id; do
+            if [ -z "$comment_id" ] || [ "$comment_id" = "null" ]; then
+                continue
+            fi
+
+            # Prepare POST payload
+            local payload=$(jq -n \
+                --argjson id "$comment_id" \
+                --arg by "$blessed_by" \
+                '{comment_id: $id, blessed_by: $by}')
+
+            # Call bless endpoint
+            local response=$(curl -s -w "\n%{http_code}" \
+                --location --request POST "$POLIS_BLESS_ENDPOINT" \
+                --header "Authorization: Bearer $SUPABASE_ANON_KEY" \
+                --header 'Content-Type: application/json' \
+                --data "$payload")
+
+            # Extract HTTP status code
+            local http_code=$(echo "$response" | tail -n 1)
+            local body=$(echo "$response" | sed '$d')
+
+            # Handle response
+            if [ "$http_code" = "200" ]; then
+                # Extract comment details from response
+                local comment_url=$(echo "$body" | jq -r '.request.comment_url')
+                local comment_version=$(echo "$body" | jq -r '.request.comment_version')
+                local in_reply_to=$(echo "$body" | jq -r '.request.in_reply_to')
+                local blessed_at=$(echo "$body" | jq -r '.request.blessed_at')
+
+                # Update blessed-comments.json
+                update_blessed_comments_json "$comment_url" "$comment_version" "$in_reply_to" "$blessed_at"
+
+                blessed_count=$((blessed_count + 1))
+            else
+                failed_count=$((failed_count + 1))
+                info_human "Warning: Failed to bless request #$comment_id (HTTP $http_code)"
+            fi
+        done < <(echo "$unblessed_comments" | jq -r '.[].id')
+    fi
+
+    # Add to following.json
+    local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    add_to_following_json "$author_url" "$timestamp"
+
+    # Output results
+    if [ "$JSON_MODE" = true ]; then
+        local result=$(jq -n \
+            --arg url "$author_url" \
+            --arg email "$author_email" \
+            --argjson found "$comment_count" \
+            --argjson blessed "$blessed_count" \
+            '{
+                author_url: $url,
+                author_email: $email,
+                comments_found: $found,
+                comments_blessed: $blessed,
+                added_to_following: true
+            }')
+        json_success "follow" "$result"
+    else
+        # Display success summary
+        echo ""
+        success "Successfully followed $author_url"
+        echo "  - Added to following.json"
+
+        if [ "$comment_count" -gt 0 ]; then
+            if [ "$failed_count" -eq 0 ]; then
+                echo "  - Blessed $blessed_count comment(s)"
+            else
+                echo "  - Blessed $blessed_count/$comment_count comment(s) ($failed_count failed)"
+            fi
+        fi
+    fi
+}
+
+# Command: polis unfollow <author-url>
+cmd_unfollow() {
+    local author_url="$1"
+
+    # Validate author_url
+    if [ -z "$author_url" ]; then
+        json_error "unfollow" "INVALID_INPUT" "Usage: polis unfollow <author-url>"
+    fi
+
+    # Validate URL format (must be HTTPS)
+    if [[ ! "$author_url" =~ ^https:// ]]; then
+        json_error "unfollow" "INVALID_INPUT" "Author URL must use HTTPS (e.g., https://example.com)"
+    fi
+
+    # Check initialization
+    if [ ! -f "$WELL_KNOWN_DIR/polis" ]; then
+        json_error "unfollow" "INVALID_STATE" "Polis not initialized. Run 'polis init' first."
+    fi
+
+    # Extract blessed_by (current user's email)
+    local blessed_by=$(extract_author_from_wellknown)
+
+    # Get blessed comment URLs from this author (from blessed-comments.json)
+    info_human "Finding blessed comments from $author_url..."
+    local blessed_urls=$(get_blessed_comment_urls_by_author "$author_url")
+    local url_count=$(echo "$blessed_urls" | jq 'length')
+
+    if [ "$url_count" -eq 0 ]; then
+        remove_from_following_json "$author_url"
+
+        if [ "$JSON_MODE" = true ]; then
+            local result=$(jq -n \
+                --arg url "$author_url" \
+                '{
+                    author_url: $url,
+                    comments_found: 0,
+                    comments_denied: 0,
+                    removed_from_following: true
+                }')
+            json_success "unfollow" "$result"
+        else
+            info "No blessed comments found from this author"
+            success "Successfully unfollowed $author_url"
+        fi
+        exit 0
+    fi
+
+    info_human "Found $url_count blessed comment(s), looking up IDs..."
+
+    # Lookup comment ID for each blessed comment URL
+    local comment_ids=()
+    local lookup_failures=0
+
+    while IFS= read -r comment_url; do
+        if [ -z "$comment_url" ] || [ "$comment_url" = "null" ]; then
+            continue
+        fi
+
+        local comment_id=$(get_comment_id_by_url "$comment_url")
+        if [ -n "$comment_id" ] && [ "$comment_id" != "null" ]; then
+            comment_ids+=("$comment_id")
+        else
+            lookup_failures=$((lookup_failures + 1))
+            info_human "Warning: Could not find ID for $comment_url"
+        fi
+    done < <(echo "$blessed_urls" | jq -r '.[]')
+
+    local comment_count=${#comment_ids[@]}
+
+    # Display summary in human mode
+    if [ "$JSON_MODE" = false ]; then
+        echo ""
+        info "Unfollowing: $author_url"
+        echo "Found $comment_count blessed comment(s) to deny"
+        if [ $lookup_failures -gt 0 ]; then
+            echo "Warning: $lookup_failures comment(s) could not be looked up"
+        fi
+        echo ""
+    fi
+
+    # Deny each comment
+    local denied_count=0
+    local failed_count=0
+
+    if [ $comment_count -gt 0 ]; then
+        info_human "Denying $comment_count blessed comment(s)..."
+
+        for comment_id in "${comment_ids[@]}"; do
+            # Prepare POST payload
+            local payload=$(jq -n \
+                --argjson id "$comment_id" \
+                --arg by "$blessed_by" \
+                '{comment_id: $id, blessed_by: $by}')
+
+            # Call deny endpoint
+            local response=$(curl -s -w "\n%{http_code}" \
+                --location --request POST "$POLIS_DENY_ENDPOINT" \
+                --header "Authorization: Bearer $SUPABASE_ANON_KEY" \
+                --header 'Content-Type: application/json' \
+                --data "$payload")
+
+            local http_code=$(echo "$response" | tail -n 1)
+            local body=$(echo "$response" | sed '$d')
+
+            if [ "$http_code" = "200" ]; then
+                local comment_url=$(echo "$body" | jq -r '.request.comment_url')
+                local in_reply_to=$(echo "$body" | jq -r '.request.in_reply_to')
+
+                # Remove from blessed-comments.json
+                remove_from_blessed_comments_json "$comment_url" "$in_reply_to"
+
+                denied_count=$((denied_count + 1))
+            else
+                failed_count=$((failed_count + 1))
+                info_human "Warning: Failed to deny comment #$comment_id (HTTP $http_code)"
+            fi
+        done
+    fi
+
+    # Remove from following.json
+    remove_from_following_json "$author_url"
+
+    # Output results
+    if [ "$JSON_MODE" = true ]; then
+        local result=$(jq -n \
+            --arg url "$author_url" \
+            --argjson found "$url_count" \
+            --argjson denied "$denied_count" \
+            '{
+                author_url: $url,
+                comments_found: $found,
+                comments_denied: $denied,
+                removed_from_following: true
+            }')
+        json_success "unfollow" "$result"
+    else
+        # Display success summary
+        echo ""
+        success "Successfully unfollowed $author_url"
+        echo "  - Removed from following.json"
+
+        if [ $comment_count -gt 0 ]; then
+            if [ $failed_count -eq 0 ]; then
+                echo "  - Denied $denied_count blessed comment(s)"
+            else
+                echo "  - Denied $denied_count/$comment_count comment(s) ($failed_count failed)"
+            fi
+        fi
+    fi
+}
+
+# Command: polis blessing <subcommand>
+cmd_blessing() {
+    local subcommand="$1"
+    shift
+
+    case "$subcommand" in
+        requests)
+            cmd_blessing_requests "$@"
+            ;;
+        grant)
+            cmd_blessing_grant "$@"
+            ;;
+        deny)
+            cmd_blessing_deny "$@"
+            ;;
+        beseech)
+            cmd_blessing_beseech "$@"
+            ;;
+        *)
+            error "Unknown blessing subcommand: $subcommand
+
+Usage: polis blessing requests
+       polis blessing grant <request-id>
+       polis blessing deny <request-id>
+       polis blessing beseech <request-id>"
+            ;;
+    esac
+}
+
+# Command: polis publish <filename>
+cmd_publish() {
+    # Parse command-specific flags first
+    local explicit_filename=""
+    local explicit_title=""
+    local positional_args=()
+
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --filename)
+                explicit_filename="$2"
+                shift 2
+                ;;
+            --title)
+                explicit_title="$2"
+                shift 2
+                ;;
+            *)
+                positional_args+=("$1")
+                shift
+                ;;
+        esac
+    done
+
+    # Restore positional arguments
+    set -- "${positional_args[@]}"
+
+    local input_file="$1"
+
+    if [ -z "$input_file" ]; then
+        json_error "publish" "INVALID_INPUT" "Usage: polis publish <filename>\n       polis publish - [--filename <name>] [--title <title>]"
+    fi
+
+    if [ ! -f "$KEYS_DIR/id_ed25519" ]; then
+        json_error "publish" "INVALID_STATE" "Polis not initialized. Run 'polis init' first."
+    fi
+
+    # Check for stdin mode
+    local stdin_mode=false
+    local temp_stdin=""
+
+    if [ "$input_file" = "-" ]; then
+        stdin_mode=true
+
+        # Verify stdin is not a terminal (has actual content)
+        if [ -t 0 ]; then
+            json_error "publish" "INVALID_INPUT" "No stdin content. Use: echo 'content' | polis publish -"
+        fi
+
+        # Create temp file and read stdin
+        temp_stdin=$(mktemp)
+        cat > "$temp_stdin"
+
+        # Verify content
+        if [ ! -s "$temp_stdin" ]; then
+            rm -f "$temp_stdin"
+            json_error "publish" "INVALID_INPUT" "Stdin content is empty"
+        fi
+
+        # Point input_file to temp file
+        input_file="$temp_stdin"
+
+        info_human "Reading content from stdin..."
+    else
+        # Regular file mode - check file exists
+        if [ ! -f "$input_file" ]; then
+            json_error "publish" "FILE_NOT_FOUND" "File not found: $input_file"
+        fi
+    fi
+
+    # Ensure temp file cleanup on exit or error
+    cleanup_stdin() {
+        if [ -n "$temp_stdin" ] && [ -f "$temp_stdin" ]; then
+            rm -f "$temp_stdin"
+        fi
+    }
+    trap cleanup_stdin EXIT ERR
+
+    # Check if file already has frontmatter (already published)
+    # Skip this check for stdin mode as stdin content is always new
+    if [ "$stdin_mode" = false ] && has_frontmatter "$input_file"; then
+        json_error "publish" "INVALID_STATE" "File already published (has frontmatter). Use 'polis republish' to update it."
+    fi
+
+    # Store original file path for cleanup later
+    local original_file="$input_file"
+
+    # Determine base filename
+    local base_filename
+    if [ "$stdin_mode" = true ]; then
+        if [ -n "$explicit_filename" ]; then
+            base_filename="$explicit_filename"
+            # Ensure .md extension
+            [[ ! "$base_filename" =~ \.md$ ]] && base_filename="${base_filename}.md"
+        else
+            # Generate synthetic filename
+            local timestamp_filename=$(date +%Y%m%d-%H%M%S)
+            base_filename="stdin-${timestamp_filename}.md"
+        fi
+    else
+        # Regular file mode - convert to absolute path for comparison
+        if command -v realpath > /dev/null 2>&1; then
+            input_file=$(realpath "$input_file")
+        elif command -v readlink > /dev/null 2>&1; then
+            input_file=$(readlink -f "$input_file" 2>/dev/null || echo "$input_file")
+        fi
+        base_filename=$(basename "$input_file")
+    fi
+
+    if [ "$stdin_mode" = true ]; then
+        info_human "Publishing from stdin as $base_filename..."
+    else
+        info_human "Publishing $original_file..."
+    fi
+
+    # Extract or use explicit title
+    local title
+    if [ -n "$explicit_title" ]; then
+        title="$explicit_title"
+    else
+        title=$(extract_title "$input_file")
+        # If stdin and title is temp filename fallback, use base_filename instead
+        if [ "$stdin_mode" = true ] && [[ "$title" =~ ^tmp\. ]]; then
+            # Convert filename to readable title
+            title=$(echo "$base_filename" | sed 's/\.md$//' | sed 's/-/ /g' | \
+                    awk '{for(i=1;i<=NF;i++)sub(/./,toupper(substr($i,1,1)),$i)}1')
+        fi
+    fi
+    info_human "Extracted title: $title"
+
+    # Get current timestamp
+    local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+    # Read original content
+    local content=$(cat "$input_file")
+
+    # Hash the content
+    local content_hash=$(hash_content "$input_file")
+    local hash_short="${content_hash:0:6}-${content_hash: -6}"
+
+    info_human "Content hash: sha256:$content_hash"
+    info_human "Short hash: $hash_short"
+
+    # Create date-stamped subdirectory
+    local date_dir="$POSTS_DIR/$(date +%Y%m%d)"
+    mkdir -p "$date_dir"
+
+    # Note: base_filename is already set above in the stdin/file mode section
+
+    # Create frontmatter (without signature first)
+    local frontmatter_template="---
+title: $title
+published: $timestamp
+generator: polis-cli/$VERSION
+current-version: sha256:$content_hash
+version-history:
+  - sha256:$content_hash ($timestamp)
+---"
+
+    # Create temporary file with frontmatter + content (for signing)
+    local temp_file=$(mktemp)
+    echo "$frontmatter_template" > "$temp_file"
+    echo "" >> "$temp_file"
+    cat "$input_file" >> "$temp_file"
+
+    # Sign the file
+    info_human "Signing file..."
+    local signature=$(sign_file "$temp_file")
+
+    # Create final frontmatter with signature
+    local frontmatter="---
+title: $title
+published: $timestamp
+generator: polis-cli/$VERSION
+current-version: sha256:$content_hash
+version-history:
+  - sha256:$content_hash ($timestamp)
+signature: $signature
+---"
+
+    # Write canonical file
+    local canonical_path="$date_dir/$base_filename"
+    echo "$frontmatter" > "$canonical_path"
+    echo "" >> "$canonical_path"
+    cat "$input_file" >> "$canonical_path"
+    success_human "Created canonical file: $canonical_path"
+
+    # Initialize version history with full content
+    initialize_version_history "$canonical_path" "$content_hash" "$timestamp" "$content"
+    local versions_file=$(get_versions_file_path "$canonical_path")
+    success_human "Created versions file: $versions_file"
+
+    # Clean up temp file
+    rm -f "$temp_file"
+
+    # Handle cleanup based on mode
+    if [ "$stdin_mode" = true ]; then
+        # Cleanup handled by trap - just inform user
+        success_human "Published content from stdin to $canonical_path"
+    else
+        # Remove original file if it's not already in the posts directory
+        # (we've now moved it into posts with frontmatter added)
+        local canonical_abs=$(realpath "$canonical_path" 2>/dev/null || readlink -f "$canonical_path" 2>/dev/null || echo "$canonical_path")
+        if [ "$input_file" != "$canonical_abs" ]; then
+            rm -f "$original_file"
+            success_human "Moved original file into posts/"
+        fi
+    fi
+
+    # Append to public.jsonl index
+    append_to_index "$canonical_path" "post"
+
+    # Stage files in git (if git repo exists)
+    if git rev-parse --git-dir > /dev/null 2>&1; then
+        git add "$canonical_path" "$versions_file" "$PUBLIC_INDEX"
+        success_human "Staged files in git"
+        info_human "Files ready to commit. Run 'git commit' when ready."
+    else
+        info_human "Not a git repository - files created but not staged"
+    fi
+
+    # Output results
+    if [ "$JSON_MODE" = true ]; then
+        # Build canonical URL
+        local canonical_url=""
+        if [ -n "$POLIS_BASE_URL" ]; then
+            canonical_url="$POLIS_BASE_URL/$canonical_path"
+        fi
+
+        local result=$(jq -n \
+            --arg path "$canonical_path" \
+            --arg hash "sha256:$content_hash" \
+            --arg timestamp "$timestamp" \
+            --arg sig "$signature" \
+            --arg url "$canonical_url" \
+            '{
+                file_path: $path,
+                content_hash: $hash,
+                timestamp: $timestamp,
+                signature: $sig,
+                canonical_url: $url
+            }')
+        json_success "publish" "$result"
+    else
+        success "Publishing complete!"
+        echo ""
+        info "Canonical: $canonical_path"
+        info "Versions:  $versions_file"
+    fi
+}
+
+# Main command router
+main() {
+    # Parse global flags before command
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --json)
+                JSON_MODE=true
+                # Disable colors in JSON mode
+                GREEN=''
+                BLUE=''
+                RED=''
+                NC=''
+                shift
+                ;;
+            *)
+                break
+                ;;
+        esac
+    done
+
+    local command="$1"
+    shift
+
+    case "$command" in
+        init)
+            cmd_init "$@"
+            ;;
+        publish)
+            cmd_publish "$@"
+            ;;
+        comment)
+            cmd_comment "$@"
+            ;;
+        preview)
+            cmd_preview "$@"
+            ;;
+        republish)
+            cmd_republish "$@"
+            ;;
+        rebuild)
+            cmd_rebuild "$@"
+            ;;
+        index)
+            cmd_index "$@"
+            ;;
+        version)
+            cmd_version "$@"
+            ;;
+        get-version)
+            cmd_get_version "$@"
+            ;;
+        reset)
+            cmd_reset "$@"
+            ;;
+        blessing)
+            cmd_blessing "$@"
+            ;;
+        follow)
+            cmd_follow "$@"
+            ;;
+        unfollow)
+            cmd_unfollow "$@"
+            ;;
+        *)
+            echo "Polis - Decentralized Social Network CLI"
+            echo ""
+            echo "Usage:"
+            echo "  polis [--json] <command> [options]"
+            echo ""
+            echo "Global Flags:"
+            echo "  --json                          Output results in JSON format (for scripting).  Supported by most but not all commands below."
+            echo ""
+            echo "Commands related to publishing files or comments:"
+            echo "  polis publish <file>            Publish a new post"
+            echo "  polis publish -                 Publish from stdin (use --filename, --title for options)"
+            echo "  polis comment <file> [url]      Create a comment on a post"
+            echo "  polis comment - <url>           Comment from stdin (use --filename, --title for options)"
+            echo "  polis republish <file>          Update an already-published file"
+            echo ""
+            echo "Commands related to previewing content:"
+            echo "  polis preview <url>             Preview a post or comment at a URL with signature verification"
+            echo ""
+            echo "Commands related to requesting, reviewing, or granting blessings on comments:"
+            echo "  polis blessing requests         List pending blessing requests; use 'polis preview' to see details"
+            echo "  polis blessing grant <id>       Grant a blessing request"
+            echo "  polis blessing deny <id>        Deny a blessing request"
+            echo "  polis blessing beseech <id>     Re-request blessing by ID"
+            echo ""
+            echo "Commands related to following or unfollowing an author:"
+            echo "  polis follow <author-url>       Follow an author (auto-bless their comments)"
+            echo "  polis unfollow <author-url>     Unfollow an author"
+            echo ""
+            echo "Commands related to local configuration management:"
+            echo "  polis init [options]            Initialize Polis directory structure"
+            echo "    --keys-dir <path>             Custom keys directory (default: .polis/keys)"
+            echo "    --posts-dir <path>            Custom posts directory (default: posts)"
+            echo "    --comments-dir <path>         Custom comments directory (default: comments)"
+            echo "    --versions-dir <path>         Custom versions directory (default: .versions)"
+            echo "  polis rebuild                   Rebuild public.jsonl index from files"
+            echo "  polis reset                     Archive current state and start fresh"
+            echo "  polis index [--json]            View index (JSONL or JSON format)"
+            echo "  polis version                   Print CLI version"
+            echo "  polis get-version <file> <hash> Reconstruct a specific version of a file"
+            echo ""
+            echo "Polis includes support for stdin:"
+            echo "  Pipe content directly without creating temporary files:"
+            echo "    echo '# My Post' | polis publish -"
+            echo "    echo '# Reply' | polis comment - https://example.com/post.md"
+            echo "    curl -s https://example.com/draft.md | polis publish - --filename final.md"
+            echo "    polis publish - --title 'My Title' --filename custom.md < content.txt"
+            echo ""
+            echo "Polis commands can output results as JSON for scripting and testing:"
+            echo "  When --json is enabled:"
+            echo "    - Output is valid JSON to stdout (success) or stderr (errors)"
+            echo "    - Interactive prompts are auto-skipped with logged defaults"
+            echo "    - ANSI color codes are disabled"
+            echo "    - Exit codes: 0 (success) or 1 (error)"
+            echo ""
+            echo "  Example:"
+            echo "    polis --json publish my-post.md | jq -r '.data.content_hash'"
+            echo "    polis --json comment my-comment.md https://example.com/post.md"
+            echo "    echo '# Test' | polis --json publish - | jq"
+            echo ""
+            echo "Configuration (in order of precedence):"
+            echo "  1. Environment variables"
+            echo "  2. .env file in current directory"
+            echo "  3. config section in .well-known/polis"
+            echo "  4. Built-in defaults"
+            echo ""
+            echo "Required for blessing commands:"
+            echo "  POLIS_BASE_URL                  Your public HTTPS URL"
+            echo "  SUPABASE_ANON_KEY               Discovery service API key"
+            echo ""
+            echo "Optional:"
+            echo "  POLIS_ENDPOINT_BASE             Discovery service base URL (has default)"
+            echo "  KEYS_DIR, POSTS_DIR, etc.       Custom directory paths"
+            echo ""
+            echo "Create a .env file from template:"
+            echo "  cp .env.example .env && vim .env"
+            echo ""
+            echo "Initialize with custom paths:"
+            echo "  polis init --posts-dir articles --comments-dir replies"
+            echo ""
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"

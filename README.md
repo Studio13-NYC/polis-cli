@@ -65,6 +65,41 @@ $ polis blessing grant 42
 
 ---
 
+## The Vision: AI as Your Social Layer
+
+Today, Polis is a CLI. Tomorrow, your AI handles everything:
+
+```
+You: "Summarize what people in my network are talking about this week"
+
+Claude: Based on 47 posts from 12 authors you follow:
+        - Alice and Bob are debating LLM reasoning capabilities (23 comments)
+        - Carol published a 3-part series on distributed systems
+        - New author recommendation: David (3 people you follow blessed his comments)
+
+You: "Show me everything Bob commented on yesterday"
+
+Claude: Bob left 4 comments yesterday:
+        • On Alice's "LLM Reasoning" post - disagreeing with her benchmark methodology
+        • On your "Polis Architecture" post - asking about signature verification
+        • On Carol's "Distributed Systems pt 2" - sharing a related paper
+        • On David's "First Post" - welcoming him to the network
+
+You: "Who's been most active in discussions about distributed systems?"
+
+Claude: This month, 8 authors discussed distributed systems:
+        1. Carol (12 posts, 34 blessed comments received)
+        2. Bob (3 posts, 18 comments given)
+        3. Alice (2 posts, sparked the most debate)
+        You might enjoy Carol's series - 4 people you follow blessed it.
+
+You: "Draft a reply to Bob's question on my post"
+```
+
+The structured data—signed markdown, blessed comments, following graphs—is designed for AI to orchestrate. Not to trap you in another algorithm, but to give you a natural language interface to your own network.
+
+---
+
 ## Try the interactive tutorial
 
 New to Polis? Learn by doing with our interactive tutorial:
@@ -131,9 +166,31 @@ You should see `polis: OK` and `polis-tutorial: OK`
 
 ## How it works
 
+### System Architecture
+
+Polis is a three-part system:
+
+```
+┌─────────────────┐      ┌───────────────────┐      ┌─────────────────┐
+│   Polis CLI     │─────▶│ Discovery Service │◀─────│  Static Host    │
+│   (this repo)   │      │    (Supabase)     │      │ (GitHub Pages,  │
+│                 │      │                   │      │  Vercel, etc.)  │
+└─────────────────┘      └───────────────────┘      └─────────────────┘
+        │                         │                         │
+   Signs content            Indexes comments           Serves your
+   Manages blessings        Routes blessing requests   signed content
+   Tracks following         Verifies signatures        to the world
+```
+
+- **Polis CLI** — Local tool that signs your content and manages your social graph
+- **Discovery Service** — Federated index that helps authors find comments on their posts
+- **Static Hosting** — Any HTTPS host serves your content; you control the files
+
+No single point of failure. Move hosts anytime. Run your own discovery service if you want.
+
 ### 1. You own your content
 
-Posts are markdown files with cryptographic signatures. Host them anywhere—GitHub Pages, Netlify, your own server. Move anytime. No lock-in. No export needed.
+Posts are markdown files with cryptographic signatures. Host them anywhere—GitHub Pages, Vercel, Netlify, your own server. Move anytime. No lock-in. No export needed.
 
 ### 2. The blessing model
 
@@ -195,8 +252,8 @@ See [USAGE.md](USAGE.md#json-mode) for complete JSON mode documentation.
 ## Documentation
 
 - **[USAGE.md](USAGE.md)** — Complete command reference
-- **[Architecture](../docs/polis-architecture.md)** — Technical specification
-- **[Manifesto](../docs/manifesto.md)** — Why we built this
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** — Development guidelines
+- **[SECURITY.md](SECURITY.md)** — Security policy
 
 ---
 
@@ -216,8 +273,6 @@ We're not fighting Twitter's network effects. We're serving the people platforms
 - **File-based** — Markdown + frontmatter, version controlled, portable
 - **AI-agnostic** — Structured data works with any AI. No lock-in
 
-[Read the full manifesto →](../docs/manifesto.md)
-
 ---
 
 ## Contributing
@@ -230,7 +285,7 @@ Questions or issues? [Open a GitHub issue](https://github.com/vdibart/polis-cli/
 
 ## License
 
-**AGPL-3.0** — See [LICENSE](../LICENSE)
+**AGPL-3.0** — See [LICENSE](LICENSE)
 
 ---
 

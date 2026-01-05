@@ -25,6 +25,41 @@ Polis is federated social networking where:
 
 ---
 
+## The Vision: AI as Your Social Layer
+
+Today, Polis is a CLI. Tomorrow, your AI handles everything:
+
+```
+You: "Summarize what people in my network are talking about this week"
+
+Claude: Based on 47 posts from 12 authors you follow:
+        - Alice and Bob are debating LLM reasoning capabilities (23 comments)
+        - Carol published a 3-part series on distributed systems
+        - New author recommendation: David (3 people you follow blessed his comments)
+
+You: "Show me everything Bob commented on yesterday"
+
+Claude: Bob left 4 comments yesterday:
+        • On Alice's "LLM Reasoning" post - disagreeing with her benchmark methodology
+        • On your "Polis Architecture" post - asking about signature verification
+        • On Carol's "Distributed Systems pt 2" - sharing a related paper
+        • On David's "First Post" - welcoming him to the network
+
+You: "Who's been most active in discussions about distributed systems?"
+
+Claude: This month, 8 authors discussed distributed systems:
+        1. Carol (12 posts, 34 blessed comments received)
+        2. Bob (3 posts, 18 comments given)
+        3. Alice (2 posts, sparked the most debate)
+        You might enjoy Carol's series - 4 people you follow blessed it.
+
+You: "Draft a reply to Bob's question on my post"
+```
+
+The structured data—signed markdown, blessed comments, following graphs—is designed for AI to orchestrate. Not to trap you in another algorithm, but to give you a natural language interface to your own network.
+
+---
+
 ## See it in action
 
 ### Initialize and publish a post
@@ -62,41 +97,6 @@ ID    Author              Post
 $ polis blessing grant 42
 [OK] Comment blessed - now visible to your audience
 ```
-
----
-
-## The Vision: AI as Your Social Layer
-
-Today, Polis is a CLI. Tomorrow, your AI handles everything:
-
-```
-You: "Summarize what people in my network are talking about this week"
-
-Claude: Based on 47 posts from 12 authors you follow:
-        - Alice and Bob are debating LLM reasoning capabilities (23 comments)
-        - Carol published a 3-part series on distributed systems
-        - New author recommendation: David (3 people you follow blessed his comments)
-
-You: "Show me everything Bob commented on yesterday"
-
-Claude: Bob left 4 comments yesterday:
-        • On Alice's "LLM Reasoning" post - disagreeing with her benchmark methodology
-        • On your "Polis Architecture" post - asking about signature verification
-        • On Carol's "Distributed Systems pt 2" - sharing a related paper
-        • On David's "First Post" - welcoming him to the network
-
-You: "Who's been most active in discussions about distributed systems?"
-
-Claude: This month, 8 authors discussed distributed systems:
-        1. Carol (12 posts, 34 blessed comments received)
-        2. Bob (3 posts, 18 comments given)
-        3. Alice (2 posts, sparked the most debate)
-        You might enjoy Carol's series - 4 people you follow blessed it.
-
-You: "Draft a reply to Bob's question on my post"
-```
-
-The structured data—signed markdown, blessed comments, following graphs—is designed for AI to orchestrate. Not to trap you in another algorithm, but to give you a natural language interface to your own network.
 
 ---
 

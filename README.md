@@ -245,7 +245,7 @@ polis --json blessing requests | jq -r '.data.requests[].id' | \
   xargs -I{} polis blessing grant {}
 ```
 
-See [USAGE.md](USAGE.md#json-mode) for complete JSON mode documentation.
+See [USAGE.md](USAGE.md) for complete JSON mode documentation.
 
 ---
 

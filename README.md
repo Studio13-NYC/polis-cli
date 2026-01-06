@@ -102,6 +102,8 @@ $ polis blessing grant 42
 
 ## Try the interactive tutorial
 
+![Polis interactive tutorial walkthrough](./assets/tutorial.gif)
+
 New to Polis? Learn by doing with our interactive tutorial:
 
 ```bash

@@ -69,7 +69,7 @@ Not fighting Twitter's network effects—serving the people platforms are losing
 - Anyone can respond to your posts (they publish on *their* domain)
 - You curate which comments get *amplified* to your audience
 - **Blessed**: High visibility (your audience + theirs)
-- **Unblessed**: Still exists, just not amplified by you
+- **Unblessed**: Still exists, just not amplified by the post's author
 - **Result**: Anti-spam without censorship. Quality curation without platform power.
 
 ---

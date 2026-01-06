@@ -23,6 +23,8 @@ Polis is federated social networking where:
 - **AI handles the hard parts** — Your AI controls the algorithm.  Publishing, discovery, summaries, trends.  Bring your own model.
 - **Standards-based** — Just HTTPS, DNS, and cryptography. No blockchain, no tokens, no lock-in
 
+Read the [full manifesto](MANIFESTO.md) for more on our vision.
+
 ---
 
 ## The Vision: AI as Your Social Layer
@@ -253,6 +255,7 @@ See [USAGE.md](USAGE.md) for complete JSON mode documentation.
 
 ## Documentation
 
+- **[MANIFESTO.md](MANIFESTO.md)** — Vision and philosophy
 - **[USAGE.md](USAGE.md)** — Complete command reference
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** — Development guidelines
 - **[SECURITY.md](SECURITY.md)** — Security policy

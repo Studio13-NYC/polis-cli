@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-01-06
+
+### Added
+- `polis blessing sync` - Pull auto-blessed comments from discovery service
+- Automatic blessing sync integrated into `polis blessing requests`
+- `sync_blessed_comments()` helper function for retrieving server-blessed comments
+- `is_comment_blessed()` helper function to check blessing status
+
+### Changed
+- Enhanced `polis beseech` to handle server auto-blessed responses
+- Updated `polis unfollow` to query server for unsynced auto-blessed comments
+- Improved blessing workflow to automatically track server-side auto-blessings
+
 ## [0.2.0] - 2026-01-05
 
 ### Added

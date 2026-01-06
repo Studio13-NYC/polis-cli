@@ -474,6 +474,30 @@ polis blessing beseech 42
 - Original request failed
 - You updated the comment and want to re-request
 
+#### `polis blessing sync`
+
+Synchronize auto-blessed comments from the discovery service to your local `blessed-comments.json`.
+
+```bash
+polis blessing sync
+```
+
+**What it does:**
+1. Fetches all blessed comments for your posts from discovery service
+2. Compares with local `metadata/blessed-comments.json`
+3. Adds any missing entries (e.g., comments auto-blessed while you were offline)
+
+**When to use:**
+- After being offline for a while
+- To ensure local file matches discovery service
+- Automatically called when running `polis blessing requests`
+
+**Example output:**
+```
+[i] Syncing blessed comments from discovery service...
+[✓] Synced 3 comment(s) to blessed-comments.json
+```
+
 ### `polis follow <author-url>`
 
 Follow an author to auto-bless their future comments on your posts.

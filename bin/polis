@@ -1167,6 +1167,75 @@ is_following() {
     [ "$count" -gt 0 ]
 }
 
+# Check if a comment URL is already in blessed-comments.json
+# Args: $1 = comment_url
+# Returns: 0 (true) if blessed, 1 (false) otherwise
+is_comment_blessed() {
+    local comment_url="$1"
+    local blessed_file="$BLESSED_COMMENTS"
+
+    if [ ! -f "$blessed_file" ]; then
+        return 1
+    fi
+
+    # Check if URL exists in any blessed array
+    local count=$(jq --arg url "$comment_url" \
+        '[.comments[].blessed[] | select(.url == $url)] | length' \
+        "$blessed_file" 2>/dev/null || echo "0")
+
+    [ "$count" -gt 0 ]
+}
+
+# Sync blessed comments from discovery service to local blessed-comments.json
+# Fetches all blessed comments for current user's posts and adds any missing entries
+# Returns: count of newly synced comments (echoed to stdout)
+sync_blessed_comments() {
+    local domain=$(extract_domain_from_url "$POLIS_BASE_URL")
+
+    if [ -z "$domain" ]; then
+        echo "0"
+        return
+    fi
+
+    # Fetch all blessed comments for our posts from discovery service
+    local response=$(curl -s \
+        --header "Authorization: Bearer $SUPABASE_ANON_KEY" \
+        "${POLIS_BLESSING_REQUESTS_ENDPOINT}?in_reply_to_domain=${domain}&blessing_status=blessed" 2>/dev/null)
+
+    # Check if response is valid JSON with requests
+    local request_count=$(echo "$response" | jq -r '.count // 0' 2>/dev/null)
+    if [ -z "$request_count" ] || [ "$request_count" = "0" ] || [ "$request_count" = "null" ]; then
+        echo "0"
+        return
+    fi
+
+    local synced_count=0
+
+    # Process each blessed comment
+    # Note: Using process substitution to avoid subshell variable scope issues
+    while IFS= read -r request; do
+        [ -z "$request" ] && continue
+
+        local comment_url=$(echo "$request" | jq -r '.comment_url')
+        local comment_version=$(echo "$request" | jq -r '.comment_version')
+        local in_reply_to=$(echo "$request" | jq -r '.in_reply_to')
+        local blessed_at=$(echo "$request" | jq -r '.blessed_at // empty')
+
+        # Use current timestamp if blessed_at is empty
+        if [ -z "$blessed_at" ]; then
+            blessed_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+        fi
+
+        # Check if already in blessed-comments.json
+        if ! is_comment_blessed "$comment_url"; then
+            update_blessed_comments_json "$comment_url" "$comment_version" "$in_reply_to" "$blessed_at"
+            synced_count=$((synced_count + 1))
+        fi
+    done < <(echo "$response" | jq -c '.requests[]' 2>/dev/null)
+
+    echo "$synced_count"
+}
+
 # Get comment ID by URL
 # Args: $1 = comment_url
 # Returns: comment id (echoed to stdout), or empty string if not found
@@ -1615,29 +1684,68 @@ EOF
     # Handle response based on HTTP status code
     case "$http_code" in
         201)
-            if [ "$JSON_MODE" = true ]; then
-                local result=$(jq -n \
-                    --arg url "$comment_url" \
-                    --arg version "$version" \
-                    --arg reply_to "$reply_url" \
-                    --arg msg "Beseech request recorded" \
-                    --arg status "pending" \
-                    '{
-                        comment_url: $url,
-                        comment_version: $version,
-                        in_reply_to: $reply_to,
-                        discovery_response: {
-                            success: true,
-                            message: $msg,
-                            status: $status
-                        }
-                    }')
-                json_success "beseech" "$result"
+            # Parse status from server response (blessed or pending)
+            local response_status=$(echo "$response" | jq -r '.status // "pending"')
+            local blessed_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+            if [ "$response_status" = "blessed" ]; then
+                # Auto-blessed! Update blessed-comments.json
+                update_blessed_comments_json "$comment_url" "$version" "$reply_url" "$blessed_at"
+
+                if [ "$JSON_MODE" = true ]; then
+                    local result=$(jq -n \
+                        --arg url "$comment_url" \
+                        --arg version "$version" \
+                        --arg reply_to "$reply_url" \
+                        --arg msg "Comment automatically blessed" \
+                        --arg status "blessed" \
+                        --argjson auto_blessed "true" \
+                        '{
+                            comment_url: $url,
+                            comment_version: $version,
+                            in_reply_to: $reply_to,
+                            auto_blessed: $auto_blessed,
+                            discovery_response: {
+                                success: true,
+                                message: $msg,
+                                status: $status
+                            }
+                        }')
+                    json_success "beseech" "$result"
+                else
+                    success "Comment automatically blessed!"
+                    echo ""
+                    info "The post author follows you, so your comment was auto-approved."
+                    info "Added to blessed-comments.json"
+                fi
             else
-                success "Blessing request sent successfully!"
-                echo ""
-                info "Your comment is now pending blessing from the post author."
-                info "Once blessed, it will appear in the public comment feed."
+                # Pending - existing behavior
+                if [ "$JSON_MODE" = true ]; then
+                    local result=$(jq -n \
+                        --arg url "$comment_url" \
+                        --arg version "$version" \
+                        --arg reply_to "$reply_url" \
+                        --arg msg "Beseech request recorded" \
+                        --arg status "pending" \
+                        --argjson auto_blessed "false" \
+                        '{
+                            comment_url: $url,
+                            comment_version: $version,
+                            in_reply_to: $reply_to,
+                            auto_blessed: $auto_blessed,
+                            discovery_response: {
+                                success: true,
+                                message: $msg,
+                                status: $status
+                            }
+                        }')
+                    json_success "beseech" "$result"
+                else
+                    success "Blessing request sent successfully!"
+                    echo ""
+                    info "Your comment is now pending blessing from the post author."
+                    info "Once blessed, it will appear in the public comment feed."
+                fi
             fi
             ;;
         403)
@@ -2739,6 +2847,14 @@ cmd_blessing_requests() {
         json_error "blessing-requests" "INVALID_STATE" "Polis not initialized. Run 'polis init' first."
     fi
 
+    # Sync blessed comments first (catches auto-blessed comments from server)
+    if [ -n "$POLIS_BASE_URL" ]; then
+        local synced=$(sync_blessed_comments)
+        if [ "$synced" -gt 0 ]; then
+            info_human "Synced $synced auto-blessed comment(s) to blessed-comments.json"
+        fi
+    fi
+
     # Extract author and domain
     local author=$(extract_author_from_wellknown)
     local domain=$(extract_domain_from_url "$POLIS_BASE_URL")
@@ -2985,6 +3101,37 @@ cmd_blessing_deny() {
     esac
 }
 
+# Command: polis blessing sync
+# Synchronize blessed comments from discovery service to local blessed-comments.json
+cmd_blessing_sync() {
+    # Check initialization
+    if [ ! -f "$WELL_KNOWN_DIR/polis" ]; then
+        json_error "blessing-sync" "INVALID_STATE" "Polis not initialized. Run 'polis init' first."
+    fi
+
+    # Check POLIS_BASE_URL is set
+    if [ -z "$POLIS_BASE_URL" ]; then
+        json_error "blessing-sync" "INVALID_STATE" "POLIS_BASE_URL not set. Export it first: export POLIS_BASE_URL=https://yourdomain.com"
+    fi
+
+    info_human "Syncing blessed comments from discovery service..."
+
+    local synced=$(sync_blessed_comments)
+
+    if [ "$JSON_MODE" = true ]; then
+        local result=$(jq -n \
+            --argjson synced_count "$synced" \
+            '{synced_count: $synced_count}')
+        json_success "blessing-sync" "$result"
+    else
+        if [ "$synced" -gt 0 ]; then
+            success "Synced $synced comment(s) to blessed-comments.json"
+        else
+            info "Already in sync - no new comments to add"
+        fi
+    fi
+}
+
 # Command: polis follow <author-url>
 cmd_follow() {
     local author_url="$1"
@@ -3163,9 +3310,29 @@ cmd_unfollow() {
     # Extract blessed_by (current user's email)
     local blessed_by=$(extract_author_from_wellknown)
 
-    # Get blessed comment URLs from this author (from blessed-comments.json)
+    # Get blessed comment URLs from this author
+    # Check both local blessed-comments.json AND server (for unsynced auto-blessed)
     info_human "Finding blessed comments from $author_url..."
-    local blessed_urls=$(get_blessed_comment_urls_by_author "$author_url")
+
+    # 1. Get local blessed URLs
+    local local_blessed_urls=$(get_blessed_comment_urls_by_author "$author_url")
+    local local_urls_list=$(echo "$local_blessed_urls" | jq -r '.[]' 2>/dev/null || echo "")
+
+    # 2. Also fetch from server (catches unsynced auto-blessed comments)
+    local author_email=""
+    local server_urls_list=""
+    author_email=$(fetch_author_email_from_wellknown "$author_url" 2>/dev/null) || true
+
+    if [ -n "$author_email" ]; then
+        local server_blessed=$(fetch_comments_by_author "$author_email" "blessed" 2>/dev/null) || true
+        if [ -n "$server_blessed" ] && [ "$server_blessed" != "[]" ] && [ "$server_blessed" != "null" ]; then
+            server_urls_list=$(echo "$server_blessed" | jq -r '.[].comment_url' 2>/dev/null || echo "")
+        fi
+    fi
+
+    # 3. Combine and deduplicate URLs
+    local all_urls_list=$(echo -e "$local_urls_list\n$server_urls_list" | sort -u | grep -v '^$')
+    local blessed_urls=$(echo "$all_urls_list" | jq -R . | jq -s .)
     local url_count=$(echo "$blessed_urls" | jq 'length')
 
     if [ "$url_count" -eq 0 ]; then
@@ -3310,13 +3477,17 @@ cmd_blessing() {
         beseech)
             cmd_blessing_beseech "$@"
             ;;
+        sync)
+            cmd_blessing_sync "$@"
+            ;;
         *)
             error "Unknown blessing subcommand: $subcommand
 
 Usage: polis blessing requests
        polis blessing grant <request-id>
        polis blessing deny <request-id>
-       polis blessing beseech <request-id>"
+       polis blessing beseech <request-id>
+       polis blessing sync"
             ;;
     esac
 }
@@ -3659,6 +3830,7 @@ main() {
             echo "  polis blessing grant <id>       Grant a blessing request"
             echo "  polis blessing deny <id>        Deny a blessing request"
             echo "  polis blessing beseech <id>     Re-request blessing by ID"
+            echo "  polis blessing sync             Sync auto-blessed comments from discovery service"
             echo ""
             echo "Commands related to following or unfollowing an author:"
             echo "  polis follow <author-url>       Follow an author (auto-bless their comments)"

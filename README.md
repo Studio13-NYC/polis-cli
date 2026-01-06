@@ -1,6 +1,6 @@
 # Polis CLI
 
-[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](../LICENSE)
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](https://github.com/vdibart/polis-cli?tab=AGPL-3.0-1-ov-file)
 [![Platform: Linux | macOS](https://img.shields.io/badge/Platform-Linux%20%7C%20macOS-lightgrey.svg)]()
 
 **Decentralized social networking for the AI era.**
@@ -285,7 +285,7 @@ Questions or issues? [Open a GitHub issue](https://github.com/vdibart/polis-cli/
 
 ## License
 
-**AGPL-3.0** — See [LICENSE](LICENSE)
+**AGPL-3.0** — See [LICENSE](https://github.com/vdibart/polis-cli?tab=AGPL-3.0-1-ov-file)
 
 ---
 

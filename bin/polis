@@ -27,7 +27,7 @@ set -e
 #   4. Hardcoded defaults
 
 # Fixed constants (never configurable - required for discovery)
-VERSION="0.2.0"
+VERSION="0.4.0"
 WELL_KNOWN_DIR=".well-known"
 WELL_KNOWN_FILE="polis"
 
@@ -725,13 +725,59 @@ extract_author_from_wellknown() {
 }
 
 # Extract domain from POLIS_BASE_URL
+# Uses bash parameter expansion for portability (works on both Linux and macOS)
 extract_domain_from_url() {
     local url="$1"
-    # Remove protocol (http:// or https://)
-    local domain=$(echo "$url" | sed 's|https\?://||')
+    # Remove protocol (http:// or https://) using parameter expansion
+    # ${url#*://} removes everything up to and including ://
+    local domain="${url#*://}"
     # Remove path and trailing slash
-    domain=$(echo "$domain" | sed 's|/.*||')
+    # ${domain%%/*} removes everything from the first / onwards
+    domain="${domain%%/*}"
     echo "$domain"
+}
+
+# Check if a URL is a comment (vs a post)
+# Comments are typically in /comments/ path
+is_comment_url() {
+    local url="$1"
+    [[ "$url" =~ /comments/ ]]
+}
+
+# Fetch root_post for a comment URL from discovery service
+# Returns: root_post URL or empty if not found/error
+fetch_root_post_for_comment() {
+    local comment_url="$1"
+
+    if [ -z "$SUPABASE_ANON_KEY" ]; then
+        # Can't query without API key
+        return 1
+    fi
+
+    local response=$(curl -s --max-time 10 \
+        --header "Authorization: Bearer $SUPABASE_ANON_KEY" \
+        "${POLIS_COMMENTS_ENDPOINT}?url=${comment_url}" 2>/dev/null)
+
+    if [ -z "$response" ]; then
+        return 1
+    fi
+
+    # Try to extract root_post from response
+    local root_post=$(echo "$response" | jq -r '.root_post // empty' 2>/dev/null)
+
+    if [ -n "$root_post" ] && [ "$root_post" != "null" ]; then
+        echo "$root_post"
+        return 0
+    fi
+
+    # Fallback: try in_reply_to (for older comments before nested threads)
+    local in_reply_to=$(echo "$response" | jq -r '.in_reply_to // empty' 2>/dev/null)
+    if [ -n "$in_reply_to" ] && [ "$in_reply_to" != "null" ]; then
+        echo "$in_reply_to"
+        return 0
+    fi
+
+    return 1
 }
 
 # Fetch comment content and extract excerpt (first ~100 chars)
@@ -1545,6 +1591,12 @@ _internal_beseech_from_file() {
     # Parse in-reply-to section
     local reply_url=$(echo "$in_reply_to" | grep 'url:' | sed 's/.*url: *//')
     local reply_version=$(echo "$in_reply_to" | grep 'version:' | sed 's/.*version: *//')
+    local root_post=$(echo "$in_reply_to" | grep 'root-post:' | sed 's/.*root-post: *//')
+
+    # Fallback: if no root-post in frontmatter, use reply_url (for backward compatibility)
+    if [ -z "$root_post" ]; then
+        root_post="$reply_url"
+    fi
 
     # Get author info from .well-known/polis
     local author=""
@@ -1588,11 +1640,11 @@ _internal_beseech_from_file() {
     # IMPORTANT: Use printf (not heredoc) to avoid trailing newline
     local canonical_payload
     if [ -n "$reply_version" ]; then
-        canonical_payload=$(printf '{"comment_url":"%s","comment_version":"%s","in_reply_to":"%s","in_reply_to_version":"%s","author":"%s","timestamp":"%s"}' \
-            "$comment_url" "$version" "$reply_url" "$reply_version" "$author" "$published")
+        canonical_payload=$(printf '{"comment_url":"%s","comment_version":"%s","in_reply_to":"%s","in_reply_to_version":"%s","root_post":"%s","author":"%s","timestamp":"%s"}' \
+            "$comment_url" "$version" "$reply_url" "$reply_version" "$root_post" "$author" "$published")
     else
-        canonical_payload=$(printf '{"comment_url":"%s","comment_version":"%s","in_reply_to":"%s","author":"%s","timestamp":"%s"}' \
-            "$comment_url" "$version" "$reply_url" "$author" "$published")
+        canonical_payload=$(printf '{"comment_url":"%s","comment_version":"%s","in_reply_to":"%s","root_post":"%s","author":"%s","timestamp":"%s"}' \
+            "$comment_url" "$version" "$reply_url" "$root_post" "$author" "$published")
     fi
 
     # Sign the canonical JSON
@@ -1638,6 +1690,7 @@ _internal_beseech_from_file() {
   "comment_version": "$version",
   "in_reply_to": "$reply_url",
   "in_reply_to_version": "$reply_version",
+  "root_post": "$root_post",
   "author": "$author",
   "timestamp": "$published",
   "signature": "$signature_escaped"
@@ -1650,6 +1703,7 @@ EOF
   "comment_url": "$comment_url",
   "comment_version": "$version",
   "in_reply_to": "$reply_url",
+  "root_post": "$root_post",
   "author": "$author",
   "timestamp": "$published",
   "signature": "$signature_escaped"
@@ -2044,6 +2098,26 @@ cmd_comment() {
     fi
     info_human "In reply to: $reply_to_url"
 
+    # Determine root_post (always the original post, even if replying to a comment)
+    local root_post
+    if is_comment_url "$reply_to_url"; then
+        # Replying to a comment - need to fetch the root post
+        info_human "Detected reply to a comment. Fetching root post..."
+        root_post=$(fetch_root_post_for_comment "$reply_to_url")
+        if [ -z "$root_post" ]; then
+            # Fallback: can't determine root_post, this might fail at beseech time
+            # but allow user to continue for now
+            warn_human "Could not determine root post from discovery service."
+            warn_human "Using immediate parent URL as root_post (may cause issues)."
+            root_post="$reply_to_url"
+        else
+            info_human "Root post: $root_post"
+        fi
+    else
+        # Replying directly to a post - root_post is the same as reply_to_url
+        root_post="$reply_to_url"
+    fi
+
     # Extract or use explicit title
     local title
     if [ -n "$explicit_title" ]; then
@@ -2086,6 +2160,7 @@ published: $timestamp
 generator: polis-cli/$VERSION
 in-reply-to:
   url: $reply_to_url
+  root-post: $root_post
 current-version: sha256:$content_hash
 version-history:
   - sha256:$content_hash ($timestamp)
@@ -2109,6 +2184,7 @@ published: $timestamp
 generator: polis-cli/$VERSION
 in-reply-to:
   url: $reply_to_url
+  root-post: $root_post
 current-version: sha256:$content_hash
 version-history:
   - sha256:$content_hash ($timestamp)

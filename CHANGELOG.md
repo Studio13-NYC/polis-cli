@@ -7,13 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-01-06
+
+### Added
+- **Nested comment threads** - Comments can now reply to other comments, not just posts
+- **Thread-specific auto-blessing** - Authors who have been blessed once on a post are auto-blessed for future comments on that same post
+- `root-post` frontmatter field - Tracks the original post for nested comments
+
+### Changed
+- **BREAKING**: `in_reply_to` now means "immediate parent" (can be post OR comment URL)
+- **BREAKING**: New required field `root_post` in beseech payload (always the original post URL)
+- Blessing requests query now uses `root_post` domain to properly support nested threads
+- Updated documentation for nested threads and auto-blessing
+
+### Fixed
+- macOS compatibility in URL domain extraction (replaced sed with bash parameter expansion)
+
 ## [0.3.0] - 2026-01-06
 
 ### Added
 - `polis blessing sync` - Pull auto-blessed comments from discovery service
 - Automatic blessing sync integrated into `polis blessing requests`
-- `sync_blessed_comments()` helper function for retrieving server-blessed comments
-- `is_comment_blessed()` helper function to check blessing status
 
 ### Changed
 - Enhanced `polis beseech` to handle server auto-blessed responses

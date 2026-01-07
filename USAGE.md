@@ -256,23 +256,36 @@ echo "Content" | polis comment - https://bob.com/post.md --title "My Reply"
 echo "# Test" | polis --json publish - --filename test.md | jq
 ```
 
-### `polis comment <post-url> [file]`
+### `polis comment <url> [file]`
 
-Create a comment in reply to a post (local or remote).
+Create a comment in reply to a post or another comment (nested threads).
 
 ```bash
-# Interactive mode (prompts for content)
+# Reply to a post
 polis comment https://alice.example.com/posts/2026/01/hello.md
+
+# Reply to another comment (nested thread)
+polis comment https://bob.example.com/comments/20260105/reply.md my-reply.md
 
 # From file
 polis comment https://bob.example.com/posts/intro.md my-reply.md
 ```
 
 **What it does:**
-1. Creates comment file in `comments/YYYY/MM/`
-2. Adds `in_reply_to` frontmatter field
+1. Creates comment file in `comments/YYYYMMDD/`
+2. Adds `in_reply_to` frontmatter (with `url` and `root-post` fields)
 3. Signs and publishes comment
 4. Appends entry to `public.jsonl` index
+5. Automatically requests blessing from discovery service
+
+**Nested threads:** When replying to a comment (instead of a post), the CLI automatically detects this and fetches the original post URL (`root-post`) from the discovery service.
+
+**Frontmatter structure:**
+```yaml
+in-reply-to:
+  url: https://bob.com/comments/reply.md  # Immediate parent (post or comment)
+  root-post: https://alice.com/posts/intro.md  # Always the original post
+```
 
 ### `polis preview <url>`
 
@@ -530,6 +543,31 @@ polis unfollow https://alice.example.com
 2. Removes all blessed comments from this author (nuclear option)
 
 **Warning:** This is a destructive action - all previously blessed comments from this author will be hidden.
+
+### Auto-Blessing
+
+Comments can be automatically blessed (no manual approval required) in two scenarios:
+
+**1. Global Trust (Following)**
+When you follow an author, ALL their future comments on ANY of your posts are auto-blessed.
+
+```bash
+# Follow Alice - all her comments on your posts are now auto-blessed
+polis follow https://alice.example.com
+```
+
+**2. Thread-Specific Trust**
+When you manually bless a comment from an author, their future comments *on the same post* are auto-blessed. This allows trust to be scoped to specific conversations.
+
+```
+Example:
+1. Bob comments on your "Intro to Polis" post
+2. You bless Bob's comment (polis blessing grant 123)
+3. Bob comments again on "Intro to Polis" → auto-blessed!
+4. Bob comments on your "Advanced Polis" post → NOT auto-blessed (different post)
+```
+
+**Precedence:** Global trust (following) takes priority. If you follow someone, thread-specific trust is irrelevant - they're trusted everywhere.
 
 ## File Frontmatter
 

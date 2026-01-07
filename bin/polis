@@ -27,7 +27,7 @@ set -e
 #   4. Hardcoded defaults
 
 # Fixed constants (never configurable - required for discovery)
-VERSION="0.9.0"
+VERSION="0.10.0"
 WELL_KNOWN_DIR=".well-known"
 WELL_KNOWN_FILE="polis"
 
@@ -2977,116 +2977,6 @@ cmd_get_version() {
     rm -f "$output"
 }
 
-# Command: polis reset
-cmd_reset() {
-    info "Archiving current Polis state..."
-
-    # Create archive directory with date and sequential number
-    local date_stamp=$(date +%Y%m%d)
-    local archive_base="archive/$date_stamp"
-    local n=1
-    local archive_dir="$archive_base-$n"
-
-    # Find next available sequential number
-    while [ -d "$archive_dir" ]; do
-        n=$((n + 1))
-        archive_dir="$archive_base-$n"
-    done
-
-    mkdir -p "$archive_dir"
-    success "Created archive directory: $archive_dir"
-
-    # Check if git repo
-    local use_git=false
-    if git rev-parse --git-dir > /dev/null 2>&1; then
-        use_git=true
-        info "Git repository detected - using git mv where possible"
-    fi
-
-    # Function to move item (uses git mv if tracked, otherwise regular mv)
-    move_item() {
-        local item="$1"
-        local dest="$2"
-
-        if [ ! -e "$item" ]; then
-            return 1
-        fi
-
-        if [ "$use_git" = true ]; then
-            # Check if item is tracked by git
-            if git ls-files --error-unmatch "$item" > /dev/null 2>&1; then
-                # Try git mv (fall back to regular mv if it fails)
-                if git mv "$item" "$dest" 2>/dev/null; then
-                    return 0
-                fi
-            fi
-        fi
-
-        # Fall back to regular mv
-        mv "$item" "$dest"
-        return 0
-    }
-
-    # Archive items
-    local archived_something=false
-
-    if [ -d "posts" ]; then
-        move_item "posts" "$archive_dir/posts"
-        success "Archived posts/"
-        archived_something=true
-    fi
-
-    if [ -d "comments" ]; then
-        move_item "comments" "$archive_dir/comments"
-        success "Archived comments/"
-        archived_something=true
-    fi
-
-    if [ -d ".well-known" ]; then
-        move_item ".well-known" "$archive_dir/.well-known"
-        success "Archived .well-known/"
-        archived_something=true
-    fi
-
-    if [ -d ".polis" ]; then
-        move_item ".polis" "$archive_dir/.polis"
-        success "Archived .polis/ (including keys)"
-        archived_something=true
-    fi
-
-    if [ -f "$PUBLIC_INDEX" ]; then
-        if [ "$use_git" = true ] && git ls-files --error-unmatch "$PUBLIC_INDEX" > /dev/null 2>&1; then
-            git mv "$PUBLIC_INDEX" "$archive_dir/archive.json" 2>/dev/null || mv "$PUBLIC_INDEX" "$archive_dir/archive.json"
-        else
-            mv "$PUBLIC_INDEX" "$archive_dir/archive.json"
-        fi
-        success "Archived public.json â†’ archive.json"
-        archived_something=true
-    fi
-
-    if [ -f "$BLESSED_COMMENTS" ]; then
-        move_item "$BLESSED_COMMENTS" "$archive_dir/blessed-comments.json"
-        success "Archived blessed-comments.json"
-        archived_something=true
-    fi
-
-    if [ "$archived_something" = false ]; then
-        info "Nothing to archive - directory is clean"
-        rmdir "$archive_dir" 2>/dev/null
-        rmdir "archive" 2>/dev/null
-        return
-    fi
-
-    # Stage all changes in git (handles both tracked moves and new archive directory)
-    if [ "$use_git" = true ]; then
-        git add -A
-        success "Staged all changes in git"
-    fi
-
-    success "Reset complete! All files archived to $archive_dir"
-    info "Run 'polis init' to start fresh"
-}
-
 # ============================================================================
 # BLESSING COMMANDS
 # ============================================================================
@@ -4766,9 +4656,6 @@ main() {
         get-version)
             cmd_get_version "$@"
             ;;
-        reset)
-            cmd_reset "$@"
-            ;;
         blessing)
             cmd_blessing "$@"
             ;;
@@ -4804,14 +4691,12 @@ main() {
             echo "Global Flags:"
             echo "  --json                          Output results in JSON format (for scripting).  Supported by most but not all commands below."
             echo ""
-            echo "Commands related to publishing files or comments:"
+            echo "Commands related to publishing or viewing files or comments:"
             echo "  polis publish <file>            Publish a new post"
             echo "  polis publish -                 Publish from stdin (use --filename, --title for options)"
             echo "  polis comment <file> [url]      Create a comment on a post"
             echo "  polis comment - <url>           Comment from stdin (use --filename, --title for options)"
             echo "  polis republish <file>          Update an already-published file"
-            echo ""
-            echo "Commands related to previewing content:"
             echo "  polis preview <url>             Preview a post or comment at a URL with signature verification"
             echo ""
             echo "Commands related to requesting, reviewing, or granting blessings on comments:"
@@ -4825,10 +4710,8 @@ main() {
             echo "  polis follow <author-url>       Follow an author (auto-bless their comments)"
             echo "  polis unfollow <author-url>     Unfollow an author"
             echo ""
-            echo "Commands related to notifications and status:"
+            echo "Commands related to site administration:"
             echo "  polis notifications             Show pending actions (blessing requests, domain migrations)"
-            echo ""
-            echo "Commands related to domain migration:"
             echo "  polis migrate <new-domain>      Migrate all content to a new domain (re-signs files, updates DB)"
             echo "  polis migrations apply          Apply discovered domain migrations to local files"
             echo ""
@@ -4839,7 +4722,6 @@ main() {
             echo "    --comments-dir <path>         Custom comments directory (default: comments)"
             echo "    --versions-dir <path>         Custom versions directory (default: .versions)"
             echo "  polis rebuild                   Rebuild public.jsonl index from files"
-            echo "  polis reset                     Archive current state and start fresh"
             echo "  polis index [--json]            View index (JSONL or JSON format)"
             echo "  polis version                   Print CLI version"
             echo "  polis get-version <file> <hash> Reconstruct a specific version of a file"

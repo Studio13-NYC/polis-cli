@@ -401,22 +401,23 @@ polis get-version posts/20260106/my-post.md sha256:abc123...
 polis get-version posts/20260106/my-post.md sha256:abc123... > old-version.md
 ```
 
-### `polis reset`
+### Starting Fresh
 
-Remove all generated files and start fresh (keeps source content).
+To completely reset your Polis installation and start over, move or remove the following files/directories, then run `polis init`:
 
+- `.polis/` - Configuration and signing keys
+- `.well-known/` - Public metadata
+- `posts/` - Published posts
+- `comments/` - Published comments
+- `metadata/` - Index and blessing data
+
+**Example:**
 ```bash
-polis reset
+rm -rf .polis .well-known posts comments metadata
+polis init
 ```
 
-**Removes:**
-- All canonical files in dated directories (`posts/YYYYMMDD/`, `comments/YYYYMMDD/`)
-- All `.versions` files
-- `public.jsonl` and `blessed-comments.json`
-
-**Preserves:**
-- `.polis/keys/` (your signing keys)
-- Original content files
+**Note:** This will generate new signing keys. If you want to keep your identity, back up `.polis/keys/` before removing.
 
 ### `polis migrate <new-domain>`
 

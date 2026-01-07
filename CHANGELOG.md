@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-01-07
+
+### Removed
+- `polis reset` command - Removed to simplify the CLI. See USAGE.md "Starting Fresh" section for manual reset instructions if needed.
+
 ## [0.9.0] - 2026-01-07
 
 ### Added

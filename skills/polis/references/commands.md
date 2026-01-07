@@ -152,6 +152,28 @@ Migrate all content to a new domain (re-signs files, updates database).
 
 Auto-detects current domain from published files. Updates all URLs, re-signs content, and updates discovery service database (preserves blessing status).
 
+### `polis notifications`
+Show pending actions: blessing requests, domain migrations.
+
+```bash
+./cli/bin/polis --json notifications
+```
+
+Returns pending blessings for your posts and domain migrations for authors you interact with.
+
+### `polis migrations apply`
+Interactively apply discovered domain migrations to local files.
+
+```bash
+./cli/bin/polis migrations apply
+```
+
+For each migration:
+- Verifies public key continuity (same owner controls new domain)
+- Shows affected local files
+- Prompts for confirmation
+- Updates following.json, blessed-comments.json, and comment frontmatter
+
 ### `polis get-version <file> <hash>`
 Reconstruct a specific version from history.
 

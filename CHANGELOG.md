@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-01-07
+
+### Added
+- **Domain migration tracking** - Migrations are now recorded in the discovery service for discoverability
+  - Commenters can discover when authors they interact with have migrated
+  - Enables updating local references when followed authors change domains
+- **Notifications command** (`polis notifications`) - View pending actions requiring attention
+  - Pending blessing requests for your posts
+  - Domain migrations for authors you follow or interact with
+- **Migrations apply command** (`polis migrations apply`) - Update local references to migrated domains
+  - Interactive confirmation before modifying files
+  - **Key continuity verification** - Ensures new domain is controlled by same owner
+  - Updates following.json, blessed-comments.json, and comment frontmatter
+  - Warns and skips if public key mismatch detected (hijacking protection)
+
+### Changed
+- **BREAKING**: Replaced `/comments-migrate` endpoint with RESTful `/migrations` endpoint
+  - POST /migrations: Record a migration
+  - GET /migrations: Query migration history for specified domains
+- Updated Claude Code skill with notifications workflow
+
 ## [0.8.0] - 2026-01-07
 
 ### Security

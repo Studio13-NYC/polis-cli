@@ -27,7 +27,7 @@ set -e
 #   4. Hardcoded defaults
 
 # Fixed constants (never configurable - required for discovery)
-VERSION="0.8.0"
+VERSION="0.9.0"
 WELL_KNOWN_DIR=".well-known"
 WELL_KNOWN_FILE="polis"
 
@@ -778,6 +778,181 @@ fetch_root_post_for_comment() {
     fi
 
     return 1
+}
+
+# ============================================================================
+# DOMAIN MIGRATION HELPERS
+# ============================================================================
+
+# Collect all domains the user "cares about" for migration tracking
+# Returns: newline-separated list of unique domains
+collect_relevant_domains() {
+    local domains=()
+
+    # 1. Domains from following.json
+    if [ -f "$FOLLOWING_INDEX" ]; then
+        while IFS= read -r url; do
+            local domain=$(extract_domain_from_url "$url")
+            if [ -n "$domain" ]; then
+                domains+=("$domain")
+            fi
+        done < <(jq -r '.following[].url // empty' "$FOLLOWING_INDEX" 2>/dev/null)
+    fi
+
+    # 2. Domains from blessed-comments.json (post URLs that have blessed comments)
+    if [ -f "$BLESSED_COMMENTS" ]; then
+        while IFS= read -r url; do
+            local domain=$(extract_domain_from_url "$url")
+            if [ -n "$domain" ]; then
+                domains+=("$domain")
+            fi
+        done < <(jq -r '.posts[].url // empty' "$BLESSED_COMMENTS" 2>/dev/null)
+
+        # Also check comment author domains
+        while IFS= read -r url; do
+            local domain=$(extract_domain_from_url "$url")
+            if [ -n "$domain" ]; then
+                domains+=("$domain")
+            fi
+        done < <(jq -r '.posts[].blessed[].url // empty' "$BLESSED_COMMENTS" 2>/dev/null)
+    fi
+
+    # 3. Domains from in-reply-to in local comments
+    if [ -d "$COMMENTS_DIR" ]; then
+        for file in $(find "$COMMENTS_DIR" -name "*.md" -type f 2>/dev/null); do
+            local in_reply_to=$(extract_frontmatter_field "$file" "in-reply-to")
+            # Handle nested YAML - extract URL from the block
+            if [[ "$in_reply_to" == *"url:"* ]]; then
+                in_reply_to=$(echo "$in_reply_to" | grep -oE 'https://[^[:space:]]+' | head -1)
+            fi
+            if [ -n "$in_reply_to" ]; then
+                local domain=$(extract_domain_from_url "$in_reply_to")
+                if [ -n "$domain" ]; then
+                    domains+=("$domain")
+                fi
+            fi
+        done
+    fi
+
+    # Deduplicate and output
+    printf '%s\n' "${domains[@]}" | sort -u
+}
+
+# Query discovery service for migrations affecting specified domains
+# Args: $1 = comma-separated domains
+# Returns: JSON response with migrations array
+query_domain_migrations() {
+    local domains="$1"
+
+    if [ -z "$POLIS_ENDPOINT_BASE" ] || [ -z "$DISCOVERY_SERVICE_KEY" ]; then
+        echo '{"migrations":[],"count":0,"checked_domains":0}'
+        return 1
+    fi
+
+    local endpoint="${POLIS_ENDPOINT_BASE}/migrations"
+    local response=$(curl -s --max-time 30 \
+        --header "Authorization: Bearer $DISCOVERY_SERVICE_KEY" \
+        "${endpoint}?domains=${domains}" 2>/dev/null)
+
+    if [ -z "$response" ]; then
+        echo '{"migrations":[],"count":0,"checked_domains":0}'
+        return 1
+    fi
+
+    echo "$response"
+}
+
+# Fetch public key from a domain's .well-known/polis
+# Args: $1 = domain (e.g., "example.com")
+# Returns: public key string or empty on failure
+fetch_domain_public_key() {
+    local domain="$1"
+    local wellknown_url="https://${domain}/.well-known/polis"
+
+    local response=$(curl -s --max-time 10 "$wellknown_url" 2>/dev/null)
+    if [ -z "$response" ]; then
+        return 1
+    fi
+
+    local public_key=$(echo "$response" | jq -r '.public_key // empty' 2>/dev/null)
+    if [ -n "$public_key" ] && [ "$public_key" != "null" ]; then
+        echo "$public_key"
+        return 0
+    fi
+
+    return 1
+}
+
+# Update domain references in following.json
+# Args: $1 = old_domain, $2 = new_domain
+update_domain_in_following() {
+    local old_domain="$1"
+    local new_domain="$2"
+
+    if [ ! -f "$FOLLOWING_INDEX" ]; then
+        return 0
+    fi
+
+    local temp_file="${FOLLOWING_INDEX}.tmp"
+    jq --arg old "https://$old_domain" \
+       --arg new "https://$new_domain" \
+       '.following |= map(if .url | startswith($old) then .url = ($new + (.url | ltrimstr($old))) else . end)' \
+       "$FOLLOWING_INDEX" > "$temp_file" 2>/dev/null
+
+    if [ $? -eq 0 ]; then
+        mv "$temp_file" "$FOLLOWING_INDEX"
+        return 0
+    else
+        rm -f "$temp_file"
+        return 1
+    fi
+}
+
+# Update domain references in blessed-comments.json
+# Args: $1 = old_domain, $2 = new_domain
+update_domain_in_blessed_comments() {
+    local old_domain="$1"
+    local new_domain="$2"
+
+    if [ ! -f "$BLESSED_COMMENTS" ]; then
+        return 0
+    fi
+
+    local temp_file="${BLESSED_COMMENTS}.tmp"
+    # Update both post URLs and blessed comment URLs
+    jq --arg old "https://$old_domain" \
+       --arg new "https://$new_domain" \
+       '.posts |= map(
+           (if .url | startswith($old) then .url = ($new + (.url | ltrimstr($old))) else . end) |
+           .blessed |= map(if .url | startswith($old) then .url = ($new + (.url | ltrimstr($old))) else . end)
+       )' \
+       "$BLESSED_COMMENTS" > "$temp_file" 2>/dev/null
+
+    if [ $? -eq 0 ]; then
+        mv "$temp_file" "$BLESSED_COMMENTS"
+        return 0
+    else
+        rm -f "$temp_file"
+        return 1
+    fi
+}
+
+# Update domain references in a comment markdown file (frontmatter only)
+# Args: $1 = file path, $2 = old_domain, $3 = new_domain
+update_domain_in_comment_file() {
+    local file="$1"
+    local old_domain="$2"
+    local new_domain="$3"
+
+    if [ ! -f "$file" ]; then
+        return 1
+    fi
+
+    # Use sed to replace domain in frontmatter URLs
+    # Note: This updates in-reply-to URLs, not the canonical_url (that's the commenter's domain)
+    sed -i.bak "s|https://$old_domain/|https://$new_domain/|g" "$file"
+    rm -f "${file}.bak"
+    return 0
 }
 
 # Fetch comment content and extract excerpt (first ~100 chars)
@@ -4198,7 +4373,7 @@ cmd_migrate() {
             '{old_domain: $old, new_domain: $new, signature: $sig}')
 
         # Call edge function
-        local migrate_endpoint="${POLIS_ENDPOINT_BASE}/comments-migrate"
+        local migrate_endpoint="${POLIS_ENDPOINT_BASE}/migrations"
         local response=$(curl -s -w "\n%{http_code}" \
             --location --request POST "$migrate_endpoint" \
             --header "Authorization: Bearer $DISCOVERY_SERVICE_KEY" \
@@ -4259,6 +4434,284 @@ cmd_migrate() {
         info "1. Deploy to new domain"
         info "2. Set up redirect from old domain (recommended)"
         info "3. Update POLIS_BASE_URL environment variable"
+    fi
+}
+
+# ============================================================================
+# NOTIFICATIONS COMMAND
+# ============================================================================
+
+cmd_notifications() {
+    # Check initialization
+    if [ ! -f "$WELL_KNOWN_DIR/polis" ]; then
+        json_error "notifications" "INVALID_STATE" "Polis not initialized. Run 'polis init' first."
+    fi
+
+    local has_notifications=false
+    local pending_blessings="[]"
+    local pending_count=0
+    local migrations="[]"
+    local migration_count=0
+
+    # --- Pending Blessings ---
+    if [ -n "$POLIS_ENDPOINT_BASE" ] && [ -n "$DISCOVERY_SERVICE_KEY" ]; then
+        local domain=$(extract_domain_from_url "$POLIS_BASE_URL")
+        if [ -n "$domain" ]; then
+            local blessing_response=$(curl -s --max-time 30 \
+                --header "Authorization: Bearer $DISCOVERY_SERVICE_KEY" \
+                "${POLIS_BLESSING_REQUESTS_ENDPOINT}?in_reply_to_domain=${domain}" 2>/dev/null)
+
+            if [ -n "$blessing_response" ]; then
+                pending_count=$(echo "$blessing_response" | jq -r '.count // 0' 2>/dev/null)
+                if [ "$pending_count" -gt 0 ]; then
+                    has_notifications=true
+                    pending_blessings=$(echo "$blessing_response" | jq -c '.requests // []' 2>/dev/null)
+                fi
+            fi
+        fi
+    fi
+
+    # --- Domain Migrations ---
+    local relevant_domains=$(collect_relevant_domains | paste -sd ',' -)
+
+    if [ -n "$relevant_domains" ] && [ -n "$POLIS_ENDPOINT_BASE" ]; then
+        local migration_response=$(query_domain_migrations "$relevant_domains")
+        migration_count=$(echo "$migration_response" | jq -r '.count // 0' 2>/dev/null)
+
+        if [ "$migration_count" -gt 0 ]; then
+            has_notifications=true
+            migrations=$(echo "$migration_response" | jq -c '.migrations // []' 2>/dev/null)
+        fi
+    fi
+
+    # --- Output ---
+    if [ "$JSON_MODE" = true ]; then
+        local result=$(jq -n \
+            --argjson blessings "$pending_blessings" \
+            --argjson migrations "$migrations" \
+            '{
+                pending_blessings: $blessings,
+                domain_migrations: $migrations
+            }')
+        json_success "notifications" "$result"
+    else
+        if [ "$has_notifications" = false ]; then
+            info "No new notifications"
+            return
+        fi
+
+        echo ""
+
+        # Display pending blessings
+        if [ "$pending_count" -gt 0 ]; then
+            info "=== Pending Blessing Requests ($pending_count) ==="
+            echo "$pending_blessings" | jq -r '.[] | "  #\(.id): \(.author) on \(.in_reply_to | split("/")[-1])"' 2>/dev/null
+            echo ""
+            info "Run 'polis blessing requests' for details, or 'polis blessing grant <id>' to approve."
+            echo ""
+        fi
+
+        # Display migrations
+        if [ "$migration_count" -gt 0 ]; then
+            info "=== Domain Migrations ($migration_count) ==="
+            echo "$migrations" | jq -r '.[] | "  \(.old_domain) -> \(.new_domain) (\(.migrated_at[:10]))"' 2>/dev/null
+            echo ""
+            info "Run 'polis migrations apply' to update local references."
+        fi
+    fi
+}
+
+# ============================================================================
+# MIGRATIONS APPLY COMMAND
+# ============================================================================
+
+cmd_migrations_apply() {
+    local specific_migration="$1"  # Optional: old_domain to apply
+
+    # Check initialization
+    if [ ! -f "$WELL_KNOWN_DIR/polis" ]; then
+        json_error "migrations-apply" "INVALID_STATE" "Polis not initialized. Run 'polis init' first."
+    fi
+
+    # Collect relevant domains and query migrations
+    local relevant_domains=$(collect_relevant_domains | paste -sd ',' -)
+
+    if [ -z "$relevant_domains" ]; then
+        if [ "$JSON_MODE" = true ]; then
+            json_success "migrations-apply" '{"migrations_applied":0,"files_updated":[],"message":"No relevant domains found in local files."}'
+        else
+            info "No relevant domains found in local files."
+        fi
+        return
+    fi
+
+    local migration_response=$(query_domain_migrations "$relevant_domains")
+    local migration_count=$(echo "$migration_response" | jq -r '.count // 0' 2>/dev/null)
+
+    if [ "$migration_count" -eq 0 ]; then
+        if [ "$JSON_MODE" = true ]; then
+            json_success "migrations-apply" '{"migrations_applied":0,"files_updated":[],"message":"No pending migrations found."}'
+        else
+            info "No pending migrations found."
+        fi
+        return
+    fi
+
+    local applied_count=0
+    local all_updated_files=()
+
+    # Process each migration
+    while IFS= read -r migration; do
+        [ -z "$migration" ] && continue
+
+        local old_domain=$(echo "$migration" | jq -r '.old_domain')
+        local new_domain=$(echo "$migration" | jq -r '.new_domain')
+        local migrated_at=$(echo "$migration" | jq -r '.migrated_at')
+        local stored_public_key=$(echo "$migration" | jq -r '.public_key')
+
+        # Skip if specific migration requested and doesn't match
+        if [ -n "$specific_migration" ] && [ "$old_domain" != "$specific_migration" ]; then
+            continue
+        fi
+
+        if [ "$JSON_MODE" = false ]; then
+            echo ""
+            info "Migration: $old_domain -> $new_domain (${migrated_at:0:10})"
+        fi
+
+        # === KEY CONTINUITY CHECK ===
+        # Verify the new domain has the same public key as stored in migration
+        local current_public_key=$(fetch_domain_public_key "$new_domain")
+
+        if [ -z "$current_public_key" ]; then
+            if [ "$JSON_MODE" = false ]; then
+                warn "  Cannot verify migration - new domain unreachable: $new_domain"
+                read -p "  Apply anyway? (y/N) " confirm
+                if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
+                    info "  Skipped."
+                    continue
+                fi
+            else
+                # In JSON mode, skip unverifiable migrations
+                continue
+            fi
+        elif [ "$current_public_key" != "$stored_public_key" ]; then
+            if [ "$JSON_MODE" = false ]; then
+                warn "  WARNING: Public key mismatch!"
+                warn "  The new domain may be controlled by a different entity."
+                warn "  Stored key:  ${stored_public_key:0:40}..."
+                warn "  Current key: ${current_public_key:0:40}..."
+                info "  Skipping for safety."
+            fi
+            continue
+        else
+            if [ "$JSON_MODE" = false ]; then
+                success_human "  Key verification passed"
+            fi
+        fi
+
+        # Find affected files
+        local affected_files=()
+
+        # Check following.json
+        if [ -f "$FOLLOWING_INDEX" ]; then
+            if jq -e ".following[] | select(.url | contains(\"$old_domain\"))" "$FOLLOWING_INDEX" > /dev/null 2>&1; then
+                affected_files+=("$FOLLOWING_INDEX")
+            fi
+        fi
+
+        # Check blessed-comments.json
+        if [ -f "$BLESSED_COMMENTS" ]; then
+            if jq -e ".posts[] | select(.url | contains(\"$old_domain\"))" "$BLESSED_COMMENTS" > /dev/null 2>&1; then
+                affected_files+=("$BLESSED_COMMENTS")
+            elif jq -e ".posts[].blessed[] | select(.url | contains(\"$old_domain\"))" "$BLESSED_COMMENTS" > /dev/null 2>&1; then
+                affected_files+=("$BLESSED_COMMENTS")
+            fi
+        fi
+
+        # Check comment frontmatter
+        if [ -d "$COMMENTS_DIR" ]; then
+            for file in $(find "$COMMENTS_DIR" -name "*.md" -type f 2>/dev/null); do
+                if grep -q "https://$old_domain/" "$file" 2>/dev/null; then
+                    affected_files+=("$file")
+                fi
+            done
+        fi
+
+        if [ ${#affected_files[@]} -eq 0 ]; then
+            if [ "$JSON_MODE" = false ]; then
+                info "  No local references to $old_domain found."
+            fi
+            continue
+        fi
+
+        # Display affected files (human mode)
+        if [ "$JSON_MODE" = false ]; then
+            info "  Affected files (${#affected_files[@]}):"
+            for f in "${affected_files[@]}"; do
+                echo "    - $f"
+            done
+            echo ""
+
+            # Confirm
+            read -p "  Apply this migration? (y/N) " confirm
+            if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
+                info "  Skipped."
+                continue
+            fi
+        fi
+
+        # Apply updates
+        local updated_count=0
+
+        for file in "${affected_files[@]}"; do
+            if [ "$file" = "$FOLLOWING_INDEX" ]; then
+                update_domain_in_following "$old_domain" "$new_domain"
+                ((updated_count++))
+                all_updated_files+=("$file")
+            elif [ "$file" = "$BLESSED_COMMENTS" ]; then
+                update_domain_in_blessed_comments "$old_domain" "$new_domain"
+                ((updated_count++))
+                all_updated_files+=("$file")
+            elif [[ "$file" == *.md ]]; then
+                update_domain_in_comment_file "$file" "$old_domain" "$new_domain"
+                ((updated_count++))
+                all_updated_files+=("$file")
+            fi
+        done
+
+        # Stage in git
+        if git rev-parse --git-dir > /dev/null 2>&1; then
+            for f in "${affected_files[@]}"; do
+                git add "$f" 2>/dev/null
+            done
+        fi
+
+        ((applied_count++))
+
+        if [ "$JSON_MODE" = false ]; then
+            success "  Applied: $updated_count file(s) updated."
+        fi
+
+    done < <(echo "$migration_response" | jq -c '.migrations[]' 2>/dev/null)
+
+    # Final output
+    if [ "$JSON_MODE" = true ]; then
+        # Deduplicate files
+        local unique_files=$(printf '%s\n' "${all_updated_files[@]}" | sort -u | jq -R . | jq -s .)
+        local result=$(jq -n \
+            --argjson applied "$applied_count" \
+            --argjson files "$unique_files" \
+            '{migrations_applied: $applied, files_updated: $files}')
+        json_success "migrations-apply" "$result"
+    else
+        echo ""
+        if [ "$applied_count" -gt 0 ]; then
+            success "Applied $applied_count migration(s)."
+            info "Changes have been staged in git. Review and commit when ready."
+        else
+            info "No migrations applied."
+        fi
     fi
 }
 
@@ -4328,6 +4781,20 @@ main() {
         migrate)
             cmd_migrate "$@"
             ;;
+        notifications)
+            cmd_notifications "$@"
+            ;;
+        migrations)
+            case "$1" in
+                apply)
+                    shift
+                    cmd_migrations_apply "$@"
+                    ;;
+                *)
+                    error "Unknown migrations subcommand: $1. Use: polis migrations apply"
+                    ;;
+            esac
+            ;;
         *)
             echo "Polis - Decentralized Social Network CLI"
             echo ""
@@ -4358,8 +4825,12 @@ main() {
             echo "  polis follow <author-url>       Follow an author (auto-bless their comments)"
             echo "  polis unfollow <author-url>     Unfollow an author"
             echo ""
+            echo "Commands related to notifications and status:"
+            echo "  polis notifications             Show pending actions (blessing requests, domain migrations)"
+            echo ""
             echo "Commands related to domain migration:"
             echo "  polis migrate <new-domain>      Migrate all content to a new domain (re-signs files, updates DB)"
+            echo "  polis migrations apply          Apply discovered domain migrations to local files"
             echo ""
             echo "Commands related to local configuration management:"
             echo "  polis init [options]            Initialize Polis directory structure"

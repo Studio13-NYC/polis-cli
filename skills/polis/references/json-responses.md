@@ -241,6 +241,48 @@ Returns grouped JSON with posts and comments:
 }
 ```
 
+### `polis notifications`
+```json
+{
+  "status": "success",
+  "command": "notifications",
+  "data": {
+    "pending_blessings": [
+      {
+        "id": 42,
+        "comment_url": "https://alice.com/comments/reply.md",
+        "author": "alice@example.com",
+        "in_reply_to": "https://you.com/posts/my-post.md",
+        "timestamp": "2026-01-07T12:00:00Z"
+      }
+    ],
+    "domain_migrations": [
+      {
+        "old_domain": "old-domain.com",
+        "new_domain": "new-domain.com",
+        "migrated_at": "2026-01-15T10:30:00Z",
+        "public_key": "ssh-ed25519 AAAA..."
+      }
+    ]
+  }
+}
+```
+
+### `polis migrations apply`
+```json
+{
+  "status": "success",
+  "command": "migrations-apply",
+  "data": {
+    "migrations_applied": 1,
+    "files_updated": [
+      "metadata/following.json",
+      "comments/20260106/reply.md"
+    ]
+  }
+}
+```
+
 ---
 
 ## Error Codes

@@ -285,6 +285,57 @@ The following environment variables should be configured:
 
 ---
 
+## Feature 6: Notifications
+
+**Trigger phrases**: "notifications", "pending actions", "what needs attention", "any updates"
+
+### Workflow
+
+1. **Fetch all notifications**:
+   ```bash
+   ./cli/bin/polis --json notifications
+   ```
+
+2. **Present categorized notifications**:
+   ```
+   === Notifications ===
+
+   Blessing Requests (N pending):
+   - Request #42 from alice@example.com on "Your Post Title"
+   - Request #43 from bob@example.com on "Another Post"
+
+   Domain Migrations (M discovered):
+   - old-domain.com -> new-domain.com (2025-01-15)
+   ```
+
+3. **Offer actions**:
+   - For blessing requests: "Review these?" -> switch to blessing workflow
+   - For migrations: "Apply these updates?" -> run migrations apply
+
+### Migration Application
+
+When user wants to apply migrations:
+
+1. **Run interactive apply**:
+   ```bash
+   ./cli/bin/polis migrations apply
+   ```
+
+2. **For each migration, CLI shows**:
+   - Old domain -> New domain
+   - Key verification status (ensures same owner)
+   - Affected local files
+   - Prompts for confirmation
+
+3. **Report results**:
+   - Files updated
+   - Git changes staged
+
+### Security Note
+The CLI verifies public key continuity before applying migrations. If the new domain's public key doesn't match the stored key from when migration was recorded, the migration is skipped with a warning about possible hijacking.
+
+---
+
 ## Error Handling
 
 When commands fail, parse the JSON error response:

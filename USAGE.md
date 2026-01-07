@@ -341,18 +341,31 @@ polis --json preview https://alice.com/posts/hello.md
 }
 ```
 
-### `polis rebuild`
+### `polis rebuild [--diff|--full]`
 
-Rebuild the `public.jsonl` index from all published files.
+Rebuild the `public.jsonl` index from all published files. Optionally sync `blessed-comments.json` from the discovery service.
 
 ```bash
+# Rebuild content index only (default)
 polis rebuild
+
+# Also sync missing blessed comments (incremental)
+polis rebuild --diff
+
+# Rebuild blessed-comments.json entirely from database
+polis rebuild --full
 ```
+
+**Flags (mutually exclusive):**
+- `--diff` - Adds any blessed comments from the discovery service that are missing locally
+- `--full` - Truncates and rebuilds `blessed-comments.json` entirely from the discovery service
 
 **Use when:**
 - Index is corrupted or out of sync
 - You manually edited published files
 - You restored from backup
+- `--diff`: Sync blessings after being offline
+- `--full`: Reset blessing state to match server exactly
 
 ### `polis index [--json]`
 

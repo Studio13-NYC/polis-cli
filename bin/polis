@@ -27,7 +27,7 @@ set -e
 #   4. Hardcoded defaults
 
 # Fixed constants (never configurable - required for discovery)
-VERSION="0.10.0"
+VERSION="0.11.0"
 WELL_KNOWN_DIR=".well-known"
 WELL_KNOWN_FILE="polis"
 
@@ -1098,11 +1098,6 @@ update_blessed_comments_json() {
 
     # Atomic replace
     mv "$temp_file" "$blessed_file"
-
-    # Stage in git if repo exists
-    if git rev-parse --git-dir > /dev/null 2>&1; then
-        git add "$blessed_file" 2>/dev/null
-    fi
 }
 
 # Remove comment from blessed-comments.json file
@@ -1139,11 +1134,6 @@ remove_from_blessed_comments_json() {
 
     # Atomic replace
     mv "$temp_file" "$blessed_file"
-
-    # Stage in git if repo exists
-    if git rev-parse --git-dir > /dev/null 2>&1; then
-        git add "$blessed_file" 2>/dev/null
-    fi
 }
 
 # Fetch author email from author's .well-known/polis
@@ -1330,11 +1320,6 @@ add_to_following_json() {
 
     # Atomic replace
     mv "$temp_file" "$following_file"
-
-    # Stage in git if repo exists
-    if git rev-parse --git-dir > /dev/null 2>&1; then
-        git add "$following_file" 2>/dev/null
-    fi
 }
 
 # Remove an author URL from following.json
@@ -1362,11 +1347,6 @@ remove_from_following_json() {
 
     # Atomic replace
     mv "$temp_file" "$following_file"
-
-    # Stage in git if repo exists
-    if git rev-parse --git-dir > /dev/null 2>&1; then
-        git add "$following_file" 2>/dev/null
-    fi
 }
 
 # Check if currently following an author
@@ -1410,6 +1390,55 @@ is_comment_blessed() {
 # Sync blessed comments from discovery service to local blessed-comments.json
 # Fetches all blessed comments for current user's posts and adds any missing entries
 # Returns: count of newly synced comments (echoed to stdout)
+# Rebuild blessed-comments.json entirely from discovery service
+# This is a "full" rebuild - truncates local file and rebuilds from scratch
+rebuild_blessed_comments_full() {
+    local domain=$(extract_domain_from_url "$POLIS_BASE_URL")
+
+    if [ -z "$domain" ]; then
+        error "Could not determine domain from POLIS_BASE_URL"
+    fi
+
+    info "Rebuilding blessed-comments.json from discovery service..."
+
+    # Fetch all blessed comments for our posts
+    local response=$(curl -s \
+        --header "Authorization: Bearer $DISCOVERY_SERVICE_KEY" \
+        "${POLIS_BLESSING_REQUESTS_ENDPOINT}?in_reply_to_domain=${domain}&blessing_status=blessed" 2>/dev/null)
+
+    # Initialize fresh blessed-comments.json
+    echo "{\"version\":\"$VERSION\",\"comments\":[]}" > "$BLESSED_COMMENTS"
+
+    # Check if response is valid JSON with requests
+    local request_count=$(echo "$response" | jq -r '.count // 0' 2>/dev/null)
+    if [ -z "$request_count" ] || [ "$request_count" = "0" ] || [ "$request_count" = "null" ]; then
+        success "Rebuilt blessed-comments.json (0 blessed comments)"
+        return
+    fi
+
+    local added_count=0
+
+    # Process each blessed comment
+    while IFS= read -r request; do
+        [ -z "$request" ] && continue
+
+        local comment_url=$(echo "$request" | jq -r '.comment_url')
+        local comment_version=$(echo "$request" | jq -r '.comment_version')
+        local in_reply_to=$(echo "$request" | jq -r '.in_reply_to')
+        local blessed_at=$(echo "$request" | jq -r '.blessed_at // empty')
+
+        # Use current timestamp if blessed_at is empty
+        if [ -z "$blessed_at" ]; then
+            blessed_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+        fi
+
+        update_blessed_comments_json "$comment_url" "$comment_version" "$in_reply_to" "$blessed_at"
+        added_count=$((added_count + 1))
+    done < <(echo "$response" | jq -c '.requests[]' 2>/dev/null)
+
+    success "Rebuilt blessed-comments.json ($added_count blessed comments)"
+}
+
 sync_blessed_comments() {
     local domain=$(extract_domain_from_url "$POLIS_BASE_URL")
 
@@ -2405,15 +2434,6 @@ signature: $signature
     _internal_beseech_from_file "$canonical_path"
     local beseech_status="pending"
 
-    # Stage files in git (if git repo exists)
-    if git rev-parse --git-dir > /dev/null 2>&1; then
-        git add "$canonical_path" "$versions_file" "$PUBLIC_INDEX"
-        success_human "Staged files in git"
-        info_human "Files ready to commit. Run 'git commit' when ready."
-    else
-        info_human "Not a git repository - files created but not staged"
-    fi
-
     # Output results
     if [ "$JSON_MODE" = true ]; then
         local result=$(jq -n \
@@ -2840,19 +2860,6 @@ signature: $signature
         _internal_beseech_from_file "$input_file"
     fi
 
-    # Stage files in git (if git repo exists)
-    if git rev-parse --git-dir > /dev/null 2>&1; then
-        git add "$input_file" "$PUBLIC_INDEX"
-        # Also add .versions file if it exists
-        if [ -f "$versions_file" ]; then
-            git add "$versions_file"
-        fi
-        success_human "Staged files in git"
-        info_human "Files ready to commit. Run 'git commit' when ready."
-    else
-        info_human "Not a git repository - files created but not staged"
-    fi
-
     # Output results
     if [ "$JSON_MODE" = true ]; then
         local result=$(jq -n \
@@ -2886,12 +2893,41 @@ cmd_rebuild() {
         error "public.jsonl not found. Run 'polis init' first."
     fi
 
+    local sync_mode=""
+
+    # Parse flags
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --diff)
+                if [ -n "$sync_mode" ]; then
+                    error "Cannot use --diff and --full together"
+                fi
+                sync_mode="diff"
+                shift
+                ;;
+            --full)
+                if [ -n "$sync_mode" ]; then
+                    error "Cannot use --diff and --full together"
+                fi
+                sync_mode="full"
+                shift
+                ;;
+            *)
+                error "Unknown option: $1"
+                ;;
+        esac
+    done
+
+    # Rebuild content index
     rebuild_index
 
-    # Stage in git if repo exists
-    if git rev-parse --git-dir > /dev/null 2>&1; then
-        git add "$PUBLIC_INDEX"
-        success "Staged public.jsonl in git"
+    # Sync blessings if requested
+    if [ "$sync_mode" = "diff" ]; then
+        info "Syncing missing blessed comments..."
+        local synced=$(sync_blessed_comments)
+        success "Synced $synced new blessed comments"
+    elif [ "$sync_mode" = "full" ]; then
+        rebuild_blessed_comments_full
     fi
 
     success "Rebuild complete!"
@@ -3877,15 +3913,6 @@ signature: $signature
     # Append to public.jsonl index
     append_to_index "$canonical_path" "post"
 
-    # Stage files in git (if git repo exists)
-    if git rev-parse --git-dir > /dev/null 2>&1; then
-        git add "$canonical_path" "$versions_file" "$PUBLIC_INDEX"
-        success_human "Staged files in git"
-        info_human "Files ready to commit. Run 'git commit' when ready."
-    else
-        info_human "Not a git repository - files created but not staged"
-    fi
-
     # Output results
     if [ "$JSON_MODE" = true ]; then
         # Build canonical URL
@@ -4284,12 +4311,6 @@ cmd_migrate() {
         info_human "Discovery service not configured - skipping database migration"
     fi
 
-    # Stage files in git (if git repo exists)
-    if git rev-parse --git-dir > /dev/null 2>&1; then
-        git add -A
-        success_human "Staged all changes in git"
-    fi
-
     # Output results
     if [ "$JSON_MODE" = true ]; then
         local result=$(jq -n \
@@ -4570,13 +4591,6 @@ cmd_migrations_apply() {
             fi
         done
 
-        # Stage in git
-        if git rev-parse --git-dir > /dev/null 2>&1; then
-            for f in "${affected_files[@]}"; do
-                git add "$f" 2>/dev/null
-            done
-        fi
-
         ((applied_count++))
 
         if [ "$JSON_MODE" = false ]; then
@@ -4598,7 +4612,6 @@ cmd_migrations_apply() {
         echo ""
         if [ "$applied_count" -gt 0 ]; then
             success "Applied $applied_count migration(s)."
-            info "Changes have been staged in git. Review and commit when ready."
         else
             info "No migrations applied."
         fi
@@ -4721,7 +4734,7 @@ main() {
             echo "    --posts-dir <path>            Custom posts directory (default: posts)"
             echo "    --comments-dir <path>         Custom comments directory (default: comments)"
             echo "    --versions-dir <path>         Custom versions directory (default: .versions)"
-            echo "  polis rebuild                   Rebuild public.jsonl index from files"
+            echo "  polis rebuild [--diff|--full]   Rebuild indexes (--diff/--full sync blessings)"
             echo "  polis index [--json]            View index (JSONL or JSON format)"
             echo "  polis version                   Print CLI version"
             echo "  polis get-version <file> <hash> Reconstruct a specific version of a file"

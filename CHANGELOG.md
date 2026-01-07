@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-01-07
+
+### Added
+- `polis rebuild --diff` - Sync missing blessed comments from discovery service (incremental)
+- `polis rebuild --full` - Rebuild blessed-comments.json entirely from discovery service
+
+### Changed
+- Removed automatic `git add` staging from all commands (users manage git manually)
+
 ## [0.10.0] - 2026-01-07
 
 ### Removed

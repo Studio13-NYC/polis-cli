@@ -136,13 +136,6 @@ Print CLI version.
 ./cli/bin/polis version
 ```
 
-### `polis reset`
-Archive current state and start fresh.
-
-```bash
-./cli/bin/polis --json reset
-```
-
 ### `polis migrate <new-domain>`
 Migrate all content to a new domain (re-signs files, updates database).
 

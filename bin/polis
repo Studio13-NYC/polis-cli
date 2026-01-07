@@ -27,7 +27,7 @@ set -e
 #   4. Hardcoded defaults
 
 # Fixed constants (never configurable - required for discovery)
-VERSION="0.7.0"
+VERSION="0.8.0"
 WELL_KNOWN_DIR=".well-known"
 WELL_KNOWN_FILE="polis"
 
@@ -2999,9 +2999,6 @@ cmd_blessing_grant() {
         json_error "blessing-grant" "INVALID_STATE" "Polis not initialized. Run 'polis init' first."
     fi
 
-    # Extract blessed_by (author email)
-    local blessed_by=$(extract_author_from_wellknown)
-
     # Fetch and display request details in human mode
     if [ "$JSON_MODE" = false ]; then
         info "Fetching request details..."
@@ -3015,11 +3012,27 @@ cmd_blessing_grant() {
         display_request_details "$comment_id" "$request_json"
     fi
 
-    # Prepare POST payload
+    # Create signed payload for authentication
+    # The signature proves the requester controls the post author's domain
+    local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    local canonical_payload=$(printf '{"action":"grant","comment_id":%d,"timestamp":"%s"}' \
+        "$comment_id" "$timestamp")
+
+    # Sign the payload
+    local temp_file=$(mktemp)
+    echo -n "$canonical_payload" > "$temp_file"
+    local keyfile="$KEYS_DIR/id_ed25519"
+    ssh-keygen -Y sign -f "$keyfile" -n file "$temp_file" > /dev/null 2>&1
+    local signature=$(cat "$temp_file.sig")
+    rm -f "$temp_file" "$temp_file.sig"
+
+    # Prepare POST payload with signature
     local payload=$(jq -n \
         --argjson id "$comment_id" \
-        --arg by "$blessed_by" \
-        '{comment_id: $id, blessed_by: $by}')
+        --arg action "grant" \
+        --arg ts "$timestamp" \
+        --arg sig "$signature" \
+        '{comment_id: $id, action: $action, timestamp: $ts, signature: $sig}')
 
     # Call bless endpoint
     local response=$(curl -s -w "\n%{http_code}" \
@@ -3045,6 +3058,9 @@ cmd_blessing_grant() {
             # Update blessed-comments.json
             update_blessed_comments_json "$comment_url" "$comment_version" "$in_reply_to" "$blessed_at"
 
+            # Extract blessed_by from server response (server determines this from verified domain)
+            local blessed_by=$(echo "$body" | jq -r '.request.blessed_by // empty')
+
             if [ "$JSON_MODE" = true ]; then
                 local result=$(jq -n \
                     --argjson id "$comment_id" \
@@ -3065,7 +3081,7 @@ cmd_blessing_grant() {
             fi
             ;;
         403)
-            json_error "blessing-grant" "PERMISSION_ERROR" "Authorization failed: You can only bless comments on your own posts. Response: $body"
+            json_error "blessing-grant" "PERMISSION_ERROR" "Signature verification failed: You can only bless comments on your own posts. Response: $body"
             ;;
         404)
             json_error "blessing-grant" "INVALID_INPUT" "Request #$comment_id not found. Response: $body"
@@ -3098,9 +3114,6 @@ cmd_blessing_deny() {
         json_error "blessing-deny" "INVALID_STATE" "Polis not initialized. Run 'polis init' first."
     fi
 
-    # Extract blessed_by (author email)
-    local blessed_by=$(extract_author_from_wellknown)
-
     # Fetch and display request details in human mode
     if [ "$JSON_MODE" = false ]; then
         info "Fetching request details..."
@@ -3114,11 +3127,27 @@ cmd_blessing_deny() {
         display_request_details "$comment_id" "$request_json"
     fi
 
-    # Prepare POST payload
+    # Create signed payload for authentication
+    # The signature proves the requester controls the post author's domain
+    local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    local canonical_payload=$(printf '{"action":"deny","comment_id":%d,"timestamp":"%s"}' \
+        "$comment_id" "$timestamp")
+
+    # Sign the payload
+    local temp_file=$(mktemp)
+    echo -n "$canonical_payload" > "$temp_file"
+    local keyfile="$KEYS_DIR/id_ed25519"
+    ssh-keygen -Y sign -f "$keyfile" -n file "$temp_file" > /dev/null 2>&1
+    local signature=$(cat "$temp_file.sig")
+    rm -f "$temp_file" "$temp_file.sig"
+
+    # Prepare POST payload with signature
     local payload=$(jq -n \
         --argjson id "$comment_id" \
-        --arg by "$blessed_by" \
-        '{comment_id: $id, blessed_by: $by}')
+        --arg action "deny" \
+        --arg ts "$timestamp" \
+        --arg sig "$signature" \
+        '{comment_id: $id, action: $action, timestamp: $ts, signature: $sig}')
 
     # Call deny endpoint
     local response=$(curl -s -w "\n%{http_code}" \
@@ -3143,12 +3172,15 @@ cmd_blessing_deny() {
             # Remove from blessed-comments.json if it was previously blessed
             remove_from_blessed_comments_json "$comment_url" "$in_reply_to"
 
+            # Extract denied_by from server response (server determines this from verified domain)
+            local denied_by=$(echo "$body" | jq -r '.request.blessed_by // empty')
+
             if [ "$JSON_MODE" = true ]; then
                 local result=$(jq -n \
                     --argjson id "$comment_id" \
                     --arg url "$comment_url" \
                     --arg denied_at "$denied_at" \
-                    --arg denied_by "$blessed_by" \
+                    --arg denied_by "$denied_by" \
                     '{
                         comment_id: $id,
                         comment_url: $url,
@@ -3163,7 +3195,7 @@ cmd_blessing_deny() {
             fi
             ;;
         403)
-            json_error "blessing-deny" "PERMISSION_ERROR" "Authorization failed: You can only deny comments on your own posts. Response: $body"
+            json_error "blessing-deny" "PERMISSION_ERROR" "Signature verification failed: You can only deny comments on your own posts. Response: $body"
             ;;
         404)
             json_error "blessing-deny" "INVALID_INPUT" "Request #$comment_id not found. Response: $body"

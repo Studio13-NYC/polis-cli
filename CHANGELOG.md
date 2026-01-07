@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-01-07
+
+### Security
+- **BREAKING**: Grant/deny blessing endpoints now require Ed25519 signature verification
+  - Previous implementation used self-reported email for authorization (spoofable)
+  - Now uses same cryptographic verification pattern as beseech endpoint
+  - CLI signs `{action, comment_id, timestamp}` payload with author's private key
+  - Server verifies signature using public key from post author's `.well-known/polis`
+
+### Changed
+- `polis blessing grant` now signs requests with Ed25519
+- `polis blessing deny` now signs requests with Ed25519
+
 ## [0.7.0] - 2026-01-07
 
 ### Added

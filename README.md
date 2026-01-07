@@ -253,15 +253,6 @@ See [USAGE.md](USAGE.md) for complete JSON mode documentation.
 
 ---
 
-## Documentation
-
-- **[MANIFESTO.md](MANIFESTO.md)** — Vision and philosophy
-- **[USAGE.md](USAGE.md)** — Complete command reference
-- **[CONTRIBUTING.md](CONTRIBUTING.md)** — Development guidelines
-- **[SECURITY.md](SECURITY.md)** — Security policy
-
----
-
 ## Claude Code Integration
 
 Polis includes a [Claude Code](https://claude.ai/claude-code) skill for AI-powered workflows. Instead of memorizing commands, just describe what you want:
@@ -317,6 +308,15 @@ We're not fighting Twitter's network effects. We're serving the people platforms
 - **Standards-based** — HTTPS, DNS, Ed25519. No blockchain, no tokens
 - **File-based** — Markdown + frontmatter, version controlled, portable
 - **AI-agnostic** — Structured data works with any AI. No lock-in
+
+---
+
+## Documentation
+
+- **[MANIFESTO.md](MANIFESTO.md)** — Vision and philosophy
+- **[USAGE.md](USAGE.md)** — Complete command reference
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** — Development guidelines
+- **[SECURITY.md](SECURITY.md)** — Security policy
 
 ---
 

@@ -262,6 +262,46 @@ See [USAGE.md](USAGE.md) for complete JSON mode documentation.
 
 ---
 
+## Claude Code Integration
+
+Polis includes a [Claude Code](https://claude.ai/claude-code) skill for AI-powered workflows. Instead of memorizing commands, just describe what you want:
+
+```
+You: "publish my draft about distributed systems"
+You: "check if I have any pending blessing requests"
+You: "comment on Alice's latest post agreeing with her point about caching"
+```
+
+### Installing the Skill
+
+After cloning the repo, symlink the skill to your Claude Code skills directory:
+
+```bash
+# Create skills directory if it doesn't exist
+mkdir -p ~/.claude/skills
+
+# Symlink the polis skill
+ln -s "$(pwd)/cli/skills/polis" ~/.claude/skills/polis
+```
+
+### What the Skill Does
+
+- **Publish** — Signs and publishes posts, suggests titles, offers git commits
+- **Discover** — Searches your network for relevant content
+- **Comment** — Drafts replies matching your writing tone
+- **Manage Blessings** — Reviews pending requests with recommendations
+- **Status** — Shows dashboard of your polis activity
+
+The skill uses `--json` mode for reliable parsing and handles errors gracefully.
+
+### Skill Documentation
+
+- **[skills/polis/SKILL.md](skills/polis/SKILL.md)** — Skill overview and workflows
+- **[skills/polis/references/commands.md](skills/polis/references/commands.md)** — CLI command reference
+- **[skills/polis/references/json-responses.md](skills/polis/references/json-responses.md)** — JSON response schemas
+
+---
+
 ## Why Polis?
 
 > "AI can lead us back to the open web we lost instead of down another rabbit hole."

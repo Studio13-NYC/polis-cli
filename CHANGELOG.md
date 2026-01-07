@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-01-07
+
+### Added
+- **Claude Code skill** - AI-powered workflows for publishing, discovering, and managing your polis site
+- `skills/polis/` directory - Claude Code skill definition with command references and JSON schemas
+- Skill documentation in README with installation instructions
+- `.github/` templates - CODEOWNERS, issue templates, and pull request template for community contributions
+
+### Changed
+- README now includes Claude Code integration section with installation and usage examples
+
 ## [0.4.0] - 2026-01-06
 
 ### Added

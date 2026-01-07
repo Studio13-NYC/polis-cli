@@ -41,7 +41,7 @@ All commands should use the `--json` flag for machine-readable output:
 The following environment variables should be configured:
 - `POLIS_BASE_URL` - Your polis site URL (e.g., https://yourdomain.com)
 - `POLIS_ENDPOINT_BASE` - Discovery service URL
-- `SUPABASE_ANON_KEY` - API authentication key
+- `DISCOVERY_SERVICE_KEY` - API authentication key
 
 ---
 

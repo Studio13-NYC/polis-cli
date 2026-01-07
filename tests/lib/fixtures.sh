@@ -108,7 +108,7 @@ create_test_env() {
     cat > "$filename" << 'EOF'
 # Test environment configuration
 POLIS_BASE_URL=https://test.example.com
-SUPABASE_ANON_KEY=test-anon-key-for-testing
+DISCOVERY_SERVICE_KEY=test-api-key-for-testing
 EOF
     echo "$filename"
 }

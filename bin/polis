@@ -27,7 +27,7 @@ set -e
 #   4. Hardcoded defaults
 
 # Fixed constants (never configurable - required for discovery)
-VERSION="0.6.0"
+VERSION="0.7.0"
 WELL_KNOWN_DIR=".well-known"
 WELL_KNOWN_FILE="polis"
 
@@ -93,7 +93,7 @@ apply_defaults() {
     # Developer config defaults
     : "${POLIS_BASE_URL:=}"
     : "${POLIS_ENDPOINT_BASE:=https://ltfpezriiaqvjupxbttw.supabase.co/functions/v1}"
-    : "${SUPABASE_ANON_KEY:=}"
+    : "${DISCOVERY_SERVICE_KEY:=}"
 
     # Derived endpoints (always computed from base)
     POLIS_BESEECH_ENDPOINT="${POLIS_ENDPOINT_BASE}/comments-blessing-beseech"
@@ -749,13 +749,13 @@ is_comment_url() {
 fetch_root_post_for_comment() {
     local comment_url="$1"
 
-    if [ -z "$SUPABASE_ANON_KEY" ]; then
+    if [ -z "$DISCOVERY_SERVICE_KEY" ]; then
         # Can't query without API key
         return 1
     fi
 
     local response=$(curl -s --max-time 10 \
-        --header "Authorization: Bearer $SUPABASE_ANON_KEY" \
+        --header "Authorization: Bearer $DISCOVERY_SERVICE_KEY" \
         "${POLIS_COMMENTS_ENDPOINT}?url=${comment_url}" 2>/dev/null)
 
     if [ -z "$response" ]; then
@@ -819,7 +819,7 @@ fetch_request_details() {
 
     # Fetch specific request by ID (works for any status)
     local response=$(curl -s \
-        --header "Authorization: Bearer $SUPABASE_ANON_KEY" \
+        --header "Authorization: Bearer $DISCOVERY_SERVICE_KEY" \
         "${POLIS_BLESSING_REQUESTS_ENDPOINT}?id=${comment_id}")
 
     # Debug: show raw response (comment out after debugging)
@@ -1019,7 +1019,7 @@ fetch_comments_by_author() {
 
     # Fetch all requests for user's domain
     local response=$(curl -s \
-        --header "Authorization: Bearer $SUPABASE_ANON_KEY" \
+        --header "Authorization: Bearer $DISCOVERY_SERVICE_KEY" \
         "${POLIS_BLESSING_REQUESTS_ENDPOINT}?in_reply_to_domain=${user_domain}")
 
     if [ $? -ne 0 ]; then
@@ -1245,7 +1245,7 @@ sync_blessed_comments() {
 
     # Fetch all blessed comments for our posts from discovery service
     local response=$(curl -s \
-        --header "Authorization: Bearer $SUPABASE_ANON_KEY" \
+        --header "Authorization: Bearer $DISCOVERY_SERVICE_KEY" \
         "${POLIS_BLESSING_REQUESTS_ENDPOINT}?in_reply_to_domain=${domain}&blessing_status=blessed" 2>/dev/null)
 
     # Check if response is valid JSON with requests
@@ -1293,7 +1293,7 @@ get_comment_id_by_url() {
 
     # Call comments endpoint
     local response=$(curl -s \
-        --header "Authorization: Bearer $SUPABASE_ANON_KEY" \
+        --header "Authorization: Bearer $DISCOVERY_SERVICE_KEY" \
         "${POLIS_COMMENTS_ENDPOINT}?url=${encoded_url}")
 
     # Check if we got a valid response
@@ -1726,7 +1726,7 @@ EOF
     # Make the HTTP request and capture both response body and status code
     response=$(curl -s -w "\n%{http_code}" \
         --location --request POST "$discovery_endpoint" \
-        --header "${SUPABASE_ANON_KEY:+Authorization: Bearer $SUPABASE_ANON_KEY}" \
+        --header "${DISCOVERY_SERVICE_KEY:+Authorization: Bearer $DISCOVERY_SERVICE_KEY}" \
         --header 'Content-Type: application/json' \
         --data "$final_payload" 2>&1)
 
@@ -1834,7 +1834,7 @@ EOF
             json_error "beseech" "INVALID_INPUT" "Invalid data sent to discovery service (HTTP 400): $response"
             ;;
         401)
-            json_error "beseech" "API_ERROR" "Authentication failed (HTTP 401). Check your SUPABASE_ANON_KEY."
+            json_error "beseech" "API_ERROR" "Authentication failed (HTTP 401). Check your DISCOVERY_SERVICE_KEY."
             ;;
         500|502|503|504)
             json_error "beseech" "API_ERROR" "Discovery service error (HTTP $http_code). Please try again later."
@@ -1881,7 +1881,7 @@ cmd_blessing_beseech() {
     # Fetch request by ID
     local response=$(curl -s \
         "${requests_endpoint}?id=${comment_id}" \
-        ${SUPABASE_ANON_KEY:+-H "Authorization: Bearer $SUPABASE_ANON_KEY"})
+        ${DISCOVERY_SERVICE_KEY:+-H "Authorization: Bearer $DISCOVERY_SERVICE_KEY"})
 
     # Parse response
     local count=$(echo "$response" | jq -r '.count // 0')
@@ -2942,7 +2942,7 @@ cmd_blessing_requests() {
 
     # Fetch requests
     local response=$(curl -s \
-        --header "Authorization: Bearer $SUPABASE_ANON_KEY" \
+        --header "Authorization: Bearer $DISCOVERY_SERVICE_KEY" \
         "${endpoint}?in_reply_to_domain=${domain}")
 
     if [ $? -ne 0 ]; then
@@ -3024,7 +3024,7 @@ cmd_blessing_grant() {
     # Call bless endpoint
     local response=$(curl -s -w "\n%{http_code}" \
         --location --request POST "$POLIS_BLESS_ENDPOINT" \
-        --header "Authorization: Bearer $SUPABASE_ANON_KEY" \
+        --header "Authorization: Bearer $DISCOVERY_SERVICE_KEY" \
         --header 'Content-Type: application/json' \
         --data "$payload")
 
@@ -3123,7 +3123,7 @@ cmd_blessing_deny() {
     # Call deny endpoint
     local response=$(curl -s -w "\n%{http_code}" \
         --location --request POST "$POLIS_DENY_ENDPOINT" \
-        --header "Authorization: Bearer $SUPABASE_ANON_KEY" \
+        --header "Authorization: Bearer $DISCOVERY_SERVICE_KEY" \
         --header 'Content-Type: application/json' \
         --data "$payload")
 
@@ -3302,7 +3302,7 @@ cmd_follow() {
             # Call bless endpoint
             local response=$(curl -s -w "\n%{http_code}" \
                 --location --request POST "$POLIS_BLESS_ENDPOINT" \
-                --header "Authorization: Bearer $SUPABASE_ANON_KEY" \
+                --header "Authorization: Bearer $DISCOVERY_SERVICE_KEY" \
                 --header 'Content-Type: application/json' \
                 --data "$payload")
 
@@ -3481,7 +3481,7 @@ cmd_unfollow() {
             # Call deny endpoint
             local response=$(curl -s -w "\n%{http_code}" \
                 --location --request POST "$POLIS_DENY_ENDPOINT" \
-                --header "Authorization: Bearer $SUPABASE_ANON_KEY" \
+                --header "Authorization: Bearer $DISCOVERY_SERVICE_KEY" \
                 --header 'Content-Type: application/json' \
                 --data "$payload")
 
@@ -3819,6 +3819,417 @@ signature: $signature
     fi
 }
 
+# ============================================================================
+# DOMAIN MIGRATION COMMAND
+# ============================================================================
+
+# Detect current domain from existing published files
+detect_current_domain() {
+    # Check posts first
+    local file
+    for file in $(find "$POSTS_DIR" -name "*.md" -type f 2>/dev/null | head -5); do
+        local url=$(extract_frontmatter_field "$file" "canonical_url")
+        if [ -n "$url" ]; then
+            extract_domain_from_url "$url"
+            return 0
+        fi
+    done
+
+    # Check comments
+    for file in $(find "$COMMENTS_DIR" -name "*.md" -type f 2>/dev/null | head -5); do
+        local url=$(extract_frontmatter_field "$file" "canonical_url")
+        if [ -n "$url" ]; then
+            extract_domain_from_url "$url"
+            return 0
+        fi
+    done
+
+    # Fallback: check .well-known/polis endpoints
+    if [ -f "$WELL_KNOWN_DIR/polis" ]; then
+        local posts_url=$(jq -r '.endpoints.posts // empty' "$WELL_KNOWN_DIR/polis" 2>/dev/null)
+        if [ -n "$posts_url" ]; then
+            extract_domain_from_url "$posts_url"
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
+# Migrate a single post file (update canonical_url, re-sign)
+migrate_post_file() {
+    local file="$1"
+    local old_domain="$2"
+    local new_domain="$3"
+
+    # Read current canonical_url
+    local current_url=$(extract_frontmatter_field "$file" "canonical_url")
+    if [ -z "$current_url" ]; then
+        return 1  # No canonical_url, skip
+    fi
+
+    # Check if this file is from the old domain
+    local file_domain=$(extract_domain_from_url "$current_url")
+    if [ "$file_domain" != "$old_domain" ]; then
+        return 1  # Not from old domain, skip
+    fi
+
+    # Replace domain in canonical_url
+    local new_url="${current_url/https:\/\/$old_domain\//https:\/\/$new_domain\/}"
+
+    # Update frontmatter using sed (portable)
+    sed -i.bak "s|canonical_url: $current_url|canonical_url: $new_url|" "$file"
+    rm -f "$file.bak"
+
+    # Re-sign the file
+    local temp_file=$(mktemp)
+    cat "$file" > "$temp_file"
+    local signature=$(sign_file "$temp_file")
+    rm -f "$temp_file" "$temp_file.sig"
+
+    # Update signature in file
+    sed -i.bak "s|^signature: .*|signature: $signature|" "$file"
+    rm -f "$file.bak"
+
+    return 0
+}
+
+# Migrate a single comment file (update URLs, re-sign)
+migrate_comment_file() {
+    local file="$1"
+    local old_domain="$2"
+    local new_domain="$3"
+
+    # Read current canonical_url
+    local canonical_url=$(extract_frontmatter_field "$file" "canonical_url")
+    if [ -z "$canonical_url" ]; then
+        return 1  # No canonical_url, skip
+    fi
+
+    # Check if this file is from the old domain
+    local file_domain=$(extract_domain_from_url "$canonical_url")
+    if [ "$file_domain" != "$old_domain" ]; then
+        return 1  # Not from old domain, skip
+    fi
+
+    # Replace domain in canonical_url (always)
+    local new_canonical="${canonical_url/https:\/\/$old_domain\//https:\/\/$new_domain\/}"
+    sed -i.bak "s|canonical_url: $canonical_url|canonical_url: $new_canonical|" "$file"
+    rm -f "$file.bak"
+
+    # Extract in-reply-to section
+    local in_reply_to=$(extract_in_reply_to "$file")
+    local reply_url=$(echo "$in_reply_to" | grep 'url:' | sed 's/.*url: *//')
+    local root_post=$(echo "$in_reply_to" | grep 'root-post:' | sed 's/.*root-post: *//')
+
+    # Update in_reply_to URL only if pointing to own domain
+    if [ -n "$reply_url" ]; then
+        local reply_domain=$(extract_domain_from_url "$reply_url")
+        if [ "$reply_domain" = "$old_domain" ]; then
+            local new_reply="${reply_url/https:\/\/$old_domain\//https:\/\/$new_domain\/}"
+            sed -i.bak "s|url: $reply_url|url: $new_reply|" "$file"
+            rm -f "$file.bak"
+        fi
+    fi
+
+    # Update root_post URL only if pointing to own domain
+    if [ -n "$root_post" ]; then
+        local root_domain=$(extract_domain_from_url "$root_post")
+        if [ "$root_domain" = "$old_domain" ]; then
+            local new_root="${root_post/https:\/\/$old_domain\//https:\/\/$new_domain\/}"
+            sed -i.bak "s|root-post: $root_post|root-post: $new_root|" "$file"
+            rm -f "$file.bak"
+        fi
+    fi
+
+    # CRITICAL: Re-sign the comment with new canonical payload
+    # Comments include comment_url in signed payload, so this is mandatory
+    resign_comment_for_migration "$file" "$new_domain"
+
+    return 0
+}
+
+# Re-sign a comment file after migration (creates new signature for beseech payload)
+resign_comment_for_migration() {
+    local file="$1"
+    local new_domain="$2"
+
+    # Extract all fields needed for signing
+    local canonical_url=$(extract_frontmatter_field "$file" "canonical_url")
+    local version=$(extract_frontmatter_field "$file" "current-version")
+    local published=$(extract_frontmatter_field "$file" "published")
+
+    # Extract in-reply-to section
+    local in_reply_to=$(extract_in_reply_to "$file")
+    local reply_url=$(echo "$in_reply_to" | grep 'url:' | sed 's/.*url: *//')
+    local reply_version=$(echo "$in_reply_to" | grep 'version:' | sed 's/.*version: *//')
+    local root_post=$(echo "$in_reply_to" | grep 'root-post:' | sed 's/.*root-post: *//')
+
+    # Get author from .well-known/polis
+    local author=""
+    if [ -f "$WELL_KNOWN_DIR/polis" ]; then
+        author=$(jq -r '.author.email // empty' "$WELL_KNOWN_DIR/polis" 2>/dev/null)
+    fi
+
+    if [ -z "$author" ]; then
+        warn_human "Could not determine author email for re-signing"
+        return 1
+    fi
+
+    # Build canonical JSON payload (matches _internal_beseech_from_file format exactly)
+    local canonical_payload
+    if [ -n "$reply_version" ]; then
+        canonical_payload=$(printf '{"comment_url":"%s","comment_version":"%s","in_reply_to":"%s","in_reply_to_version":"%s","root_post":"%s","author":"%s","timestamp":"%s"}' \
+            "$canonical_url" "$version" "$reply_url" "$reply_version" "$root_post" "$author" "$published")
+    else
+        canonical_payload=$(printf '{"comment_url":"%s","comment_version":"%s","in_reply_to":"%s","root_post":"%s","author":"%s","timestamp":"%s"}' \
+            "$canonical_url" "$version" "$reply_url" "$root_post" "$author" "$published")
+    fi
+
+    # Sign the payload
+    local temp_file=$(mktemp)
+    echo -n "$canonical_payload" > "$temp_file"
+
+    local keyfile="$KEYS_DIR/id_ed25519"
+    ssh-keygen -Y sign -f "$keyfile" -n file "$temp_file" > /dev/null 2>&1
+
+    local new_signature=$(grep -v '^-----' "$temp_file.sig" | tr -d '\n')
+    rm -f "$temp_file" "$temp_file.sig"
+
+    # Update signature in file
+    sed -i.bak "s|^signature: .*|signature: $new_signature|" "$file"
+    rm -f "$file.bak"
+
+    return 0
+}
+
+# Update blessed-comments.json with new domain
+update_blessed_comments_urls() {
+    local old_domain="$1"
+    local new_domain="$2"
+    local blessed_file="$BLESSED_COMMENTS"
+
+    if [ ! -f "$blessed_file" ]; then
+        return 0
+    fi
+
+    # Use jq to update post URLs that match old domain
+    local temp_file="${blessed_file}.tmp"
+
+    jq --arg old "https://$old_domain/" \
+       --arg new "https://$new_domain/" \
+       '
+       .comments |= map(
+         if .post | startswith($old) then
+           .post |= sub($old; $new)
+         else . end
+       )
+       ' "$blessed_file" > "$temp_file"
+
+    mv "$temp_file" "$blessed_file"
+}
+
+# Update .well-known/polis endpoints with new domain
+update_wellknown_endpoints() {
+    local old_domain="$1"
+    local new_domain="$2"
+    local wellknown_file="$WELL_KNOWN_DIR/polis"
+
+    if [ ! -f "$wellknown_file" ]; then
+        return 0
+    fi
+
+    # Update endpoints URLs
+    local temp_file="${wellknown_file}.tmp"
+
+    jq --arg old "https://$old_domain/" \
+       --arg new "https://$new_domain/" \
+       '
+       .endpoints.posts |= (if . then sub($old; $new) else . end) |
+       .endpoints.blessed_comments |= (if . then sub($old; $new) else . end)
+       ' "$wellknown_file" > "$temp_file"
+
+    mv "$temp_file" "$wellknown_file"
+}
+
+# Main migrate command
+cmd_migrate() {
+    local new_domain="$1"
+
+    # Validate input
+    if [ -z "$new_domain" ]; then
+        if [ "$JSON_MODE" = true ]; then
+            json_error "migrate" "INVALID_INPUT" "Usage: polis migrate <new-domain>"
+        else
+            error "Usage: polis migrate <new-domain>"
+        fi
+    fi
+
+    # Validate new domain format (must not include protocol)
+    if [[ "$new_domain" =~ ^https?:// ]]; then
+        if [ "$JSON_MODE" = true ]; then
+            json_error "migrate" "INVALID_INPUT" "Domain should not include protocol (use: example.com not https://example.com)"
+        else
+            error "Domain should not include protocol (use: example.com not https://example.com)"
+        fi
+    fi
+
+    # Auto-detect old domain from existing files
+    local old_domain=$(detect_current_domain)
+    if [ -z "$old_domain" ]; then
+        if [ "$JSON_MODE" = true ]; then
+            json_error "migrate" "NO_CONTENT" "No published content found. Nothing to migrate."
+        else
+            error "No published content found. Nothing to migrate."
+        fi
+    fi
+
+    # Check if domains are the same
+    if [ "$old_domain" = "$new_domain" ]; then
+        if [ "$JSON_MODE" = true ]; then
+            json_error "migrate" "INVALID_INPUT" "New domain is the same as current domain: $old_domain"
+        else
+            error "New domain is the same as current domain: $old_domain"
+        fi
+    fi
+
+    # Confirm with user (unless --json mode)
+    if [ "$JSON_MODE" = false ]; then
+        info "Detected current domain: $old_domain"
+        info "New domain: $new_domain"
+        echo ""
+        read -p "Continue with migration? (y/N) " confirm
+        if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
+            error "Migration cancelled"
+        fi
+    fi
+
+    # Track statistics
+    local posts_updated=0
+    local comments_updated=0
+    local errors=()
+
+    # Update posts
+    info_human "Updating posts..."
+    local file
+    for file in $(find "$POSTS_DIR" -name "*.md" -type f 2>/dev/null); do
+        if migrate_post_file "$file" "$old_domain" "$new_domain"; then
+            ((posts_updated++))
+        fi
+    done
+
+    # Update comments
+    info_human "Updating comments..."
+    for file in $(find "$COMMENTS_DIR" -name "*.md" -type f 2>/dev/null); do
+        if migrate_comment_file "$file" "$old_domain" "$new_domain"; then
+            ((comments_updated++))
+        fi
+    done
+
+    # Update blessed-comments.json
+    info_human "Updating blessed-comments.json..."
+    update_blessed_comments_urls "$old_domain" "$new_domain"
+
+    # Update .well-known/polis
+    info_human "Updating .well-known/polis..."
+    update_wellknown_endpoints "$old_domain" "$new_domain"
+
+    # Rebuild public.jsonl index
+    info_human "Rebuilding public.jsonl index..."
+    cmd_rebuild > /dev/null 2>&1
+
+    # Update discovery service database (if endpoint is configured)
+    local db_updated=false
+    local db_rows=0
+    if [ -n "$POLIS_ENDPOINT_BASE" ] && [ -n "$DISCOVERY_SERVICE_KEY" ]; then
+        info_human "Updating discovery service database..."
+
+        # Create payload
+        local migrate_payload=$(jq -n \
+            --arg old "$old_domain" \
+            --arg new "$new_domain" \
+            '{old_domain: $old, new_domain: $new}')
+
+        # Sign the payload
+        local temp_file=$(mktemp)
+        echo -n "$migrate_payload" > "$temp_file"
+        local keyfile="$KEYS_DIR/id_ed25519"
+        ssh-keygen -Y sign -f "$keyfile" -n file "$temp_file" > /dev/null 2>&1
+        local signature=$(cat "$temp_file.sig")
+        rm -f "$temp_file" "$temp_file.sig"
+
+        # Create final payload with signature
+        local final_payload=$(jq -n \
+            --arg old "$old_domain" \
+            --arg new "$new_domain" \
+            --arg sig "$signature" \
+            '{old_domain: $old, new_domain: $new, signature: $sig}')
+
+        # Call edge function
+        local migrate_endpoint="${POLIS_ENDPOINT_BASE}/comments-migrate"
+        local response=$(curl -s -w "\n%{http_code}" \
+            --location --request POST "$migrate_endpoint" \
+            --header "Authorization: Bearer $DISCOVERY_SERVICE_KEY" \
+            --header 'Content-Type: application/json' \
+            --data "$final_payload" 2>&1)
+
+        local http_code=$(echo "$response" | tail -n 1)
+        local response_body=$(echo "$response" | sed '$d')
+
+        if [ "$http_code" = "200" ]; then
+            db_updated=true
+            db_rows=$(echo "$response_body" | jq -r '.rows_updated // 0' 2>/dev/null || echo "0")
+            success_human "Database migration complete ($db_rows rows updated)"
+        else
+            warn_human "Database migration returned HTTP $http_code. You may need to re-beseech comments."
+        fi
+    else
+        info_human "Discovery service not configured - skipping database migration"
+    fi
+
+    # Stage files in git (if git repo exists)
+    if git rev-parse --git-dir > /dev/null 2>&1; then
+        git add -A
+        success_human "Staged all changes in git"
+    fi
+
+    # Output results
+    if [ "$JSON_MODE" = true ]; then
+        local result=$(jq -n \
+            --arg old "$old_domain" \
+            --arg new "$new_domain" \
+            --argjson posts "$posts_updated" \
+            --argjson comments "$comments_updated" \
+            --argjson db_updated "$db_updated" \
+            --argjson db_rows "$db_rows" \
+            '{
+                old_domain: $old,
+                new_domain: $new,
+                posts_updated: $posts,
+                comments_updated: $comments,
+                database_updated: $db_updated,
+                database_rows: $db_rows
+            }')
+        json_success "migrate" "$result"
+    else
+        echo ""
+        success "Migration complete!"
+        echo ""
+        info "Old domain: $old_domain"
+        info "New domain: $new_domain"
+        info "Posts updated: $posts_updated"
+        info "Comments updated: $comments_updated"
+        if [ "$db_updated" = true ]; then
+            info "Database rows updated: $db_rows"
+        fi
+        echo ""
+        info "Next steps:"
+        info "1. Deploy to new domain"
+        info "2. Set up redirect from old domain (recommended)"
+        info "3. Update POLIS_BASE_URL environment variable"
+    fi
+}
+
 # Main command router
 main() {
     # Parse global flags before command
@@ -3882,6 +4293,9 @@ main() {
         unfollow)
             cmd_unfollow "$@"
             ;;
+        migrate)
+            cmd_migrate "$@"
+            ;;
         *)
             echo "Polis - Decentralized Social Network CLI"
             echo ""
@@ -3911,6 +4325,9 @@ main() {
             echo "Commands related to following or unfollowing an author:"
             echo "  polis follow <author-url>       Follow an author (auto-bless their comments)"
             echo "  polis unfollow <author-url>     Unfollow an author"
+            echo ""
+            echo "Commands related to domain migration:"
+            echo "  polis migrate <new-domain>      Migrate all content to a new domain (re-signs files, updates DB)"
             echo ""
             echo "Commands related to local configuration management:"
             echo "  polis init [options]            Initialize Polis directory structure"
@@ -3951,7 +4368,7 @@ main() {
             echo ""
             echo "Required for blessing commands:"
             echo "  POLIS_BASE_URL                  Your public HTTPS URL"
-            echo "  SUPABASE_ANON_KEY               Discovery service API key"
+            echo "  DISCOVERY_SERVICE_KEY               Discovery service API key"
             echo ""
             echo "Optional:"
             echo "  POLIS_ENDPOINT_BASE             Discovery service base URL (has default)"

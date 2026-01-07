@@ -225,6 +225,22 @@ Returns grouped JSON with posts and comments:
 }
 ```
 
+### `polis migrate`
+```json
+{
+  "status": "success",
+  "command": "migrate",
+  "data": {
+    "old_domain": "olddomain.com",
+    "new_domain": "newdomain.com",
+    "posts_updated": 3,
+    "comments_updated": 5,
+    "database_updated": true,
+    "database_rows": 5
+  }
+}
+```
+
 ---
 
 ## Error Codes

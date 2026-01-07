@@ -418,6 +418,82 @@ polis reset
 - `.polis/keys/` (your signing keys)
 - Original content files
 
+### `polis migrate <new-domain>`
+
+Migrate all content to a new domain. This command handles the complete migration process including re-signing files and updating the discovery service database.
+
+```bash
+polis migrate newdomain.com
+```
+
+**What it does:**
+1. Auto-detects current domain from published files
+2. Updates `canonical_url` in all posts and comments
+3. Updates `in_reply_to` and `root_post` URLs (only for own content)
+4. Re-signs all files with new URLs
+5. Updates `metadata/blessed-comments.json`
+6. Updates `.well-known/polis` endpoints
+7. Rebuilds `metadata/public.jsonl` index
+8. Updates discovery service database (preserves blessing status)
+9. Stages all changes in git
+
+**Example output:**
+```
+[i] Detected current domain: olddomain.com
+[i] New domain: newdomain.com
+
+Continue with migration? (y/N) y
+
+[i] Updating posts...
+[i] Updating comments...
+[i] Updating blessed-comments.json...
+[i] Updating .well-known/polis...
+[i] Rebuilding public.jsonl index...
+[i] Updating discovery service database...
+[✓] Database migration complete (5 rows updated)
+[✓] Staged all changes in git
+
+[✓] Migration complete!
+
+Old domain: olddomain.com
+New domain: newdomain.com
+Posts updated: 3
+Comments updated: 5
+Database rows updated: 5
+
+Next steps:
+1. Deploy to new domain
+2. Set up redirect from old domain (recommended)
+3. Update POLIS_BASE_URL environment variable
+```
+
+**JSON mode:**
+```bash
+polis --json migrate newdomain.com | jq
+```
+
+**JSON output:**
+```json
+{
+  "status": "success",
+  "command": "migrate",
+  "data": {
+    "old_domain": "olddomain.com",
+    "new_domain": "newdomain.com",
+    "posts_updated": 3,
+    "comments_updated": 5,
+    "database_updated": true,
+    "database_rows": 5
+  }
+}
+```
+
+**Important notes:**
+- Domain should not include protocol (use `example.com`, not `https://example.com`)
+- Comments you made on others' posts will have their `in_reply_to`/`root_post` preserved (pointing to the other author's domain)
+- The discovery service database update requires `POLIS_ENDPOINT_BASE` and `DISCOVERY_SERVICE_KEY` to be configured
+- If database update fails, local migration still succeeds - you can re-beseech comments later
+
 ### `polis version`
 
 Print the CLI version number.
@@ -634,7 +710,7 @@ export POLIS_BASE_URL="https://yourdomain.com"
 export POLIS_ENDPOINT_BASE="https://xxx.supabase.co/functions/v1"
 
 # API authentication (required for blessing operations)
-export SUPABASE_ANON_KEY="your-anon-key"
+export DISCOVERY_SERVICE_KEY="your-api-key"
 
 # Optional directory overrides
 export KEYS_DIR=".polis/keys"
@@ -657,7 +733,7 @@ cp .env.example .env
 Example `.env`:
 ```bash
 POLIS_BASE_URL=https://alice.example.com
-SUPABASE_ANON_KEY=eyJhbGciOiJI...
+DISCOVERY_SERVICE_KEY=eyJhbGciOiJI...
 ```
 
 **Security Note:** Never commit `.env` files containing secrets. The `.env.example` file is safe to commit as a template.

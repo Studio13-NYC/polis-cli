@@ -6,7 +6,7 @@
 #
 # Prerequisites:
 #   - POLIS_BASE_URL must be set to a reachable domain
-#   - SUPABASE_ANON_KEY must be configured
+#   - DISCOVERY_SERVICE_KEY must be configured
 #   - Discovery service must be deployed
 #
 # Tests covered:
@@ -19,7 +19,7 @@ check_e2e_prerequisites() {
     if [[ -z "$POLIS_BASE_URL" ]]; then
         return 1
     fi
-    if [[ -z "$SUPABASE_ANON_KEY" ]]; then
+    if [[ -z "$DISCOVERY_SERVICE_KEY" ]]; then
         return 1
     fi
     return 0
@@ -35,7 +35,7 @@ test_comment_with_beseech() {
         if should_skip_network; then
             log "  Skipping network call (--skip-network mode)"
         else
-            log_error "Missing POLIS_BASE_URL or SUPABASE_ANON_KEY"
+            log_error "Missing POLIS_BASE_URL or DISCOVERY_SERVICE_KEY"
             return 1
         fi
     fi
@@ -111,7 +111,7 @@ test_blessing_requests() {
             log "  [SKIP-NETWORK] Skipping blessing requests test"
             return 0
         else
-            log_error "Missing POLIS_BASE_URL or SUPABASE_ANON_KEY"
+            log_error "Missing POLIS_BASE_URL or DISCOVERY_SERVICE_KEY"
             return 1
         fi
     fi
@@ -168,7 +168,7 @@ test_blessing_grant() {
             log "  [SKIP-NETWORK] Skipping blessing grant test"
             return 0
         else
-            log_error "Missing POLIS_BASE_URL or SUPABASE_ANON_KEY"
+            log_error "Missing POLIS_BASE_URL or DISCOVERY_SERVICE_KEY"
             return 1
         fi
     fi

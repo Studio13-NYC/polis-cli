@@ -143,6 +143,15 @@ Archive current state and start fresh.
 ./cli/bin/polis --json reset
 ```
 
+### `polis migrate <new-domain>`
+Migrate all content to a new domain (re-signs files, updates database).
+
+```bash
+./cli/bin/polis --json migrate newdomain.com
+```
+
+Auto-detects current domain from published files. Updates all URLs, re-signs content, and updates discovery service database (preserves blessing status).
+
 ### `polis get-version <file> <hash>`
 Reconstruct a specific version from history.
 

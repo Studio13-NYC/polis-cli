@@ -42,7 +42,7 @@ End-to-end tests with real API calls:
 
 **Prerequisites for E2E tests:**
 - `POLIS_BASE_URL` environment variable set
-- `SUPABASE_ANON_KEY` environment variable set
+- `DISCOVERY_SERVICE_KEY` environment variable set
 - Discovery service deployed and reachable
 
 ## Options

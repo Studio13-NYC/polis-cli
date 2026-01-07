@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-01-07
+
+### Fixed
+- Documentation: Corrected date path format in examples (`YYYY/MM/` → `YYYYMMDD/`)
+- Documentation: Fixed `polis comment` argument order in skill command reference
+
 ## [0.5.0] - 2026-01-07
 
 ### Added

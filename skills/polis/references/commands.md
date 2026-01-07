@@ -31,12 +31,12 @@ Update an already-published file (creates new version).
 
 ## Comment Commands
 
-### `polis comment <url> [file]`
+### `polis comment <file> [url]`
 Create a comment in reply to a post or another comment.
 
 ```bash
 # From file
-./cli/bin/polis --json comment https://alice.com/posts/hello.md my-reply.md
+./cli/bin/polis --json comment my-reply.md https://alice.com/posts/hello.md
 
 # From stdin
 echo "Great post!" | ./cli/bin/polis --json comment - https://alice.com/posts/hello.md --filename reply.md

@@ -121,12 +121,12 @@ After running `polis init`, your directory will contain:
 │   ├── blessed-comments.json # Index of approved comments
 │   └── following.json       # Following list
 ├── posts/                    # Your posts
-│   └── 2026/01/
+│   └── 20260106/            # Date-stamped directory (YYYYMMDD)
 │       ├── .versions/       # Version history for posts in this directory
 │       │   └── my-post.md
 │       └── my-post.md
 ├── comments/                 # Your comments
-│   └── 2026/01/
+│   └── 20260106/            # Date-stamped directory (YYYYMMDD)
 │       ├── .versions/       # Version history for comments in this directory
 │       │   └── reply.md
 │       └── reply.md
@@ -173,7 +173,7 @@ polis publish comments/my-comment.md
 ```
 [i] Content hash: sha256:a3b5c7d9...
 [i] Signing content with Ed25519 key...
-[✓] Created canonical file: posts/2026/01/my-post.md
+[✓] Created canonical file: posts/20260106/my-post.md
 ```
 
 ### `polis republish <file>`
@@ -182,10 +182,10 @@ Republish an existing file with updated content (creates new version).
 
 ```bash
 # Edit your published file
-vim posts/2026/01/my-post.md
+vim posts/20260106/my-post.md
 
 # Republish with new version
-polis republish posts/2026/01/my-post.md
+polis republish posts/20260106/my-post.md
 ```
 
 **What it does:**
@@ -197,7 +197,7 @@ polis republish posts/2026/01/my-post.md
 
 **Version history:**
 - Stored in `.versions/` subdirectory alongside content files
-- Example: `posts/2026/01/my-post.md` → `posts/2026/01/.versions/my-post.md`
+- Example: `posts/20260106/my-post.md` → `posts/20260106/.versions/my-post.md`
 - Directory name configurable via `POLIS_VERSIONS_DIR_NAME` (default: `.versions`)
 - Uses unified diff format (compatible with `diff`/`patch` tools)
 - Enables version reconstruction
@@ -262,7 +262,7 @@ Create a comment in reply to a post or another comment (nested threads).
 
 ```bash
 # Reply to a post
-polis comment https://alice.example.com/posts/2026/01/hello.md
+polis comment https://alice.example.com/posts/20260106/hello.md
 
 # Reply to another comment (nested thread)
 polis comment https://bob.example.com/comments/20260105/reply.md my-reply.md
@@ -395,10 +395,10 @@ Reconstruct a specific version of a file from version history.
 
 ```bash
 # Get specific version
-polis get-version posts/2026/01/my-post.md sha256:abc123...
+polis get-version posts/20260106/my-post.md sha256:abc123...
 
 # Output to file
-polis get-version posts/2026/01/my-post.md sha256:abc123... > old-version.md
+polis get-version posts/20260106/my-post.md sha256:abc123... > old-version.md
 ```
 
 ### `polis reset`
@@ -410,7 +410,7 @@ polis reset
 ```
 
 **Removes:**
-- All canonical files in dated directories (`posts/YYYY/MM/`, `comments/YYYY/MM/`)
+- All canonical files in dated directories (`posts/YYYYMMDD/`, `comments/YYYYMMDD/`)
 - All `.versions` files
 - `public.jsonl` and `blessed-comments.json`
 
@@ -575,7 +575,7 @@ Published files include YAML frontmatter with metadata:
 
 ```yaml
 ---
-canonical_url: https://alice.example.com/posts/2026/01/hello.md
+canonical_url: https://alice.example.com/posts/20260106/hello.md
 version: sha256:a3b5c7d9e1f2...
 author: alice@example.com
 published: 2026-01-15T12:00:00Z
@@ -836,7 +836,7 @@ git push
 
 ### Replying to Someone's Post
 ```bash
-polis comment https://alice.com/posts/2026/01/hot-take.md
+polis comment https://alice.com/posts/20260106/hot-take.md
 
 # Interactive editor opens - write your reply
 
@@ -847,10 +847,10 @@ polis comment https://alice.com/posts/2026/01/hot-take.md
 ### Updating a Post
 ```bash
 # Edit the canonical file directly
-vim posts/2026/01/my-post.md
+vim posts/20260106/my-post.md
 
 # Republish with new version
-polis republish posts/2026/01/my-post.md
+polis republish posts/20260106/my-post.md
 
 git add . && git commit -m "Update: my-post.md"
 git push
@@ -859,10 +859,10 @@ git push
 ### Viewing Version History
 ```bash
 # List all versions in .versions file
-cat posts/2026/01/.versions/my-post.md
+cat posts/20260106/.versions/my-post.md
 
 # Reconstruct specific version
-polis get-version posts/2026/01/my-post.md sha256:abc123...
+polis get-version posts/20260106/my-post.md sha256:abc123...
 ```
 
 ## Security Notes

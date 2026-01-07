@@ -75,16 +75,16 @@ $ polis init
 $ polis publish my-thoughts.md
 [i] Content hash: sha256:a3b5c7d9e1f2...
 [i] Signing with Ed25519 key...
-[OK] Published: posts/2026/01/my-thoughts.md
+[OK] Published: posts/20260106/my-thoughts.md
 ```
 
 ### Comment on someone's post
 
 ```bash
-$ polis comment https://alice.example.com/posts/hello.md
-# Editor opens - write your reply
-
-[OK] Created: comments/2026/01/reply-to-alice.md
+$ polis comment reply.md https://alice.example.com/posts/hello.md
+[i] Content hash: sha256:b4c6d8e0f1a2...
+[i] Signing with Ed25519 key...
+[OK] Created: comments/20260106/reply.md
 [OK] Blessing requested from alice.example.com
 ```
 

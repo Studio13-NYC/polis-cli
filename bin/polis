@@ -27,7 +27,7 @@ set -e
 #   4. Hardcoded defaults
 
 # Fixed constants (never configurable - required for discovery)
-VERSION="0.12.0"
+VERSION="0.13.0"
 WELL_KNOWN_DIR=".well-known"
 WELL_KNOWN_FILE="polis"
 
@@ -143,6 +143,10 @@ success() {
     echo -e "${GREEN}[✓]${NC} $1"
 }
 
+warn() {
+    echo -e "${YELLOW}[!]${NC} $1" >&2
+}
+
 error() {
     echo -e "${RED}[x]${NC} $1" >&2
     exit 1
@@ -190,6 +194,12 @@ info_human() {
 success_human() {
     if [ "$JSON_MODE" = false ]; then
         success "$1"
+    fi
+}
+
+warn_human() {
+    if [ "$JSON_MODE" = false ]; then
+        warn "$1"
     fi
 }
 
@@ -754,11 +764,20 @@ fetch_root_post_for_comment() {
         return 1
     fi
 
+    # URL-encode the comment URL
+    local encoded_url=$(jq -rn --arg url "$comment_url" '$url | @uri')
+
     local response=$(curl -s --max-time 10 \
         --header "Authorization: Bearer $DISCOVERY_SERVICE_KEY" \
-        "${POLIS_COMMENTS_ENDPOINT}?url=${comment_url}" 2>/dev/null)
+        "${POLIS_COMMENTS_ENDPOINT}?url=${encoded_url}" 2>/dev/null)
 
     if [ -z "$response" ]; then
+        return 1
+    fi
+
+    # Check for error response (comment not found in database)
+    local error_msg=$(echo "$response" | jq -r '.error // empty' 2>/dev/null)
+    if [ -n "$error_msg" ]; then
         return 1
     fi
 
@@ -960,8 +979,8 @@ fetch_comment_excerpt() {
     local comment_url="$1"
     local max_length=100
 
-    # Fetch with timeout
-    local content=$(curl -s --max-time 10 "$comment_url" 2>/dev/null)
+    # Fetch with timeout (follow redirects)
+    local content=$(curl -sL --max-time 10 "$comment_url" 2>/dev/null)
 
     if [ -z "$content" ]; then
         echo "[Could not fetch]"
@@ -988,17 +1007,60 @@ fetch_comment_excerpt() {
     fi
 }
 
-# Fetch request details from blessing-requests API
-fetch_request_details() {
-    local comment_id="$1"
+# Format full hash to short hash (e.g., "sha256:abc123...xyz789" -> "abc123-xyz789")
+format_short_hash() {
+    local full_version="$1"
+    # Remove sha256: prefix and extract first 6 and last 6 characters
+    local hash=$(echo "$full_version" | sed 's/sha256://')
+    echo "${hash:0:6}-${hash: -6}"
+}
 
-    # Fetch specific request by ID (works for any status)
+# Resolve short hash to full comment_version
+# Searches pending requests for a matching hash prefix/suffix
+resolve_short_hash() {
+    local short_hash="$1"
+    local domain="$2"  # Used to filter requests
+
+    # Normalize: remove dash if present, lowercase
+    local normalized=$(echo "$short_hash" | tr -d '-' | tr '[:upper:]' '[:lower:]')
+
+    # Fetch all pending requests for this domain
     local response=$(curl -s \
         --header "Authorization: Bearer $DISCOVERY_SERVICE_KEY" \
-        "${POLIS_BLESSING_REQUESTS_ENDPOINT}?id=${comment_id}")
+        "${POLIS_BLESSING_REQUESTS_ENDPOINT}?in_reply_to_domain=${domain}&blessing_status=pending")
 
-    # Debug: show raw response (comment out after debugging)
-    # echo "DEBUG: Raw response: $response" >&2
+    # Search for matching comment_version
+    # Match if hash starts with first 6 chars or ends with last 6 chars or contains both parts
+    local full_version=$(echo "$response" | jq -r --arg hash "$normalized" '
+        .requests[] |
+        select(
+            (.comment_version | gsub("sha256:"; "") | ascii_downcase) |
+            (startswith($hash[0:6]) and endswith($hash | .[-6:]))
+            or startswith($hash)
+            or endswith($hash)
+        ) |
+        .comment_version
+    ' 2>/dev/null | head -1)
+
+    echo "$full_version"
+}
+
+# Fetch request details from blessing-requests API by comment_version
+fetch_request_details() {
+    local comment_version="$1"
+
+    # Extract domain from POLIS_BASE_URL to filter requests
+    local domain=$(echo "$POLIS_BASE_URL" | sed 's|https\?://||' | sed 's|/.*||')
+
+    # Fetch pending requests for this domain
+    local response=$(curl -s \
+        --header "Authorization: Bearer $DISCOVERY_SERVICE_KEY" \
+        "${POLIS_BLESSING_REQUESTS_ENDPOINT}?in_reply_to_domain=${domain}&blessing_status=pending")
+
+    # Filter by comment_version - encode the version for URL safety
+    local request_data=$(echo "$response" | jq -r --arg ver "$comment_version" '
+        .requests[] | select(.comment_version == $ver)
+    ' 2>/dev/null)
 
     # Check for API errors
     local error_msg=$(echo "$response" | jq -r '.error // empty' 2>/dev/null)
@@ -1007,18 +1069,12 @@ fetch_request_details() {
         return 1
     fi
 
-    # Extract the request from the response
-    local request_data=$(echo "$response" | jq -r ".requests[0] // empty")
-
-    # Debug: show extracted data (comment out after debugging)
-    # echo "DEBUG: Extracted request: $request_data" >&2
-
     echo "$request_data"
 }
 
 # Prompt user for confirmation
 prompt_confirmation() {
-    local comment_id="$1"
+    local short_hash="$1"
     local request_json="$2"
 
     # Parse request details
@@ -1032,7 +1088,7 @@ prompt_confirmation() {
 
     # Display request details
     echo ""
-    info "Request #${comment_id}:"
+    info "Request ${short_hash}:"
     echo "    Author: $author"
     echo "    Comment: $comment_url"
     echo "    In reply to: $in_reply_to"
@@ -1169,7 +1225,7 @@ Author may not have Polis properly configured."
 }
 
 # Fetch all blessing requests for a specific author on current user's posts
-# Args: $1 = author_email, $2 = blessing_status_filter (optional: "pending", "blessed", "rejected", or empty for all)
+# Args: $1 = author_email, $2 = blessing_status_filter (optional: "pending", "blessed", "denied", or empty for all)
 # Returns: JSON array of request objects (echoed to stdout)
 fetch_comments_by_author() {
     local author_email="$1"
@@ -1550,35 +1606,37 @@ format_blessing_table() {
     fi
 
     # Print header
-    printf "\n%-4s %-20s %-70s %s\n" "ID" "Author" "Comment URL" "Timestamp"
+    printf "\n%-15s %-20s %-60s %s\n" "Hash" "Author" "Comment URL" "Timestamp"
     printf "%.s─" {1..120}
     echo ""
 
     # Process each request (with null check)
-    local requests_data=$(echo "$requests_json" | jq -r '.requests // [] | .[] | "\(.id)|\(.author)|\(.comment_url)|\(.timestamp)"' 2>/dev/null)
+    local requests_data=$(echo "$requests_json" | jq -r '.requests // [] | .[] | "\(.comment_version)|\(.author)|\(.comment_url)|\(.timestamp)"' 2>/dev/null)
 
     if [ -z "$requests_data" ]; then
         info "No pending blessing requests found"
         return
     fi
 
-    echo "$requests_data" | while IFS='|' read -r id author url timestamp; do
+    echo "$requests_data" | while IFS='|' read -r version author url timestamp; do
         # Skip empty lines
-        [ -z "$id" ] && continue
+        [ -z "$version" ] && continue
 
+        # Format short hash from comment_version
+        local short_hash=$(format_short_hash "$version")
         # Truncate long fields for display
         local display_author=$(echo "$author" | cut -c1-20)
-        local display_url=$(echo "$url" | cut -c1-70)
+        local display_url=$(echo "$url" | cut -c1-60)
         # Format timestamp: replace T with space, keep timezone
         local display_timestamp=$(echo "$timestamp" | tr 'T' ' ')
 
-        printf "%-4s %-20s %-70s %s\n" "$id" "$display_author" "$display_url" "$display_timestamp"
+        printf "%-15s %-20s %-60s %s\n" "$short_hash" "$display_author" "$display_url" "$display_timestamp"
     done
 
     echo ""
     success "Found $count pending request(s)"
     info "Run 'polis preview <URL>' to see comment details"
-    info "Run 'polis blessing grant <ID>' to bless or 'polis blessing deny <ID>' to reject"
+    info "Run 'polis blessing grant <hash>' to bless or 'polis blessing deny <hash>' to deny"
 }
 
 # Rebuild public.json index from all posts and comments
@@ -2029,7 +2087,7 @@ EOF
                     }')
                 json_success "beseech" "$result"
             else
-                warning "This comment version was already submitted (HTTP 409)"
+                warn "This comment version was already submitted (HTTP 409)"
                 echo ""
                 info "This is normal if you've already requested blessing for this exact version before."
             fi
@@ -2105,7 +2163,7 @@ cmd_blessing_beseech() {
     info_human "Comment: $comment_url"
     info_human "Reply to: $in_reply_to"
 
-    # Display current status (if already blessed/rejected)
+    # Display current status (if already blessed/denied)
     if [ "$blessing_status" = "blessed" ]; then
         success_human "This request is already blessed!"
         info_human "No action needed - comment is approved."
@@ -2115,8 +2173,8 @@ cmd_blessing_beseech() {
         return 0
     fi
 
-    if [ "$blessing_status" = "rejected" ]; then
-        info_human "This request was previously rejected."
+    if [ "$blessing_status" = "denied" ]; then
+        info_human "This request was previously denied."
         info_human "Re-submitting will create a new blessing request..."
     fi
 
@@ -2287,13 +2345,17 @@ cmd_comment() {
         fi
         log_default "Using reply-to URL from argument: $reply_to_url"
     else
-        # Regular file mode with interactive prompt
-        echo "Enter the URL of the post or comment you're replying to:"
-        echo "(Example: https://alice.com/posts/20251229/hello-world.md)"
-        read -r reply_to_url
-
+        # Regular file mode - check for positional arg first, then prompt
+        reply_to_url="$2"
         if [ -z "$reply_to_url" ]; then
-            error "URL is required"
+            # No argument provided, prompt interactively
+            echo "Enter the URL of the post or comment you're replying to:"
+            echo "(Example: https://alice.com/posts/20251229/hello-world.md)"
+            read -r reply_to_url
+
+            if [ -z "$reply_to_url" ]; then
+                error "URL is required"
+            fi
         fi
     fi
 
@@ -2307,7 +2369,8 @@ cmd_comment() {
     if is_comment_url "$reply_to_url"; then
         # Replying to a comment - need to fetch the root post
         info_human "Detected reply to a comment. Fetching root post..."
-        root_post=$(fetch_root_post_for_comment "$reply_to_url")
+        # Use || true to prevent set -e from killing script on failure
+        root_post=$(fetch_root_post_for_comment "$reply_to_url") || true
         if [ -z "$root_post" ]; then
             # Fallback: can't determine root_post, this might fail at beseech time
             # but allow user to continue for now
@@ -3081,18 +3144,13 @@ cmd_blessing_requests() {
     fi
 }
 
-# Command: polis blessing grant <request-id>
+# Command: polis blessing grant <hash>
 cmd_blessing_grant() {
-    local comment_id="$1"
+    local input_hash="$1"
 
     # Validate arguments
-    if [ -z "$comment_id" ]; then
-        json_error "blessing-grant" "INVALID_INPUT" "Usage: polis blessing grant <request-id>"
-    fi
-
-    # Validate comment_id is numeric
-    if ! [[ "$comment_id" =~ ^[0-9]+$ ]]; then
-        json_error "blessing-grant" "INVALID_INPUT" "Request ID must be a number"
+    if [ -z "$input_hash" ]; then
+        json_error "blessing-grant" "INVALID_INPUT" "Usage: polis blessing grant <hash>"
     fi
 
     # Check initialization
@@ -3100,17 +3158,40 @@ cmd_blessing_grant() {
         json_error "blessing-grant" "INVALID_STATE" "Polis not initialized. Run 'polis init' first."
     fi
 
-    # Always fetch request details (need comment_url for validation)
+    # Check POLIS_BASE_URL is set (needed for domain extraction)
+    if [ -z "$POLIS_BASE_URL" ]; then
+        json_error "blessing-grant" "INVALID_STATE" "POLIS_BASE_URL not set. Export it first."
+    fi
+
+    # Resolve short hash to full comment_version
+    info_human "Resolving hash..."
+    local domain=$(echo "$POLIS_BASE_URL" | sed 's|https\?://||' | sed 's|/.*||')
+    local comment_version
+
+    # Check if input is already a full hash (starts with sha256:)
+    if [[ "$input_hash" == sha256:* ]]; then
+        comment_version="$input_hash"
+    else
+        comment_version=$(resolve_short_hash "$input_hash" "$domain")
+    fi
+
+    if [ -z "$comment_version" ]; then
+        json_error "blessing-grant" "NOT_FOUND" "No pending request found matching hash: $input_hash"
+    fi
+
+    local short_hash=$(format_short_hash "$comment_version")
+
+    # Fetch request details
     info_human "Fetching request details..."
-    local request_json=$(fetch_request_details "$comment_id")
+    local request_json=$(fetch_request_details "$comment_version")
 
     if [ -z "$request_json" ] || [ "$request_json" = "null" ]; then
-        json_error "blessing-grant" "NOT_FOUND" "Request #$comment_id not found"
+        json_error "blessing-grant" "NOT_FOUND" "Request $short_hash not found"
     fi
 
     # Display request details in human mode
     if [ "$JSON_MODE" = false ]; then
-        display_request_details "$comment_id" "$request_json"
+        display_request_details "$short_hash" "$request_json"
     fi
 
     # Validate comment URL is reachable before blessing
@@ -3127,8 +3208,11 @@ cmd_blessing_grant() {
     # Create signed payload for authentication
     # The signature proves the requester controls the post author's domain
     local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-    local canonical_payload=$(printf '{"action":"grant","comment_id":%d,"timestamp":"%s"}' \
-        "$comment_id" "$timestamp")
+    local canonical_payload=$(jq -n -c \
+        --arg action "grant" \
+        --arg version "$comment_version" \
+        --arg ts "$timestamp" \
+        '{action: $action, comment_version: $version, timestamp: $ts}')
 
     # Sign the payload
     local temp_file=$(mktemp)
@@ -3140,11 +3224,11 @@ cmd_blessing_grant() {
 
     # Prepare POST payload with signature
     local payload=$(jq -n \
-        --argjson id "$comment_id" \
+        --arg version "$comment_version" \
         --arg action "grant" \
         --arg ts "$timestamp" \
         --arg sig "$signature" \
-        '{comment_id: $id, action: $action, timestamp: $ts, signature: $sig}')
+        '{comment_version: $version, action: $action, timestamp: $ts, signature: $sig}')
 
     # Call bless endpoint
     local response=$(curl -s -w "\n%{http_code}" \
@@ -3162,32 +3246,32 @@ cmd_blessing_grant() {
         200)
             # Extract comment details from response
             local comment_url=$(echo "$body" | jq -r '.request.comment_url')
-            local comment_version=$(echo "$body" | jq -r '.request.comment_version')
+            local resp_version=$(echo "$body" | jq -r '.request.comment_version')
             local in_reply_to=$(echo "$body" | jq -r '.request.in_reply_to')
             local blessed_at=$(echo "$body" | jq -r '.request.blessed_at')
             local author=$(echo "$body" | jq -r '.request.author')
 
             # Update blessed-comments.json
-            update_blessed_comments_json "$comment_url" "$comment_version" "$in_reply_to" "$blessed_at"
+            update_blessed_comments_json "$comment_url" "$resp_version" "$in_reply_to" "$blessed_at"
 
             # Extract blessed_by from server response (server determines this from verified domain)
             local blessed_by=$(echo "$body" | jq -r '.request.blessed_by // empty')
 
             if [ "$JSON_MODE" = true ]; then
                 local result=$(jq -n \
-                    --argjson id "$comment_id" \
+                    --arg version "$comment_version" \
                     --arg url "$comment_url" \
                     --arg blessed_at "$blessed_at" \
                     --arg blessed_by "$blessed_by" \
                     '{
-                        comment_id: $id,
+                        comment_version: $version,
                         comment_url: $url,
                         blessed_at: $blessed_at,
                         blessed_by: $blessed_by
                     }')
                 json_success "blessing-grant" "$result"
             else
-                success "Blessing granted for request #$comment_id"
+                success "Blessing granted for request $short_hash"
                 success "Updated blessed-comments.json"
                 info "Comment from $author is now blessed"
             fi
@@ -3196,7 +3280,7 @@ cmd_blessing_grant() {
             json_error "blessing-grant" "PERMISSION_ERROR" "Signature verification failed: You can only bless comments on your own posts. Response: $body"
             ;;
         404)
-            json_error "blessing-grant" "INVALID_INPUT" "Request #$comment_id not found. Response: $body"
+            json_error "blessing-grant" "INVALID_INPUT" "Request $short_hash not found. Response: $body"
             ;;
         400)
             json_error "blessing-grant" "INVALID_INPUT" "Invalid request. Response: $body"
@@ -3207,18 +3291,13 @@ cmd_blessing_grant() {
     esac
 }
 
-# Command: polis blessing deny <request-id>
+# Command: polis blessing deny <hash>
 cmd_blessing_deny() {
-    local comment_id="$1"
+    local input_hash="$1"
 
     # Validate arguments
-    if [ -z "$comment_id" ]; then
-        json_error "blessing-deny" "INVALID_INPUT" "Usage: polis blessing deny <request-id>"
-    fi
-
-    # Validate comment_id is numeric
-    if ! [[ "$comment_id" =~ ^[0-9]+$ ]]; then
-        json_error "blessing-deny" "INVALID_INPUT" "Request ID must be a number"
+    if [ -z "$input_hash" ]; then
+        json_error "blessing-deny" "INVALID_INPUT" "Usage: polis blessing deny <hash>"
     fi
 
     # Check initialization
@@ -3226,17 +3305,40 @@ cmd_blessing_deny() {
         json_error "blessing-deny" "INVALID_STATE" "Polis not initialized. Run 'polis init' first."
     fi
 
-    # Always fetch request details
+    # Check POLIS_BASE_URL is set (needed for domain extraction)
+    if [ -z "$POLIS_BASE_URL" ]; then
+        json_error "blessing-deny" "INVALID_STATE" "POLIS_BASE_URL not set. Export it first."
+    fi
+
+    # Resolve short hash to full comment_version
+    info_human "Resolving hash..."
+    local domain=$(echo "$POLIS_BASE_URL" | sed 's|https\?://||' | sed 's|/.*||')
+    local comment_version
+
+    # Check if input is already a full hash (starts with sha256:)
+    if [[ "$input_hash" == sha256:* ]]; then
+        comment_version="$input_hash"
+    else
+        comment_version=$(resolve_short_hash "$input_hash" "$domain")
+    fi
+
+    if [ -z "$comment_version" ]; then
+        json_error "blessing-deny" "NOT_FOUND" "No pending request found matching hash: $input_hash"
+    fi
+
+    local short_hash=$(format_short_hash "$comment_version")
+
+    # Fetch request details
     info_human "Fetching request details..."
-    local request_json=$(fetch_request_details "$comment_id")
+    local request_json=$(fetch_request_details "$comment_version")
 
     if [ -z "$request_json" ] || [ "$request_json" = "null" ]; then
-        json_error "blessing-deny" "NOT_FOUND" "Request #$comment_id not found"
+        json_error "blessing-deny" "NOT_FOUND" "Request $short_hash not found"
     fi
 
     # Display request details in human mode
     if [ "$JSON_MODE" = false ]; then
-        display_request_details "$comment_id" "$request_json"
+        display_request_details "$short_hash" "$request_json"
     fi
 
     # Check if comment URL is reachable (warn only, don't block deny)
@@ -3251,8 +3353,11 @@ cmd_blessing_deny() {
     # Create signed payload for authentication
     # The signature proves the requester controls the post author's domain
     local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-    local canonical_payload=$(printf '{"action":"deny","comment_id":%d,"timestamp":"%s"}' \
-        "$comment_id" "$timestamp")
+    local canonical_payload=$(jq -n -c \
+        --arg action "deny" \
+        --arg version "$comment_version" \
+        --arg ts "$timestamp" \
+        '{action: $action, comment_version: $version, timestamp: $ts}')
 
     # Sign the payload
     local temp_file=$(mktemp)
@@ -3264,11 +3369,11 @@ cmd_blessing_deny() {
 
     # Prepare POST payload with signature
     local payload=$(jq -n \
-        --argjson id "$comment_id" \
+        --arg version "$comment_version" \
         --arg action "deny" \
         --arg ts "$timestamp" \
         --arg sig "$signature" \
-        '{comment_id: $id, action: $action, timestamp: $ts, signature: $sig}')
+        '{comment_version: $version, action: $action, timestamp: $ts, signature: $sig}')
 
     # Call deny endpoint
     local response=$(curl -s -w "\n%{http_code}" \
@@ -3298,28 +3403,28 @@ cmd_blessing_deny() {
 
             if [ "$JSON_MODE" = true ]; then
                 local result=$(jq -n \
-                    --argjson id "$comment_id" \
+                    --arg version "$comment_version" \
                     --arg url "$comment_url" \
                     --arg denied_at "$denied_at" \
                     --arg denied_by "$denied_by" \
                     '{
-                        comment_id: $id,
+                        comment_version: $version,
                         comment_url: $url,
                         denied_at: $denied_at,
                         denied_by: $denied_by
                     }')
                 json_success "blessing-deny" "$result"
             else
-                success "Blessing denied for request #$comment_id"
+                success "Blessing denied for request $short_hash"
                 info "Removed from blessed-comments.json (if present)"
-                info "Comment from $author has been rejected"
+                info "Comment from $author has been denied"
             fi
             ;;
         403)
             json_error "blessing-deny" "PERMISSION_ERROR" "Signature verification failed: You can only deny comments on your own posts. Response: $body"
             ;;
         404)
-            json_error "blessing-deny" "INVALID_INPUT" "Request #$comment_id not found. Response: $body"
+            json_error "blessing-deny" "INVALID_INPUT" "Request $short_hash not found. Response: $body"
             ;;
         400)
             json_error "blessing-deny" "INVALID_INPUT" "Invalid request. Response: $body"
@@ -3396,10 +3501,10 @@ cmd_follow() {
     # Fetch unblessed comments from this author
     info_human "Fetching comments from $author_email..."
     local pending_comments=$(fetch_comments_by_author "$author_email" "pending")
-    local rejected_comments=$(fetch_comments_by_author "$author_email" "rejected")
+    local denied_comments=$(fetch_comments_by_author "$author_email" "denied")
 
-    # Combine pending and rejected into one array
-    local unblessed_comments=$(jq -s 'add' <(echo "$pending_comments") <(echo "$rejected_comments"))
+    # Combine pending and denied into one array
+    local unblessed_comments=$(jq -s 'add' <(echo "$pending_comments") <(echo "$denied_comments"))
     local comment_count=$(echo "$unblessed_comments" | jq 'length')
 
     # Display summary in human mode
@@ -3428,7 +3533,7 @@ cmd_follow() {
             echo "All these comments will be blessed."
         else
             echo "No unblessed comments found from this author."
-            echo "Future comments from this author can be manually blessed."
+            echo "Future comments from this author will be automatically blessed."
         fi
         echo ""
     fi

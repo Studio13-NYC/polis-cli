@@ -153,7 +153,7 @@ Signed payload:
 ```json
 {
   "action": "grant",  // or "deny"
-  "comment_id": 123,
+  "comment_version": "sha256:f4bac5d0efaa759...",
   "timestamp": "2026-01-07T12:00:00Z"
 }
 ```
@@ -306,7 +306,7 @@ The discovery service is designed as **"honest but curious"**:
 
 **Mitigation:**
 - Blessing grant/deny requires signature verification
-- Signed payload includes action, comment_id, timestamp
+- Signed payload includes action, comment_version, timestamp
 - Public key fetched from post author's domain (not requester's claim)
 
 **Residual risk:** None if implementation is correct. Vulnerability existed in earlier version (v0.7.0 used email-based auth, fixed in v0.8.0).
@@ -407,6 +407,7 @@ Only the post author (holder of that private key) can sign valid blessing reques
 **Default behavior:** If a user beseeches a comment and takes no protective action, the comment is:
 - Stored on commenter's domain (accessible if URL is known)
 - Indexed in discovery service (discoverable via query API)
+- Stored on the author's domain if blessed (accessible if URL is known)
 
 **Rationale:** Polis defaults to public to enable open discourse, but users retain control over their content at the file and server level. The blessing model controls amplification (what gets promoted on the post author's site), not existence.
 
@@ -581,8 +582,7 @@ Optional encryption for private content. Would require:
 
 This security model is evolving. If you identify gaps, have questions, or want to contribute improvements:
 
-- Review the source: [repository link]
-- Open an issue: [issues link]
-- Contact: [email]
+- Review the source: https://github.com/vdibart/polis-cli
+- Open an issue: https://github.com/vdibart/polis-cli/issues
 
 We take security seriously and will address reported issues promptly.

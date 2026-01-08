@@ -67,22 +67,22 @@ List pending blessing requests for your posts.
 ./cli/bin/polis --json blessing requests
 ```
 
-### `polis blessing grant <id>`
-Approve a pending blessing request.
+### `polis blessing grant <hash>`
+Approve a pending blessing request. Hash can be short form (e.g., `f4bac5-350fd2`) or full hash.
 
 ```bash
-./cli/bin/polis --json blessing grant 42
+./cli/bin/polis --json blessing grant f4bac5-350fd2
 ```
 
-### `polis blessing deny <id>`
-Reject a pending blessing request.
+### `polis blessing deny <hash>`
+Deny a pending blessing request. Hash can be short form or full hash.
 
 ```bash
-./cli/bin/polis --json blessing deny 42
+./cli/bin/polis --json blessing deny f4bac5-350fd2
 ```
 
 ### `polis blessing beseech <id>`
-Re-request blessing for a comment (retry).
+Re-request blessing for a comment (retry). Looks up request by database ID.
 
 ```bash
 ./cli/bin/polis --json blessing beseech 42

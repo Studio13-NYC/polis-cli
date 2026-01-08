@@ -210,7 +210,7 @@ The following environment variables should be configured:
 
    c. **Present with recommendation**:
       ```
-      Request #<id> from <author>
+      Request <hash> from <author>
       On: <post-url>
       Comment: "<excerpt>..."
       Signature: VALID/INVALID
@@ -222,9 +222,9 @@ The following environment variables should be configured:
 
    d. **Execute user's decision**:
       ```bash
-      ./cli/bin/polis --json blessing grant <id>
+      ./cli/bin/polis --json blessing grant <hash>
       # or
-      ./cli/bin/polis --json blessing deny <id>
+      ./cli/bin/polis --json blessing deny <hash>
       ```
 
    e. **Move to next request**

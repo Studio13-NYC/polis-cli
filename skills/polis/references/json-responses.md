@@ -135,7 +135,7 @@ Reference for parsing JSON responses from polis CLI commands.
   "status": "success",
   "command": "blessing-grant",
   "data": {
-    "comment_id": 123,
+    "comment_version": "sha256:f4bac5d0...",
     "comment_url": "https://alice.com/comments/reply.md",
     "blessed_at": "2026-01-06T13:00:00Z",
     "blessed_by": "bob@example.com"
@@ -149,7 +149,7 @@ Reference for parsing JSON responses from polis CLI commands.
   "status": "success",
   "command": "blessing-deny",
   "data": {
-    "comment_id": 123,
+    "comment_version": "sha256:f4bac5d0...",
     "comment_url": "https://alice.com/comments/reply.md",
     "denied_at": "2026-01-06T13:00:00Z",
     "denied_by": "bob@example.com"

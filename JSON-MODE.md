@@ -207,14 +207,14 @@ When interactive prompts are auto-skipped in JSON mode, these defaults are used:
 }
 ```
 
-### `polis blessing grant <id>`
+### `polis blessing grant <hash>`
 
 ```json
 {
   "status": "success",
   "command": "blessing-grant",
   "data": {
-    "comment_id": 123,
+    "comment_version": "sha256:f4bac5d0...",
     "comment_url": "https://alice.com/comments/reply.md",
     "blessed_at": "2025-01-15T13:00:00Z",
     "blessed_by": "bob@example.com"
@@ -222,7 +222,7 @@ When interactive prompts are auto-skipped in JSON mode, these defaults are used:
 }
 ```
 
-### `polis blessing deny <id>`
+### `polis blessing deny <hash>`
 
 Similar structure to `blessing grant`, with `denied_at` and `denied_by` fields.
 

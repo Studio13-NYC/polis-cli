@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-01-08
+
+### Breaking Changes
+- **Blessing status**: Renamed `rejected` status to `denied` for consistency with CLI terminology
+  - Database migration required: `ALTER TYPE public.blessing_status_enum RENAME VALUE 'rejected' TO 'denied';`
+- **Blessing operations**: Now use content hash instead of database ID
+  - `polis blessing grant <hash>` (was `<id>`)
+  - `polis blessing deny <hash>` (was `<id>`)
+  - Hash can be short form (e.g., `f4bac5-350fd2`) or full `sha256:...` prefix
+  - CLI displays short hash in blessing requests table
+  - Signed payload field changed from `comment_id` to `comment_version`
+
+### Fixed
+- **Nested comments**: Added missing `warn` and `warn_human` helper functions that caused silent failures when commenting on comments
+- **Follow message**: Corrected misleading message "manually blessed" → "automatically blessed" when following an author with no pending comments
+- **Comment URL argument**: `polis comment <file> <url>` now correctly uses the URL argument instead of always prompting interactively
+- **Blessing preview**: Fixed "Redirecting" appearing in preview by following HTTP redirects when fetching comment content
+
 ## [0.12.0] - 2026-01-08
 
 ### Fixed

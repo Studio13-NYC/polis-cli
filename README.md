@@ -316,7 +316,7 @@ We're not fighting Twitter's network effects. We're serving the people platforms
 - **[MANIFESTO.md](MANIFESTO.md)** — Vision and philosophy
 - **[USAGE.md](USAGE.md)** — Complete command reference
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** — Development guidelines
-- **[SECURITY.md](SECURITY.md)** — Security policy
+- **[SECURITY-POLICY.md](SECURITY-POLICY.md)** — Security policy
 
 ---
 

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-01-08
+
+### Fixed
+- **Sync bug**: `blessing_status` query parameter was ignored by discovery service, causing pending comments to be incorrectly added to `blessed-comments.json` during sync
+- **URL validation**: `polis blessing grant` now validates comment URL exists before blessing (blocks on 404)
+- `polis blessing deny` now warns if comment URL returns 404
+
+### Changed
+- `polis blessing grant` and `polis blessing deny` now fetch request details in all modes (not just human mode)
+
 ## [0.11.0] - 2026-01-07
 
 ### Added

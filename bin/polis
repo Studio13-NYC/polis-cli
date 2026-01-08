@@ -27,7 +27,7 @@ set -e
 #   4. Hardcoded defaults
 
 # Fixed constants (never configurable - required for discovery)
-VERSION="0.11.0"
+VERSION="0.12.0"
 WELL_KNOWN_DIR=".well-known"
 WELL_KNOWN_FILE="polis"
 
@@ -3100,17 +3100,28 @@ cmd_blessing_grant() {
         json_error "blessing-grant" "INVALID_STATE" "Polis not initialized. Run 'polis init' first."
     fi
 
-    # Fetch and display request details in human mode
+    # Always fetch request details (need comment_url for validation)
+    info_human "Fetching request details..."
+    local request_json=$(fetch_request_details "$comment_id")
+
+    if [ -z "$request_json" ] || [ "$request_json" = "null" ]; then
+        json_error "blessing-grant" "NOT_FOUND" "Request #$comment_id not found"
+    fi
+
+    # Display request details in human mode
     if [ "$JSON_MODE" = false ]; then
-        info "Fetching request details..."
-        local request_json=$(fetch_request_details "$comment_id")
-
-        if [ -z "$request_json" ] || [ "$request_json" = "null" ]; then
-            error "Request #$comment_id not found"
-        fi
-
-        # Display request details (without confirmation)
         display_request_details "$comment_id" "$request_json"
+    fi
+
+    # Validate comment URL is reachable before blessing
+    local comment_url=$(echo "$request_json" | jq -r '.comment_url')
+    if [ -n "$comment_url" ] && [ "$comment_url" != "null" ]; then
+        local url_status=$(curl -s -o /dev/null -w "%{http_code}" "$comment_url")
+        if [ "$url_status" = "404" ]; then
+            json_error "blessing-grant" "COMMENT_NOT_FOUND" "Comment URL returns 404. The comment may have been deleted: $comment_url"
+        elif [ "$url_status" != "200" ]; then
+            warn_human "Warning: Comment URL returned HTTP $url_status (expected 200)"
+        fi
     fi
 
     # Create signed payload for authentication
@@ -3215,17 +3226,26 @@ cmd_blessing_deny() {
         json_error "blessing-deny" "INVALID_STATE" "Polis not initialized. Run 'polis init' first."
     fi
 
-    # Fetch and display request details in human mode
+    # Always fetch request details
+    info_human "Fetching request details..."
+    local request_json=$(fetch_request_details "$comment_id")
+
+    if [ -z "$request_json" ] || [ "$request_json" = "null" ]; then
+        json_error "blessing-deny" "NOT_FOUND" "Request #$comment_id not found"
+    fi
+
+    # Display request details in human mode
     if [ "$JSON_MODE" = false ]; then
-        info "Fetching request details..."
-        local request_json=$(fetch_request_details "$comment_id")
-
-        if [ -z "$request_json" ] || [ "$request_json" = "null" ]; then
-            error "Request #$comment_id not found"
-        fi
-
-        # Display request details (without confirmation)
         display_request_details "$comment_id" "$request_json"
+    fi
+
+    # Check if comment URL is reachable (warn only, don't block deny)
+    local comment_url=$(echo "$request_json" | jq -r '.comment_url')
+    if [ -n "$comment_url" ] && [ "$comment_url" != "null" ]; then
+        local url_status=$(curl -s -o /dev/null -w "%{http_code}" "$comment_url")
+        if [ "$url_status" = "404" ]; then
+            warn_human "Note: Comment URL returns 404 (may have been deleted)"
+        fi
     fi
 
     # Create signed payload for authentication
@@ -4766,7 +4786,7 @@ main() {
             echo ""
             echo "Required for blessing commands:"
             echo "  POLIS_BASE_URL                  Your public HTTPS URL"
-            echo "  DISCOVERY_SERVICE_KEY               Discovery service API key"
+            echo "  DISCOVERY_SERVICE_KEY           Discovery service API key"
             echo ""
             echo "Optional:"
             echo "  POLIS_ENDPOINT_BASE             Discovery service base URL (has default)"

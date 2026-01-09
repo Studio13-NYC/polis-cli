@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-01-08
+
+### Changed
+- **Rebuild command refactor**: `polis rebuild` now requires explicit target flags for better control
+  - `--content` - Rebuild public.jsonl from posts and comments
+  - `--comments` - Full rebuild of blessed-comments.json from discovery service
+  - `--all` - Rebuild all indexes
+  - Flags are combinable (e.g., `--content --comments`)
+  - Replaced `--diff` and `--full` flags (removed incremental sync feature)
+  - JSON output now includes counts: `posts_indexed`, `comments_indexed`, `blessed_comments`
+  - Updated help text and skills documentation
+
+### Removed
+- **Incremental blessed comments sync**: Removed `--diff` flag from `polis rebuild`
+  - Incremental sync proved unreliable for maintaining consistency
+  - Full rebuild (`--comments`) is now the only supported method
+
 ## [0.15.0] - 2026-01-08
 
 ### Added

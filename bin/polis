@@ -27,7 +27,7 @@ set -e
 #   4. Hardcoded defaults
 
 # Fixed constants (never configurable - required for discovery)
-VERSION="0.15.0"
+VERSION="0.16.0"
 WELL_KNOWN_DIR=".well-known"
 WELL_KNOWN_FILE="polis"
 
@@ -3093,48 +3093,82 @@ signature: $signature
 
 # Command: polis rebuild
 cmd_rebuild() {
-    if [ ! -f "$PUBLIC_INDEX" ]; then
-        error "public.jsonl not found. Run 'polis init' first."
-    fi
+    local do_content=false
+    local do_comments=false
 
-    local sync_mode=""
-
-    # Parse flags
+    # Parse flags (combinable)
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --diff)
-                if [ -n "$sync_mode" ]; then
-                    error "Cannot use --diff and --full together"
-                fi
-                sync_mode="diff"
+            --content)
+                do_content=true
                 shift
                 ;;
-            --full)
-                if [ -n "$sync_mode" ]; then
-                    error "Cannot use --diff and --full together"
-                fi
-                sync_mode="full"
+            --comments)
+                do_comments=true
+                shift
+                ;;
+            --all)
+                do_content=true
+                do_comments=true
                 shift
                 ;;
             *)
-                error "Unknown option: $1"
+                json_error "rebuild" "INVALID_INPUT" "Unknown option: $1. Use: polis rebuild --content|--comments|--all"
                 ;;
         esac
     done
 
-    # Rebuild content index
-    rebuild_index
-
-    # Sync blessings if requested
-    if [ "$sync_mode" = "diff" ]; then
-        info "Syncing missing blessed comments..."
-        local synced=$(sync_blessed_comments)
-        success "Synced $synced new blessed comments"
-    elif [ "$sync_mode" = "full" ]; then
-        rebuild_blessed_comments_full
+    # Require at least one target
+    if [[ "$do_content" == false && "$do_comments" == false ]]; then
+        json_error "rebuild" "INVALID_INPUT" "Must specify target: --content, --comments, or --all"
     fi
 
-    success "Rebuild complete!"
+    local posts_count=0
+    local comments_count=0
+    local blessed_count=0
+
+    # Rebuild content index
+    if [[ "$do_content" == true ]]; then
+        info_human "Rebuilding content index..."
+        rebuild_index
+        # Count entries
+        if [ -f "$PUBLIC_INDEX" ]; then
+            posts_count=$(grep -c '"type":"post"' "$PUBLIC_INDEX" 2>/dev/null || echo "0")
+            comments_count=$(grep -c '"type":"comment"' "$PUBLIC_INDEX" 2>/dev/null || echo "0")
+        fi
+        success_human "Rebuilt public.jsonl ($posts_count posts, $comments_count comments)"
+    fi
+
+    # Rebuild blessed comments
+    if [[ "$do_comments" == true ]]; then
+        info_human "Rebuilding blessed comments..."
+        rebuild_blessed_comments_full
+        # Count blessed
+        if [ -f "$BLESSED_COMMENTS" ]; then
+            blessed_count=$(jq '.comments | length' "$BLESSED_COMMENTS" 2>/dev/null || echo "0")
+        fi
+        success_human "Rebuilt blessed-comments.json ($blessed_count blessed comments)"
+    fi
+
+    # Output results
+    if [ "$JSON_MODE" = true ]; then
+        local result=$(jq -n \
+            --argjson content "$do_content" \
+            --argjson comments "$do_comments" \
+            --argjson posts "$posts_count" \
+            --argjson comments_indexed "$comments_count" \
+            --argjson blessed "$blessed_count" \
+            '{
+                content_rebuilt: $content,
+                comments_rebuilt: $comments,
+                posts_indexed: $posts,
+                comments_indexed: $comments_indexed,
+                blessed_comments: $blessed
+            }')
+        json_success "rebuild" "$result"
+    else
+        success "Rebuild complete!"
+    fi
 }
 
 # Command: polis index [--json]
@@ -3279,7 +3313,7 @@ cmd_rotate_key() {
     # 7. Rebuild index
     info_human ""
     info_human "Rebuilding index..."
-    cmd_rebuild > /dev/null 2>&1
+    cmd_rebuild --content > /dev/null 2>&1
     success_human "Rebuilt public.jsonl index"
 
     # 8. Handle old key
@@ -5149,7 +5183,8 @@ main() {
             echo "    --posts-dir <path>            Custom posts directory (default: posts)"
             echo "    --comments-dir <path>         Custom comments directory (default: comments)"
             echo "    --versions-dir <path>         Custom versions directory (default: .versions)"
-            echo "  polis rebuild [--diff|--full]   Rebuild indexes (--diff/--full sync blessings)"
+            echo "  polis rebuild --content|--comments|--all"
+            echo "                                  Rebuild local indexes (flags are combinable)"
             echo "  polis index [--json]            View index (JSONL or JSON format)"
             echo "  polis version                   Print CLI version"
             echo "  polis rotate-key [--delete-old-key]"

@@ -114,11 +114,26 @@ View the content index.
 ```
 
 ### `polis rebuild`
-Rebuild the index from published files.
+Rebuild local indexes. Requires at least one target flag.
 
 ```bash
-./cli/bin/polis --json rebuild
+# Rebuild content index (public.jsonl)
+./cli/bin/polis --json rebuild --content
+
+# Full rebuild of blessed comments from discovery service
+./cli/bin/polis --json rebuild --comments
+
+# Rebuild all indexes
+./cli/bin/polis --json rebuild --all
+
+# Flags are combinable
+./cli/bin/polis --json rebuild --content --comments
 ```
+
+Options:
+- `--content` - Rebuild public.jsonl from posts and comments
+- `--comments` - Full rebuild of blessed-comments.json from discovery service
+- `--all` - Rebuild all indexes (equivalent to `--content --comments`)
 
 ## Utility Commands
 

@@ -1,12 +1,16 @@
 #!/bin/bash
 # run_tests.sh - Main test runner for Polis CLI
 #
+# Tests run in the current working directory using the existing git repo.
+# Test artifacts are created in test-data/, committed, then git rm'd at cleanup.
+#
 # Usage:
-#   ./tests/run_tests.sh                    # Run all tests, human output
-#   ./tests/run_tests.sh --json             # Run all tests, JSON output
+#   ./tests/run_tests.sh                    # Run all tests
+#   ./tests/run_tests.sh --json             # JSON output
 #   ./tests/run_tests.sh --category unit    # Run only unit tests
-#   ./tests/run_tests.sh --push             # Prompt to push after tests pass
 #   ./tests/run_tests.sh --skip-network     # Skip network API calls
+#   ./tests/run_tests.sh --auto-push        # Auto-push commits
+#   ./tests/run_tests.sh --cleanup          # Cleanup orphaned test data
 #
 # Categories: unit, integration, e2e, all (default)
 
@@ -16,13 +20,20 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLI_DIR="$(dirname "$SCRIPT_DIR")"
 REPO_ROOT="$(dirname "$CLI_DIR")"
 
-# Export polis binary path
-export POLIS_BIN="$CLI_DIR/bin/polis"
+# Export polis binary path (check ./bin/polis first, then ./polis)
+if [[ -x "$CLI_DIR/bin/polis" ]]; then
+    export POLIS_BIN="$CLI_DIR/bin/polis"
+elif [[ -x "$CLI_DIR/polis" ]]; then
+    export POLIS_BIN="$CLI_DIR/polis"
+else
+    export POLIS_BIN="$CLI_DIR/bin/polis"  # Default for error message
+fi
 
 # Parse arguments
 export JSON_OUTPUT=false
 export SKIP_NETWORK=false
-PUSH_AFTER_TEST=false
+export AUTO_PUSH=false
+RUN_CLEANUP_ONLY=false
 TEST_CATEGORY="all"
 
 while [[ $# -gt 0 ]]; do
@@ -31,12 +42,16 @@ while [[ $# -gt 0 ]]; do
             JSON_OUTPUT=true
             shift
             ;;
-        --push)
-            PUSH_AFTER_TEST=true
-            shift
-            ;;
         --skip-network)
             SKIP_NETWORK=true
+            shift
+            ;;
+        --auto-push)
+            AUTO_PUSH=true
+            shift
+            ;;
+        --cleanup)
+            RUN_CLEANUP_ONLY=true
             shift
             ;;
         --category)
@@ -51,9 +66,16 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  --json            Output results in JSON format"
             echo "  --category TYPE   Run only tests of TYPE (unit, integration, e2e, all)"
-            echo "  --skip-network    Skip actual API calls, assume success"
-            echo "  --push            Prompt to push changes after successful tests"
+            echo "  --skip-network    Skip actual API calls to discovery service"
+            echo "  --auto-push       Auto-push commits after test cleanup"
+            echo "  --cleanup         Cleanup orphaned test data (from failed tests)"
             echo "  --help            Show this help message"
+            echo ""
+            echo "Examples:"
+            echo "  $0                          # Run all tests"
+            echo "  $0 --skip-network           # Run without API calls"
+            echo "  $0 --auto-push              # Run and push to trigger deploy"
+            echo "  $0 --cleanup                # Clean up after failed test"
             exit 0
             ;;
         *)
@@ -63,6 +85,29 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# Source test framework first (needed for cleanup)
+source "$SCRIPT_DIR/lib/test_framework.sh"
+
+# Handle cleanup-only mode
+if [[ "$RUN_CLEANUP_ONLY" == "true" ]]; then
+    if [[ "$JSON_OUTPUT" == "true" ]]; then
+        if has_test_data; then
+            emergency_cleanup
+            echo '{"status": "success", "command": "cleanup", "data": {"cleaned": true}}'
+        else
+            echo '{"status": "success", "command": "cleanup", "data": {"cleaned": false, "message": "No test data found"}}'
+        fi
+    else
+        if has_test_data; then
+            emergency_cleanup
+            echo "Cleanup complete."
+        else
+            echo "No test data to clean up."
+        fi
+    fi
+    exit 0
+fi
 
 # Source .env file if it exists (for e2e tests)
 if [[ -f "$CLI_DIR/.env" ]]; then
@@ -76,6 +121,16 @@ if [[ ! -x "$POLIS_BIN" ]]; then
         echo '{"error": "polis binary not found", "path": "'"$POLIS_BIN"'"}'
     else
         echo "Error: polis binary not found at $POLIS_BIN"
+    fi
+    exit 1
+fi
+
+# Verify we're in a git repository
+if ! git rev-parse --git-dir > /dev/null 2>&1; then
+    if [[ "$JSON_OUTPUT" == "true" ]]; then
+        echo '{"error": "Not in a git repository. Tests require an existing git repo."}'
+    else
+        echo "Error: Not in a git repository. Tests require an existing git repo."
     fi
     exit 1
 fi
@@ -100,13 +155,16 @@ if [[ "$JSON_OUTPUT" != "true" ]]; then
     echo "Polis Binary: $POLIS_BIN"
     echo "Test Category: $TEST_CATEGORY"
     echo "Skip Network: $SKIP_NETWORK"
+    echo "Auto Push: $AUTO_PUSH"
     echo ""
 fi
 
-# Source test libraries
-source "$SCRIPT_DIR/lib/test_framework.sh"
+# Source remaining test libraries
 source "$SCRIPT_DIR/lib/assertions.sh"
 source "$SCRIPT_DIR/lib/fixtures.sh"
+
+# Initialize test run (cleans up orphaned test data)
+init_test_run
 
 # Run tests in a category
 run_test_category() {
@@ -168,48 +226,5 @@ esac
 # Print summary
 print_summary
 TEST_RESULT=$?
-
-# Handle push workflow (human mode only, after successful tests)
-if [[ "$PUSH_AFTER_TEST" == true && "$JSON_OUTPUT" != "true" ]]; then
-    if [[ $TEST_RESULT -eq 0 ]]; then
-        echo ""
-        echo "=============================================="
-        echo "All tests passed!"
-        echo "=============================================="
-
-        # Check if we're in a git repo with changes
-        cd "$REPO_ROOT"
-        if git rev-parse --git-dir > /dev/null 2>&1; then
-            # Check for staged or unstaged changes
-            if ! git diff --quiet || ! git diff --cached --quiet; then
-                echo ""
-                echo "The following files have changes:"
-                git status --short
-                echo ""
-                read -p "Do you want to push these changes to remote? (y/N): " -n 1 -r
-                echo ""
-
-                if [[ $REPLY =~ ^[Yy]$ ]]; then
-                    # Stage test files if modified
-                    git add "$SCRIPT_DIR"
-
-                    echo ""
-                    echo "Files staged. Please commit and push when ready."
-                    echo "Example: git commit -m 'Add/update CLI tests' && git push"
-                else
-                    echo "Push cancelled. Changes remain locally."
-                fi
-            else
-                echo "No changes to push."
-            fi
-        fi
-    else
-        echo ""
-        echo "=============================================="
-        echo "Tests failed - not pushing."
-        echo "=============================================="
-        echo "Fix the failing tests before pushing."
-    fi
-fi
 
 exit $TEST_RESULT

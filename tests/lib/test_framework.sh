@@ -1,8 +1,12 @@
 #!/bin/bash
 # test_framework.sh - Core test framework utilities for Polis CLI tests
 #
+# Tests run in the current working directory using the existing git repo.
+# Test artifacts are created in test-data/, committed, then git rm'd at cleanup.
+#
 # Provides:
-#   - Test environment setup/teardown (isolated temp directories)
+#   - Test environment setup/teardown (test-data/ subdirectory)
+#   - Git-tracked artifact management
 #   - Test execution and tracking
 #   - Output formatting (human-readable or JSON)
 
@@ -11,13 +15,13 @@ TEST_COUNT=0
 PASS_COUNT=0
 FAIL_COUNT=0
 SKIP_COUNT=0
-TEST_DIR=""
-ORIGINAL_DIR=""
 TEST_RESULTS=()
 
-# Output mode (set by run_tests.sh)
+# Configuration (set by run_tests.sh or environment)
 : "${JSON_OUTPUT:=false}"
 : "${SKIP_NETWORK:=false}"
+: "${AUTO_PUSH:=false}"
+TEST_DATA_DIR="test-data"
 
 # Color codes (disabled in JSON mode)
 if [[ "$JSON_OUTPUT" != "true" ]]; then
@@ -34,38 +38,115 @@ else
     NC=''
 fi
 
+# Check if test-data directory exists
+has_test_data() {
+    [[ -d "$TEST_DATA_DIR" ]]
+}
+
+# Emergency cleanup for failed tests or manual recovery
+emergency_cleanup() {
+    if [[ "$JSON_OUTPUT" != "true" ]]; then
+        echo "  Running emergency cleanup..."
+    fi
+
+    if [[ -d "$TEST_DATA_DIR" ]]; then
+        # Try git rm first
+        git rm -rf --quiet "$TEST_DATA_DIR" 2>/dev/null || true
+
+        # Force remove if still exists
+        rm -rf "$TEST_DATA_DIR" 2>/dev/null || true
+
+        # Commit cleanup if there are staged changes
+        if ! git diff --cached --quiet 2>/dev/null; then
+            git commit -m "test-emergency-cleanup: $(date +%Y%m%d-%H%M%S)" --quiet 2>/dev/null || true
+        fi
+    fi
+
+    if [[ "$JSON_OUTPUT" != "true" ]]; then
+        echo "  Cleanup complete"
+    fi
+}
+
+# Initialize test run (called once at start of test suite)
+init_test_run() {
+    # Check for leftover test data from previous failed run
+    if has_test_data; then
+        if [[ "$JSON_OUTPUT" != "true" ]]; then
+            echo "[WARN] Found orphaned test-data/ directory. Cleaning up..."
+        fi
+        emergency_cleanup
+    fi
+}
+
 # Initialize test environment
-# Creates isolated temp directory with git repo
+# Creates test-data/ subdirectory with posts, comments, metadata
 setup_test_env() {
     local test_name="$1"
 
-    ORIGINAL_DIR="$(pwd)"
-    TEST_DIR=$(mktemp -d -t "polis-test-${test_name}-XXXXXX")
-    cd "$TEST_DIR" || exit 1
+    # Verify we're in a git repo
+    if ! git rev-parse --git-dir > /dev/null 2>&1; then
+        log_error "Not in a git repository. Tests require an existing git repo."
+        exit 1
+    fi
 
-    # Initialize git repo for tests (polis uses git for staging)
-    git init --quiet
-    git config user.email "test@polis-cli.test"
-    git config user.name "Polis Test Runner"
+    # Create test-data directory structure
+    mkdir -p "$TEST_DATA_DIR/posts"
+    mkdir -p "$TEST_DATA_DIR/comments"
+    mkdir -p "$TEST_DATA_DIR/metadata"
 
-    # Ensure no remote is configured (prevent accidental pushes)
-    git remote remove origin 2>/dev/null || true
+    # Set environment variables for fixtures
+    export POSTS_DIR="$TEST_DATA_DIR/posts"
+    export COMMENTS_DIR="$TEST_DATA_DIR/comments"
+    export METADATA_DIR="$TEST_DATA_DIR/metadata"
+
+    # Initialize test metadata files
+    echo '{"comments":[],"last_updated":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' > "$TEST_DATA_DIR/metadata/blessed-comments.json"
+    echo '{"following":[]}' > "$TEST_DATA_DIR/metadata/following.json"
+    touch "$TEST_DATA_DIR/metadata/public.jsonl"
 
     if [[ "$JSON_OUTPUT" != "true" ]]; then
-        echo "  [SETUP] Test directory: $TEST_DIR"
+        echo "  [SETUP] Test directory: $TEST_DATA_DIR (test: $test_name)"
     fi
 }
 
 # Clean up test environment
+# Commits test artifacts, then removes them via git rm
 teardown_test_env() {
-    cd "$ORIGINAL_DIR" || cd /
-    if [[ -n "$TEST_DIR" && -d "$TEST_DIR" ]]; then
-        rm -rf "$TEST_DIR"
+    if [[ -d "$TEST_DATA_DIR" ]]; then
+        # Stage test artifacts
+        git add "$TEST_DATA_DIR" 2>/dev/null || true
+
+        # Commit test artifacts if anything was staged
+        if ! git diff --cached --quiet 2>/dev/null; then
+            git commit -m "test-artifacts: $(date +%Y%m%d-%H%M%S)" --quiet 2>/dev/null || true
+        fi
+
+        # Remove test-data via git rm
+        git rm -rf --quiet "$TEST_DATA_DIR" 2>/dev/null || rm -rf "$TEST_DATA_DIR"
+
+        # Commit the removal
+        if ! git diff --cached --quiet 2>/dev/null; then
+            git commit -m "test-cleanup: removed test-data" --quiet 2>/dev/null || true
+        fi
+
+        # Auto-push if enabled
+        if [[ "$AUTO_PUSH" == "true" ]]; then
+            if git remote get-url origin &>/dev/null; then
+                git push --quiet 2>/dev/null || {
+                    if [[ "$JSON_OUTPUT" != "true" ]]; then
+                        echo "  [WARN] Auto-push failed. Run 'git push' manually."
+                    fi
+                }
+            fi
+        fi
+
         if [[ "$JSON_OUTPUT" != "true" ]]; then
-            echo "  [TEARDOWN] Cleaned up: $TEST_DIR"
+            echo "  [TEARDOWN] Cleaned up: $TEST_DATA_DIR"
         fi
     fi
-    TEST_DIR=""
+
+    # Clear environment variables
+    unset POSTS_DIR COMMENTS_DIR METADATA_DIR
 }
 
 # Run a single test

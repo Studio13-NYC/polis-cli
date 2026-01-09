@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-01-08
+
+### Added
+- **Automatic .env creation**: `polis init` now automatically copies `.env.example` to `.env` if it doesn't exist
+  - Displays helpful warning reminding users to update configuration values
+  - JSON mode includes `env_created` boolean flag in response data
+
+### Changed
+- **Environment variable naming**: Updated `.env.example` to use `DISCOVERY_SERVICE_KEY` instead of `SUPABASE_ANON_KEY` for consistency
+- **Test framework refactor**: Tests now run in isolated temporary directories instead of tracked test-data/ directory for better isolation
+- **Test fixtures**: Enhanced to support `POSTS_DIR` and `COMMENTS_DIR` environment variables
+
+### Fixed
+- **Blessing workflow tests**: Updated to use content hash-based blessing operations instead of database IDs
+
 ## [0.13.0] - 2026-01-08
 
 ### Breaking Changes

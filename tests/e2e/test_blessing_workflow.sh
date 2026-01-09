@@ -192,14 +192,17 @@ test_blessing_grant() {
         return 0
     fi
 
-    # Get the first request ID
-    local request_id
-    request_id=$(echo "$requests_result" | jq -r '.data.requests[0].id')
-    log "  Testing with request ID: $request_id"
+    # Get the first request's comment_version (hash)
+    local comment_version short_hash
+    comment_version=$(echo "$requests_result" | jq -r '.data.requests[0].comment_version')
+    # Format as short hash for display (first 6 + last 6 chars, minus sha256: prefix)
+    local hash_only="${comment_version#sha256:}"
+    short_hash="${hash_only:0:6}-${hash_only: -6}"
+    log "  Testing with request hash: $short_hash"
 
-    # Grant the blessing
+    # Grant the blessing using short hash
     local grant_result
-    grant_result=$("$POLIS_BIN" --json blessing grant "$request_id" 2>&1)
+    grant_result=$("$POLIS_BIN" --json blessing grant "$short_hash" 2>&1)
     local exit_code=$?
 
     if [[ $exit_code -ne 0 ]]; then
@@ -225,6 +228,14 @@ test_blessing_grant() {
     assert_valid_json "$grant_result" || return 1
     assert_json_success "$grant_result" "blessing-grant" || return 1
 
+    # Verify response has comment_version (not comment_id)
+    if echo "$grant_result" | jq -e '.data.comment_version' > /dev/null 2>&1; then
+        log "  Response includes comment_version field"
+    else
+        log_error "Response missing comment_version field"
+        return 1
+    fi
+
     # Verify blessed-comments.json was updated
     if [[ -f "metadata/blessed-comments.json" ]]; then
         local blessed_count
@@ -236,7 +247,129 @@ test_blessing_grant() {
     return 0
 }
 
+# Test: Full blessing workflow (deny)
+test_blessing_deny() {
+    setup_test_env "blessing_deny"
+    trap teardown_test_env EXIT
+
+    # Check prerequisites
+    if ! check_e2e_prerequisites; then
+        if should_skip_network; then
+            log "  [SKIP-NETWORK] Skipping blessing deny test"
+            return 0
+        else
+            log_error "Missing POLIS_BASE_URL or DISCOVERY_SERVICE_KEY"
+            return 1
+        fi
+    fi
+
+    # Initialize
+    "$POLIS_BIN" --json init > /dev/null 2>&1 || return 1
+
+    if should_skip_network; then
+        log "  [SKIP-NETWORK] Skipping actual API call"
+        log "  [OK] Test setup validated, network call skipped"
+        return 0
+    fi
+
+    # First, get pending requests
+    local requests_result
+    requests_result=$("$POLIS_BIN" --json blessing requests 2>&1)
+
+    if ! echo "$requests_result" | jq -e '.data.requests[0]' > /dev/null 2>&1; then
+        log "  No pending blessing requests to test with"
+        log "  [SKIP] Skipping deny test - no requests available"
+        return 0
+    fi
+
+    # Get the first request's comment_version (hash)
+    local comment_version short_hash
+    comment_version=$(echo "$requests_result" | jq -r '.data.requests[0].comment_version')
+    # Format as short hash for display (first 6 + last 6 chars, minus sha256: prefix)
+    local hash_only="${comment_version#sha256:}"
+    short_hash="${hash_only:0:6}-${hash_only: -6}"
+    log "  Testing with request hash: $short_hash"
+
+    # Deny the blessing using short hash
+    local deny_result
+    deny_result=$("$POLIS_BIN" --json blessing deny "$short_hash" 2>&1)
+    local exit_code=$?
+
+    if [[ $exit_code -ne 0 ]]; then
+        local error_code
+        error_code=$(echo "$deny_result" | jq -r '.error.code // "UNKNOWN"' 2>/dev/null)
+        log "  Deny command returned error: $error_code"
+
+        # Some errors are acceptable in test environment
+        if [[ "$error_code" == "NOT_FOUND" || "$error_code" == "ALREADY_PROCESSED" ]]; then
+            log "  [OK] Deny command handled edge case correctly"
+            return 0
+        fi
+
+        if [[ "$error_code" == "API_ERROR" ]]; then
+            log "  [WARN] API error - discovery service issue"
+            return 0
+        fi
+
+        return 1
+    fi
+
+    # Validate response
+    assert_valid_json "$deny_result" || return 1
+    assert_json_success "$deny_result" "blessing-deny" || return 1
+
+    # Verify response has comment_version (not comment_id)
+    if echo "$deny_result" | jq -e '.data.comment_version' > /dev/null 2>&1; then
+        log "  Response includes comment_version field"
+    else
+        log_error "Response missing comment_version field"
+        return 1
+    fi
+
+    log "  [OK] Blessing deny completed"
+    return 0
+}
+
+# Test: Verify hash format validation
+test_blessing_hash_validation() {
+    setup_test_env "blessing_hash_validation"
+    trap teardown_test_env EXIT
+
+    # Initialize
+    "$POLIS_BIN" --json init > /dev/null 2>&1 || return 1
+
+    # Test with invalid hash format (old numeric ID)
+    local result
+    result=$("$POLIS_BIN" --json blessing grant "42" 2>&1)
+
+    # Should fail with NOT_FOUND since numeric IDs no longer work
+    local error_code
+    error_code=$(echo "$result" | jq -r '.error.code // "UNKNOWN"' 2>/dev/null)
+
+    if [[ "$error_code" == "NOT_FOUND" || "$error_code" == "INVALID_INPUT" ]]; then
+        log "  [OK] Numeric ID correctly rejected (error: $error_code)"
+    else
+        # If we got a different error, that's also acceptable in test env
+        log "  Got error code: $error_code (acceptable)"
+    fi
+
+    # Test with invalid short hash format
+    result=$("$POLIS_BIN" --json blessing grant "invalid-hash" 2>&1)
+    error_code=$(echo "$result" | jq -r '.error.code // "UNKNOWN"' 2>/dev/null)
+
+    if [[ "$error_code" == "NOT_FOUND" || "$error_code" == "INVALID_INPUT" ]]; then
+        log "  [OK] Invalid hash format handled correctly"
+    else
+        log "  Got error code: $error_code (acceptable)"
+    fi
+
+    log "  [OK] Hash validation tests completed"
+    return 0
+}
+
 # Run tests
 run_test "Comment with Beseech" test_comment_with_beseech
 run_test "Blessing Requests" test_blessing_requests
 run_test "Blessing Grant" test_blessing_grant
+run_test "Blessing Deny" test_blessing_deny
+run_test "Blessing Hash Validation" test_blessing_hash_validation

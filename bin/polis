@@ -28,7 +28,7 @@ set -e
 #   4. Hardcoded defaults
 
 # Fixed constants (never configurable - required for discovery)
-VERSION="0.17.0"
+VERSION="0.18.0"
 WELL_KNOWN_DIR=".well-known"
 WELL_KNOWN_FILE="polis"
 
@@ -5256,6 +5256,16 @@ format_date_human() {
     fi
 }
 
+# Escape special characters for bash pattern replacement
+# In ${var//pattern/replacement}, & and \ are special in the replacement string
+escape_for_replacement() {
+    local str="$1"
+    # Escape backslashes first, then ampersands
+    str="${str//\\/\\\\}"
+    str="${str//&/\\&}"
+    printf '%s' "$str"
+}
+
 # Substitute template variables
 substitute_template() {
     local template="$1"
@@ -5350,16 +5360,16 @@ render_blessed_comments() {
 
             local comment_html="${TEMPLATES[comment_inline]}"
             for key in "${!comment_vars[@]}"; do
-                comment_html="${comment_html//\{\{$key\}\}/${comment_vars[$key]}}"
+                local escaped_val=$(escape_for_replacement "${comment_vars[$key]}")
+                comment_html="${comment_html//\{\{$key\}\}/$escaped_val}"
             done
 
             blessed_html+="$comment_html"
-            ((count++))
+            ((++count))  # Pre-increment to avoid set -e exit when count=0
         fi
     done <<< "$comments_json"
 
     echo "$blessed_html"
-    return $count
 }
 
 # Render a single file to HTML
@@ -5433,23 +5443,35 @@ render_file() {
     fi
 
     # Substitute all variables
+    # Note: Values containing HTML must be escaped for bash pattern replacement
     local result="$template"
-    result="${result//\{\{title\}\}/$title}"
-    result="${result//\{\{content\}\}/$html_content}"
-    result="${result//\{\{published\}\}/$(format_date_human "$published")}"
-    result="${result//\{\{published_human\}\}/$(format_date_human "$published")}"
-    result="${result//\{\{url\}\}/$url}"
-    result="${result//\{\{version\}\}/$version}"
-    result="${result//\{\{signature_short\}\}/$signature_short}"
-    result="${result//\{\{site_url\}\}/$POLIS_BASE_URL}"
-    result="${result//\{\{site_title\}\}/$site_title}"
-    result="${result//\{\{author_name\}\}/$author_name}"
-    result="${result//\{\{author_url\}\}/$POLIS_BASE_URL}"
-    result="${result//\{\{year\}\}/$(date +%Y)}"
-    result="${result//\{\{blessed_comments\}\}/$blessed_comments}"
-    result="${result//\{\{blessed_count\}\}/$blessed_count}"
-    result="${result//\{\{in_reply_to_url\}\}/$in_reply_to_url}"
-    result="${result//\{\{root_post_url\}\}/$root_post_url}"
+    result="${result//\{\{title\}\}/$(escape_for_replacement "$title")}"
+    result="${result//\{\{content\}\}/$(escape_for_replacement "$html_content")}"
+    result="${result//\{\{published\}\}/$(escape_for_replacement "$(format_date_human "$published")")}"
+    result="${result//\{\{published_human\}\}/$(escape_for_replacement "$(format_date_human "$published")")}"
+    result="${result//\{\{url\}\}/$(escape_for_replacement "$url")}"
+    result="${result//\{\{version\}\}/$(escape_for_replacement "$version")}"
+    result="${result//\{\{signature_short\}\}/$(escape_for_replacement "$signature_short")}"
+    result="${result//\{\{site_url\}\}/$(escape_for_replacement "$POLIS_BASE_URL")}"
+    result="${result//\{\{site_title\}\}/$(escape_for_replacement "$site_title")}"
+    result="${result//\{\{author_name\}\}/$(escape_for_replacement "$author_name")}"
+    result="${result//\{\{author_url\}\}/$(escape_for_replacement "$POLIS_BASE_URL")}"
+    result="${result//\{\{year\}\}/$(escape_for_replacement "$(date +%Y)")}"
+    result="${result//\{\{blessed_comments\}\}/$(escape_for_replacement "$blessed_comments")}"
+    result="${result//\{\{blessed_count\}\}/$(escape_for_replacement "$blessed_count")}"
+    result="${result//\{\{in_reply_to_url\}\}/$(escape_for_replacement "$in_reply_to_url")}"
+    result="${result//\{\{root_post_url\}\}/$(escape_for_replacement "$root_post_url")}"
+
+    # Append source markdown as HTML comment
+    # Escape -- sequences to prevent breaking HTML comments
+    local escaped_source="${content//--/&#45;&#45;}"
+    result+="
+<!--
+=== POLIS SOURCE ===
+Source: ${input_file}
+${escaped_source}
+=== END POLIS SOURCE ===
+-->"
 
     # Write output
     echo "$result" > "$output_file"
@@ -5480,7 +5502,7 @@ render_index() {
 
             posts_list+="            <li><a href=\"$html_path\">$title</a> <time>$published_human</time></li>
 "
-            ((post_count++))
+            ((++post_count))
         done < "$PUBLIC_INDEX"
     fi
 
@@ -5490,13 +5512,17 @@ render_index() {
 
     # Substitute template
     local result="${TEMPLATES[index]}"
-    result="${result//\{\{site_title\}\}/$site_title}"
-    result="${result//\{\{site_url\}\}/$POLIS_BASE_URL}"
-    result="${result//\{\{posts_list\}\}/$posts_list}"
-    result="${result//\{\{post_count\}\}/$post_count}"
-    result="${result//\{\{year\}\}/$(date +%Y)}"
+    if [ -z "$result" ]; then
+        error "Index template is empty. Run 'polis render --init-templates' or check .polis/templates/index.html"
+    fi
+    result="${result//\{\{site_title\}\}/$(escape_for_replacement "$site_title")}"
+    result="${result//\{\{site_url\}\}/$(escape_for_replacement "$POLIS_BASE_URL")}"
+    result="${result//\{\{posts_list\}\}/$(escape_for_replacement "$posts_list")}"
+    result="${result//\{\{post_count\}\}/$(escape_for_replacement "$post_count")}"
+    result="${result//\{\{year\}\}/$(escape_for_replacement "$(date +%Y)")}"
 
     echo "$result" > "index.html"
+    info_human "  Written: index.html"
 }
 
 # Command: polis render
@@ -5534,6 +5560,7 @@ cmd_render() {
     load_templates
 
     info_human "=== Render Configuration ==="
+    info_human "Working directory: $(pwd)"
     info_human "POLIS_BASE_URL: $POLIS_BASE_URL"
     info_human "Posts dir: $POSTS_DIR"
     info_human "Comments dir: $COMMENTS_DIR"
@@ -5569,10 +5596,10 @@ cmd_render() {
             [ -z "$post_file" ] && continue
             info_human "Processing: $post_file"
             if render_file "$post_file" "post" "$force"; then
-                ((posts_rendered++))
+                ((++posts_rendered))
                 info_human "  -> Rendered: ${post_file%.md}.html"
             else
-                ((posts_skipped++))
+                ((++posts_skipped))
                 info_human "  -> Skipped (up to date)"
             fi
         done < <(find "$POSTS_DIR" -name "*.md" -not -path "*/.versions/*" -type f 2>/dev/null)
@@ -5589,10 +5616,10 @@ cmd_render() {
             [ -z "$comment_file" ] && continue
             info_human "Processing: $comment_file"
             if render_file "$comment_file" "comment" "$force"; then
-                ((comments_rendered++))
+                ((++comments_rendered))
                 info_human "  -> Rendered: ${comment_file%.md}.html"
             else
-                ((comments_skipped++))
+                ((++comments_skipped))
                 info_human "  -> Skipped (up to date)"
             fi
         done < <(find "$COMMENTS_DIR" -name "*.md" -not -path "*/.versions/*" -type f 2>/dev/null)

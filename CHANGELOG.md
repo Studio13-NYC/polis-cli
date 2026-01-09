@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-01-09
+
+### Added
+- **Embedded source in rendered HTML** - Each rendered HTML file now includes the original markdown source and frontmatter in an HTML comment at the end
+  - Enables verification that HTML matches the signed source
+  - Allows extraction of original markdown from rendered files
+  - Useful for debugging template rendering issues
+
+### Fixed
+- **Template variable substitution bug** - Fixed variables containing special characters (like `&middot;` in `{{blessed_comments}}`) not being substituted correctly
+  - Root cause: Bash pattern replacement treats `&` as a special character
+  - Added `escape_for_replacement()` helper to properly escape `&` and `\` in template values
+- **Render command exiting early** - Fixed `polis render` terminating before completion when processing posts with blessed comments
+  - Root cause: Functions returning non-zero exit codes triggered `set -e` behavior
+  - Changed post-increment `((var++))` to pre-increment `((++var))` throughout render code
+- **Index generation failure** - Fixed `index.html` not being created due to early exit issues described above
+
+### Changed
+- Enhanced `polis render` diagnostics
+  - Added working directory output for troubleshooting
+  - Added error check for empty index templates
+  - Improved progress messages
+- Updated USAGE.md with comprehensive `polis render` documentation
+  - Added pandoc to prerequisites section
+  - Added template variables reference table
+  - Added "Embedded Source" documentation
+  - Updated directory structure examples
+
 ## [0.17.0] - 2026-01-08
 
 ### Added

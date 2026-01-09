@@ -334,8 +334,9 @@ The discovery service is designed as **"honest but curious"**:
 - Private key never leaves device
 - File permissions restrict access
 - User responsible for device security
+- **Key rotation available:** Run `polis rotate-key` to generate new key and re-sign all content
 
-**Residual risk:** If device is compromised, private key is compromised. No current key rotation/revocation mechanism.
+**Residual risk:** If device is compromised, attacker can sign content until key is rotated. Rotate immediately upon detecting compromise.
 
 ---
 
@@ -485,14 +486,28 @@ Migration also records the public key used for verification. When followers appl
 
 ## Known Limitations
 
-### No Key Rotation
+### Key Rotation
 
-Currently no mechanism to rotate keys without domain migration. If private key is compromised:
-- Attacker can sign content as you
-- No revocation mechanism
-- Must migrate to new domain with new key
+Key rotation is supported via the `polis rotate-key` command. This generates a new keypair and re-signs all your content (posts and comments) with the new key.
 
-**Future consideration:** Key rotation with signature chain or revocation list.
+**What happens during rotation:**
+1. New Ed25519 keypair generated
+2. All posts re-signed with new key
+3. All comments re-signed with new key
+4. `.well-known/polis` updated with new public key
+5. Old keypair archived (can be deleted with `--delete-old-key`)
+
+**What doesn't change:**
+- Blessed comments from others (signed with their keys)
+- Following relationships (local data)
+- Discovery service records (verifies against current `.well-known/polis`)
+
+**When to rotate:**
+- Key compromise or suspected exposure
+- Routine security hygiene
+- Before transferring device access
+
+**Recovery:** If rotation is interrupted, the old key is preserved at `.polis/keys/id_ed25519.old` and can be restored manually.
 
 ---
 

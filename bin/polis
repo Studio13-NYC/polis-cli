@@ -27,7 +27,7 @@ set -e
 #   4. Hardcoded defaults
 
 # Fixed constants (never configurable - required for discovery)
-VERSION="0.14.0"
+VERSION="0.15.0"
 WELL_KNOWN_DIR=".well-known"
 WELL_KNOWN_FILE="polis"
 
@@ -1838,6 +1838,123 @@ sign_file() {
     echo "$sig"
 }
 
+# Re-sign a file with current key (preserves all metadata, updates signature)
+# Works for both posts and comments
+resign_file() {
+    local input_file="$1"
+
+    if [ ! -f "$input_file" ]; then
+        return 1
+    fi
+
+    if ! has_frontmatter "$input_file"; then
+        return 1
+    fi
+
+    # Extract existing metadata
+    local title=$(extract_frontmatter_field "$input_file" "title")
+    local original_published=$(extract_frontmatter_field "$input_file" "published")
+    local content_type=$(extract_frontmatter_field "$input_file" "type")
+    local current_version=$(extract_frontmatter_field "$input_file" "current-version")
+
+    # Extract content without frontmatter
+    local content_only=$(mktemp)
+    extract_content_without_frontmatter "$input_file" > "$content_only"
+
+    # Extract existing version history
+    local version_history=$(extract_version_history "$input_file")
+
+    # Build frontmatter (without signature)
+    local frontmatter_template
+    if [ "$content_type" = "comment" ]; then
+        # Extract in-reply-to section for comments
+        local in_reply_to=$(extract_in_reply_to "$input_file")
+        frontmatter_template="---
+title: $title
+type: comment
+published: $original_published
+generator: polis-cli/$VERSION
+in-reply-to:
+$in_reply_to
+current-version: $current_version
+version-history:
+$version_history
+---"
+    else
+        frontmatter_template="---
+title: $title
+published: $original_published
+generator: polis-cli/$VERSION
+current-version: $current_version
+version-history:
+$version_history
+---"
+    fi
+
+    # Create temporary file with frontmatter + content (for signing)
+    local temp_file=$(mktemp)
+    echo "$frontmatter_template" > "$temp_file"
+    echo "" >> "$temp_file"
+    cat "$content_only" >> "$temp_file"
+
+    # Sign the file
+    local signature=$(sign_file "$temp_file")
+
+    # Create final frontmatter with signature
+    local frontmatter
+    if [ "$content_type" = "comment" ]; then
+        local in_reply_to=$(extract_in_reply_to "$input_file")
+        frontmatter="---
+title: $title
+type: comment
+published: $original_published
+generator: polis-cli/$VERSION
+in-reply-to:
+$in_reply_to
+current-version: $current_version
+version-history:
+$version_history
+signature: $signature
+---"
+    else
+        frontmatter="---
+title: $title
+published: $original_published
+generator: polis-cli/$VERSION
+current-version: $current_version
+version-history:
+$version_history
+signature: $signature
+---"
+    fi
+
+    # Write back to file
+    echo "$frontmatter" > "$input_file"
+    echo "" >> "$input_file"
+    cat "$content_only" >> "$input_file"
+
+    # Clean up temp files
+    rm -f "$temp_file" "$content_only"
+
+    return 0
+}
+
+# Update .well-known/polis with new public key
+update_wellknown_pubkey() {
+    local new_pubkey=$(cat "$KEYS_DIR/id_ed25519.pub")
+
+    if [ ! -f "$WELL_KNOWN_DIR/polis" ]; then
+        return 1
+    fi
+
+    # Update public_key field using jq
+    local temp_file=$(mktemp)
+    jq --arg key "$new_pubkey" '.public_key = $key' "$WELL_KNOWN_DIR/polis" > "$temp_file"
+    mv "$temp_file" "$WELL_KNOWN_DIR/polis"
+
+    return 0
+}
+
 # Command: polis beseech <filename>
 # Request blessing from post author for a comment
 # Internal function for file-based beseech (used by auto-beseech in comment/republish)
@@ -3064,6 +3181,152 @@ cmd_version() {
         jq -n --arg version "$VERSION" '{ status: "success", command: "version", data: { version: $version } }'
     else
         echo "polis $VERSION"
+    fi
+}
+
+# Command: polis rotate-key [--delete-old-key]
+# Generate new keypair and re-sign all posts and comments
+cmd_rotate_key() {
+    local delete_old=false
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --delete-old-key)
+                delete_old=true
+                shift
+                ;;
+            *)
+                json_error "rotate-key" "INVALID_INPUT" "Unknown option: $1. Usage: polis rotate-key [--delete-old-key]"
+                ;;
+        esac
+    done
+
+    # Verify initialized
+    if [ ! -f "$KEYS_DIR/id_ed25519" ]; then
+        json_error "rotate-key" "INVALID_STATE" "Polis not initialized. Run 'polis init' first."
+    fi
+
+    if [ ! -f "$WELL_KNOWN_DIR/polis" ]; then
+        json_error "rotate-key" "INVALID_STATE" ".well-known/polis not found. Run 'polis init' first."
+    fi
+
+    info_human "Starting key rotation..."
+    info_human ""
+
+    # 1. Generate new keypair
+    info_human "Generating new Ed25519 keypair..."
+    ssh-keygen -t ed25519 -f "$KEYS_DIR/id_ed25519.new" -N "" -C "polis@$(hostname)" > /dev/null 2>&1
+    if [ $? -ne 0 ]; then
+        json_error "rotate-key" "KEY_GENERATION_FAILED" "Failed to generate new keypair"
+    fi
+    success_human "Generated new keypair"
+
+    # 2. Backup old key
+    mv "$KEYS_DIR/id_ed25519" "$KEYS_DIR/id_ed25519.old"
+    mv "$KEYS_DIR/id_ed25519.pub" "$KEYS_DIR/id_ed25519.old.pub"
+
+    # 3. Install new key
+    mv "$KEYS_DIR/id_ed25519.new" "$KEYS_DIR/id_ed25519"
+    mv "$KEYS_DIR/id_ed25519.new.pub" "$KEYS_DIR/id_ed25519.pub"
+    success_human "Installed new keypair"
+
+    # 4. Re-sign all posts
+    local posts_count=0
+    local posts_failed=0
+    info_human ""
+    info_human "Re-signing posts..."
+
+    if [ -d "$POSTS_DIR" ]; then
+        while IFS= read -r -d '' file; do
+            if resign_file "$file"; then
+                ((posts_count++))
+            else
+                ((posts_failed++))
+                warn_human "  Failed to re-sign: $file"
+            fi
+        done < <(find "$POSTS_DIR" -name "*.md" -type f -print0 2>/dev/null)
+    fi
+    success_human "Re-signed $posts_count posts"
+
+    # 5. Re-sign all comments
+    local comments_count=0
+    local comments_failed=0
+    info_human ""
+    info_human "Re-signing comments..."
+
+    if [ -d "$COMMENTS_DIR" ]; then
+        while IFS= read -r -d '' file; do
+            if resign_file "$file"; then
+                ((comments_count++))
+            else
+                ((comments_failed++))
+                warn_human "  Failed to re-sign: $file"
+            fi
+        done < <(find "$COMMENTS_DIR" -name "*.md" -type f -print0 2>/dev/null)
+    fi
+    success_human "Re-signed $comments_count comments"
+
+    # 6. Update .well-known/polis
+    info_human ""
+    info_human "Updating .well-known/polis..."
+    if update_wellknown_pubkey; then
+        success_human "Updated public key in .well-known/polis"
+    else
+        warn_human "Failed to update .well-known/polis"
+    fi
+
+    # 7. Rebuild index
+    info_human ""
+    info_human "Rebuilding index..."
+    cmd_rebuild > /dev/null 2>&1
+    success_human "Rebuilt public.jsonl index"
+
+    # 8. Handle old key
+    local old_key_status
+    if [ "$delete_old" = true ]; then
+        rm -f "$KEYS_DIR/id_ed25519.old" "$KEYS_DIR/id_ed25519.old.pub"
+        old_key_status="deleted"
+        info_human ""
+        info_human "Deleted old keypair"
+    else
+        old_key_status="archived"
+        info_human ""
+        info_human "Old keypair archived at $KEYS_DIR/id_ed25519.old"
+    fi
+
+    # Get new key fingerprint
+    local new_fingerprint=$(ssh-keygen -lf "$KEYS_DIR/id_ed25519.pub" 2>/dev/null | awk '{print $2}')
+
+    # Output results
+    info_human ""
+    if [ "$JSON_MODE" = true ]; then
+        local result=$(jq -n \
+            --argjson posts "$posts_count" \
+            --argjson posts_failed "$posts_failed" \
+            --argjson comments "$comments_count" \
+            --argjson comments_failed "$comments_failed" \
+            --arg old_key_status "$old_key_status" \
+            --arg fingerprint "$new_fingerprint" \
+            '{
+                posts_resigned: $posts,
+                posts_failed: $posts_failed,
+                comments_resigned: $comments,
+                comments_failed: $comments_failed,
+                old_key: $old_key_status,
+                new_key_fingerprint: $fingerprint
+            }')
+        json_success "rotate-key" "$result"
+    else
+        success "Key rotation complete!"
+        info "  Posts re-signed: $posts_count"
+        info "  Comments re-signed: $comments_count"
+        info "  New key fingerprint: $new_fingerprint"
+        if [ "$old_key_status" = "archived" ]; then
+            info "  Old key: archived at $KEYS_DIR/id_ed25519.old"
+        else
+            info "  Old key: deleted"
+        fi
     fi
 }
 
@@ -4815,6 +5078,9 @@ main() {
         version)
             cmd_version "$@"
             ;;
+        rotate-key)
+            cmd_rotate_key "$@"
+            ;;
         get-version)
             cmd_get_version "$@"
             ;;
@@ -4886,6 +5152,8 @@ main() {
             echo "  polis rebuild [--diff|--full]   Rebuild indexes (--diff/--full sync blessings)"
             echo "  polis index [--json]            View index (JSONL or JSON format)"
             echo "  polis version                   Print CLI version"
+            echo "  polis rotate-key [--delete-old-key]"
+            echo "                                  Generate new keypair and re-sign all content"
             echo "  polis get-version <file> <hash> Reconstruct a specific version of a file"
             echo ""
             echo "Polis includes support for stdin:"

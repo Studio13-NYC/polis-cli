@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-01-08
+
+### Added
+- **Key rotation command** (`polis rotate-key`) - Generate new keypair and re-sign all content
+  - Addresses critical security gap: previously no way to recover from key compromise without domain migration
+  - Generates new Ed25519 keypair and re-signs all posts and comments
+  - Updates `.well-known/polis` with new public key
+  - Archives old key to `.polis/keys/id_ed25519.old` (or deletes with `--delete-old-key` flag)
+  - Provides recovery mechanism if rotation is interrupted
+
+### Security
+- **Key rotation support** - Users can now rotate compromised keys without migrating domains
+  - Immediate mitigation for suspected key exposure
+  - Enables routine security hygiene practices
+  - See SECURITY-MODEL.md for rotation procedures and best practices
+
 ## [0.14.0] - 2026-01-08
 
 ### Added

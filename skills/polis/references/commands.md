@@ -136,6 +136,20 @@ Print CLI version.
 ./cli/bin/polis version
 ```
 
+### `polis rotate-key`
+Generate new keypair and re-sign all content.
+
+```bash
+./cli/bin/polis --json rotate-key
+```
+
+Use when: key compromise, routine security hygiene, or before transferring device access.
+
+Options:
+- `--delete-old-key` - Delete old keypair instead of archiving it
+
+Old keypair is archived at `.polis/keys/id_ed25519.old` unless `--delete-old-key` is specified.
+
 ### `polis migrate <new-domain>`
 Migrate all content to a new domain (re-signs files, updates database).
 

@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-01-08
+
+### Added
+- **Templating system** (`polis render`) - Render markdown posts and comments to HTML
+  - Generates `.html` files alongside `.md` files for blog-like interfaces
+  - Renders blessed comments inline on post pages
+  - Generates `index.html` listing all posts and comments
+  - Supports custom templates in `.polis/templates/`
+  - Incremental rendering (skips unchanged files based on timestamps)
+  - `--force` flag to re-render all files regardless of timestamps
+  - `--init-templates` flag to export default templates for customization
+  - Template variables: `{{title}}`, `{{content}}`, `{{published}}`, `{{blessed_comments}}`, etc.
+  - Requires pandoc for markdown to HTML conversion
+
+### Changed
+- Updated dependencies documentation to include pandoc (optional, for render command)
+
 ## [0.16.0] - 2026-01-08
 
 ### Changed

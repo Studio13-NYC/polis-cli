@@ -135,6 +135,69 @@ Options:
 - `--comments` - Full rebuild of blessed-comments.json from discovery service
 - `--all` - Rebuild all indexes (equivalent to `--content --comments`)
 
+## Render Commands
+
+### `polis render`
+Render markdown posts and comments to HTML. Generates `.html` files alongside `.md` files.
+
+```bash
+# Render all posts and comments, generate index.html
+./cli/bin/polis --json render
+
+# Force re-render all files (ignore timestamps)
+./cli/bin/polis --json render --force
+
+# Export default templates for customization
+./cli/bin/polis render --init-templates
+```
+
+Options:
+- `--force` - Re-render all files regardless of timestamps
+- `--init-templates` - Create `.polis/templates/` with default templates
+
+Requires: `pandoc` (for markdown to HTML conversion)
+
+**Template Variables:**
+
+Available in all templates:
+- `{{site_url}}` - Base URL from config
+- `{{site_title}}` - From .well-known/polis
+- `{{year}}` - Current year (for copyright)
+
+Post/Comment templates:
+- `{{title}}` - Post/comment title
+- `{{content}}` - HTML-rendered markdown body
+- `{{published}}` - Publication date (ISO format)
+- `{{published_human}}` - Human-readable date
+- `{{url}}` - Canonical URL
+- `{{version}}` - Current version hash
+- `{{author_name}}` - From .well-known/polis
+- `{{author_url}}` - Site base URL
+- `{{signature_short}}` - Truncated signature for display
+
+Comment-specific:
+- `{{in_reply_to_url}}` - Parent post/comment URL
+
+Post-specific:
+- `{{blessed_comments}}` - HTML-rendered list of blessed comments
+- `{{blessed_count}}` - Number of blessed comments
+
+Index template:
+- `{{posts_list}}` - Generated HTML list of posts
+- `{{comments_list}}` - Generated HTML list of comments
+- `{{post_count}}` - Number of posts
+- `{{comment_count}}` - Number of comments
+
+**Custom Templates:**
+
+Run `polis render --init-templates` to create `.polis/templates/` with:
+- `post.html` - Single post template
+- `comment.html` - Single comment template
+- `comment-inline.html` - Blessed comment rendering
+- `index.html` - Listing page template
+
+Modify these files to customize the HTML output.
+
 ## Utility Commands
 
 ### `polis init`

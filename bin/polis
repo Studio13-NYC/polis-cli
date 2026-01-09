@@ -8,11 +8,12 @@
 #   - curl (for API communication with discovery service)
 #   - sha256sum or shasum (for content hashing)
 #   - git (optional, for version control integration)
+#   - pandoc (optional, for render command - markdown to HTML conversion)
 #   - Standard Unix tools: date, sed, grep, mktemp, realpath/readlink
 #
 # Installation:
-#   Linux:   sudo apt-get install openssh-client jq curl coreutils git
-#   macOS:   brew install openssh jq curl coreutils git
+#   Linux:   sudo apt-get install openssh-client jq curl coreutils git pandoc
+#   macOS:   brew install openssh jq curl coreutils git pandoc
 #
 
 set -e
@@ -27,7 +28,7 @@ set -e
 #   4. Hardcoded defaults
 
 # Fixed constants (never configurable - required for discovery)
-VERSION="0.16.0"
+VERSION="0.17.0"
 WELL_KNOWN_DIR=".well-known"
 WELL_KNOWN_FILE="polis"
 
@@ -5064,6 +5065,566 @@ cmd_migrations_apply() {
     fi
 }
 
+# ============================================================================
+# RENDER COMMAND - HTML TEMPLATING
+# ============================================================================
+
+# Default templates (used if .polis/templates/ doesn't exist)
+DEFAULT_TEMPLATE_POST='<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{title}} - {{site_title}}</title>
+    <style>
+        body { font-family: Georgia, serif; max-width: 720px; margin: 0 auto; padding: 2rem; line-height: 1.7; color: #2d2844; background: #f8f7fc; }
+        header { margin-bottom: 2rem; }
+        header a { color: #6b4db3; text-decoration: none; }
+        h1 { font-size: 2rem; margin-bottom: 0.5rem; }
+        time { color: #5c5677; font-style: italic; }
+        .content { margin: 2rem 0; }
+        .signature { font-size: 0.85rem; color: #5c5677; padding-top: 1rem; border-top: 1px solid #e8e4f4; }
+        .signature code { background: #e8e4f4; padding: 0.2em 0.4em; border-radius: 3px; font-size: 0.85em; }
+        .comments { margin-top: 3rem; padding-top: 2rem; border-top: 2px solid #e8e4f4; }
+        .comments h2 { font-size: 1.25rem; }
+        .comment { margin: 1.5rem 0; padding: 1rem; background: #fff; border-radius: 6px; border: 1px solid #e8e4f4; }
+        .comment header { margin-bottom: 0.5rem; font-size: 0.9rem; }
+        .comment-content { font-size: 0.95rem; }
+    </style>
+</head>
+<body>
+    <header>
+        <a href="{{site_url}}">{{site_title}}</a>
+    </header>
+    <article>
+        <h1>{{title}}</h1>
+        <time datetime="{{published}}">{{published_human}}</time>
+        <div class="content">{{content}}</div>
+        <footer class="signature">
+            Signed: <code>{{signature_short}}</code> &middot; <a href="{{url}}">Permalink</a>
+        </footer>
+    </article>
+    <section class="comments">
+        <h2>Comments ({{blessed_count}})</h2>
+        {{blessed_comments}}
+    </section>
+</body>
+</html>'
+
+DEFAULT_TEMPLATE_COMMENT='<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{title}} - {{site_title}}</title>
+    <style>
+        body { font-family: Georgia, serif; max-width: 720px; margin: 0 auto; padding: 2rem; line-height: 1.7; color: #2d2844; background: #f8f7fc; }
+        header { margin-bottom: 2rem; }
+        header a { color: #6b4db3; text-decoration: none; }
+        h1 { font-size: 1.75rem; margin-bottom: 0.5rem; }
+        time { color: #5c5677; font-style: italic; }
+        .reply-to { font-size: 0.9rem; color: #5c5677; margin-bottom: 1rem; }
+        .content { margin: 2rem 0; }
+        .signature { font-size: 0.85rem; color: #5c5677; padding-top: 1rem; border-top: 1px solid #e8e4f4; }
+        .signature code { background: #e8e4f4; padding: 0.2em 0.4em; border-radius: 3px; font-size: 0.85em; }
+    </style>
+</head>
+<body>
+    <header>
+        <a href="{{site_url}}">{{site_title}}</a>
+    </header>
+    <article>
+        <h1>{{title}}</h1>
+        <time datetime="{{published}}">{{published_human}}</time>
+        <p class="reply-to">In reply to: <a href="{{in_reply_to_url}}">{{in_reply_to_url}}</a></p>
+        <div class="content">{{content}}</div>
+        <footer class="signature">
+            Signed: <code>{{signature_short}}</code> &middot; <a href="{{url}}">Permalink</a>
+        </footer>
+    </article>
+</body>
+</html>'
+
+DEFAULT_TEMPLATE_COMMENT_INLINE='<article class="comment">
+    <header>
+        <a href="{{author_url}}">{{author_name}}</a> &middot;
+        <time datetime="{{published}}">{{published_human}}</time>
+    </header>
+    <div class="comment-content">{{content}}</div>
+    <footer>
+        <a href="{{url}}">Permalink</a>
+    </footer>
+</article>'
+
+DEFAULT_TEMPLATE_INDEX='<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{site_title}}</title>
+    <style>
+        body { font-family: Georgia, serif; max-width: 720px; margin: 0 auto; padding: 2rem; line-height: 1.7; color: #2d2844; background: #f8f7fc; }
+        h1 { font-size: 2rem; margin-bottom: 2rem; }
+        h2 { font-size: 1.5rem; margin-top: 2rem; color: #5a3d96; }
+        ul { list-style: none; padding: 0; }
+        li { margin: 1rem 0; padding-bottom: 1rem; border-bottom: 1px solid #e8e4f4; }
+        li:last-child { border-bottom: none; }
+        a { color: #6b4db3; }
+        time { color: #5c5677; font-size: 0.9rem; }
+        .count { color: #5c5677; font-size: 0.9rem; }
+        footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #e8e4f4; font-size: 0.85rem; color: #5c5677; }
+    </style>
+</head>
+<body>
+    <h1>{{site_title}}</h1>
+    <p class="count">{{post_count}} posts</p>
+    <section>
+        <h2>Posts</h2>
+        <ul>
+{{posts_list}}
+        </ul>
+    </section>
+    <footer>
+        Powered by <a href="https://github.com/vdibart/polis-cli">Polis</a> &middot; &copy; {{year}}
+    </footer>
+</body>
+</html>'
+
+# Template storage (associative array)
+declare -A TEMPLATES
+
+# Load templates from .polis/templates/ or use defaults
+load_templates() {
+    local template_dir=".polis/templates"
+
+    if [ -f "$template_dir/post.html" ]; then
+        TEMPLATES[post]=$(cat "$template_dir/post.html")
+    else
+        TEMPLATES[post]="$DEFAULT_TEMPLATE_POST"
+    fi
+
+    if [ -f "$template_dir/comment.html" ]; then
+        TEMPLATES[comment]=$(cat "$template_dir/comment.html")
+    else
+        TEMPLATES[comment]="$DEFAULT_TEMPLATE_COMMENT"
+    fi
+
+    if [ -f "$template_dir/comment-inline.html" ]; then
+        TEMPLATES[comment_inline]=$(cat "$template_dir/comment-inline.html")
+    else
+        TEMPLATES[comment_inline]="$DEFAULT_TEMPLATE_COMMENT_INLINE"
+    fi
+
+    if [ -f "$template_dir/index.html" ]; then
+        TEMPLATES[index]=$(cat "$template_dir/index.html")
+    else
+        TEMPLATES[index]="$DEFAULT_TEMPLATE_INDEX"
+    fi
+}
+
+# Initialize templates directory with defaults
+init_templates() {
+    local template_dir=".polis/templates"
+
+    mkdir -p "$template_dir"
+
+    echo "$DEFAULT_TEMPLATE_POST" > "$template_dir/post.html"
+    echo "$DEFAULT_TEMPLATE_COMMENT" > "$template_dir/comment.html"
+    echo "$DEFAULT_TEMPLATE_COMMENT_INLINE" > "$template_dir/comment-inline.html"
+    echo "$DEFAULT_TEMPLATE_INDEX" > "$template_dir/index.html"
+
+    if [ "$JSON_MODE" = true ]; then
+        json_success "render" '{"templates_created": 4, "path": ".polis/templates/"}'
+    else
+        success "Created template files in $template_dir/"
+        info "  - post.html"
+        info "  - comment.html"
+        info "  - comment-inline.html"
+        info "  - index.html"
+        info "Edit these files to customize your HTML output."
+    fi
+}
+
+# Format date for human display
+format_date_human() {
+    local iso_date="$1"
+    # Convert ISO date to human-readable format
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        date -j -f "%Y-%m-%dT%H:%M:%SZ" "$iso_date" "+%B %d, %Y" 2>/dev/null || echo "$iso_date"
+    else
+        date -d "$iso_date" "+%B %d, %Y" 2>/dev/null || echo "$iso_date"
+    fi
+}
+
+# Substitute template variables
+substitute_template() {
+    local template="$1"
+    local -n vars=$2  # nameref to associative array
+
+    local result="$template"
+    for key in "${!vars[@]}"; do
+        local value="${vars[$key]}"
+        # Escape special characters in value for sed
+        value=$(printf '%s' "$value" | sed 's/[&/\]/\\&/g')
+        result=$(echo "$result" | sed "s|{{${key}}}|${value}|g")
+    done
+    echo "$result"
+}
+
+# Extract body from a file (not content string)
+extract_body_from_file() {
+    local file="$1"
+    awk '/^---$/{if(++count==2){skip=0; getline; print; next} skip=1; next} !skip' "$file"
+}
+
+# Render blessed comments for a post
+# Returns HTML string via stdout; stdout is captured by caller
+render_blessed_comments() {
+    local post_url="$1"
+    local blessed_html=""
+    local count=0
+
+    # Check if blessed-comments.json exists
+    if [ ! -f "$BLESSED_COMMENTS" ]; then
+        echo ""
+        return
+    fi
+
+    # Get blessed comments for this post
+    # Use -c for compact output (one JSON object per line)
+    local comments_json
+    comments_json=$(jq -c --arg url "$post_url" '.comments[] | select(.post == $url) | .blessed[]' "$BLESSED_COMMENTS" 2>/dev/null)
+
+    if [ -z "$comments_json" ]; then
+        echo ""
+        return
+    fi
+
+    # Process each blessed comment (one JSON object per line)
+    while IFS= read -r comment_data; do
+        [ -z "$comment_data" ] && continue
+
+        local comment_url=$(echo "$comment_data" | jq -r '.url // empty')
+        [ -z "$comment_url" ] && continue
+
+        # Try to fetch/find the comment content
+        local comment_content=""
+        local comment_file=""
+
+        # Check if it's a local comment (same domain)
+        local base_url="${POLIS_BASE_URL%/}"  # Remove trailing slash
+        if [[ "$comment_url" == "${base_url}"* ]]; then
+            # Extract path from URL and find local file
+            local url_path="${comment_url#${base_url}}"
+            url_path="${url_path#/}"  # Remove leading slash(es)
+            url_path="${url_path#/}"  # Handle double slash case
+            if [ -f "$url_path" ]; then
+                comment_file="$url_path"
+                comment_content=$(cat "$comment_file")
+            fi
+        fi
+
+        # If not found locally, try to fetch remotely
+        if [ -z "$comment_content" ]; then
+            comment_content=$(curl -sL "$comment_url" 2>/dev/null)
+        fi
+
+        # If we found content, render it
+        if [ -n "$comment_content" ]; then
+            local c_title=$(echo "$comment_content" | grep '^title:' | head -1 | sed 's/^title: *//')
+            local c_published=$(echo "$comment_content" | grep '^published:' | head -1 | sed 's/^published: *//')
+            local c_body=$(extract_body_from_content "$comment_content")
+            local c_html=$(echo "$c_body" | pandoc -f markdown -t html 2>/dev/null || echo "$c_body")
+
+            # Get author info from URL
+            local author_domain=$(echo "$comment_url" | sed 's|https\?://||' | cut -d'/' -f1)
+
+            declare -A comment_vars=(
+                [author_name]="$author_domain"
+                [author_url]="https://$author_domain"
+                [published]="$c_published"
+                [published_human]="$(format_date_human "$c_published")"
+                [content]="$c_html"
+                [url]="$comment_url"
+            )
+
+            local comment_html="${TEMPLATES[comment_inline]}"
+            for key in "${!comment_vars[@]}"; do
+                comment_html="${comment_html//\{\{$key\}\}/${comment_vars[$key]}}"
+            done
+
+            blessed_html+="$comment_html"
+            ((count++))
+        fi
+    done <<< "$comments_json"
+
+    echo "$blessed_html"
+    return $count
+}
+
+# Render a single file to HTML
+render_file() {
+    local input_file="$1"
+    local type="$2"  # "post" or "comment"
+    local force="$3"
+
+    local output_file="${input_file%.md}.html"
+
+    # Skip if output is newer than input (unless force)
+    if [ "$force" != "true" ] && [ -f "$output_file" ] && [ "$output_file" -nt "$input_file" ]; then
+        return 1  # Skipped
+    fi
+
+    # Check pandoc availability
+    if ! command -v pandoc &>/dev/null; then
+        error "pandoc is required for rendering. Install with: apt install pandoc (Linux) or brew install pandoc (macOS)"
+    fi
+
+    # Read file content
+    local content=$(cat "$input_file")
+
+    # Extract frontmatter fields
+    local title=$(echo "$content" | grep '^title:' | head -1 | sed 's/^title: *//')
+    local published=$(echo "$content" | grep '^published:' | head -1 | sed 's/^published: *//')
+    local version=$(echo "$content" | grep '^current-version:' | head -1 | sed 's/^current-version: *//')
+    local signature=$(echo "$content" | grep '^signature:' | head -1 | sed 's/^signature: *//')
+    local signature_short="${signature:0:20}..."
+
+    # Extract body and convert to HTML
+    local body=$(extract_body_from_content "$content")
+    local html_content=$(echo "$body" | pandoc -f markdown -t html 2>/dev/null || echo "$body")
+
+    # Build canonical URL (normalize to avoid double slashes)
+    local base_url="${POLIS_BASE_URL%/}"  # Remove trailing slash if present
+    local url="${base_url}/${input_file}"
+    info_human "  [url] Canonical URL: $url"
+
+    # Get site info
+    local site_title="${POLIS_BASE_URL#https://}"
+    site_title="${site_title#http://}"
+
+    # Get author info from .well-known/polis
+    local author_name="$site_title"
+    if [ -f "$WELL_KNOWN_DIR/polis" ]; then
+        local wk_name=$(jq -r '.name // empty' "$WELL_KNOWN_DIR/polis" 2>/dev/null)
+        [ -n "$wk_name" ] && author_name="$wk_name"
+    fi
+
+    # Choose template
+    local template="${TEMPLATES[$type]}"
+    [ -z "$template" ] && template="${TEMPLATES[post]}"
+
+    # Handle blessed comments for posts
+    local blessed_comments=""
+    local blessed_count=0
+    if [ "$type" = "post" ]; then
+        blessed_comments=$(render_blessed_comments "$url")
+        # Count comments (rough count by counting </article> tags)
+        # Note: || must be outside subshell to avoid capturing both grep output AND fallback
+        blessed_count=$(echo "$blessed_comments" | grep -c '</article>' 2>/dev/null) || blessed_count=0
+    fi
+
+    # Comment-specific fields
+    local in_reply_to_url=""
+    local root_post_url=""
+    if [ "$type" = "comment" ]; then
+        in_reply_to_url=$(echo "$content" | grep -A1 '^in-reply-to:' | grep 'url:' | sed 's/.*url: *//')
+        root_post_url=$(echo "$content" | grep -A2 '^in-reply-to:' | grep 'root-post:' | sed 's/.*root-post: *//')
+    fi
+
+    # Substitute all variables
+    local result="$template"
+    result="${result//\{\{title\}\}/$title}"
+    result="${result//\{\{content\}\}/$html_content}"
+    result="${result//\{\{published\}\}/$(format_date_human "$published")}"
+    result="${result//\{\{published_human\}\}/$(format_date_human "$published")}"
+    result="${result//\{\{url\}\}/$url}"
+    result="${result//\{\{version\}\}/$version}"
+    result="${result//\{\{signature_short\}\}/$signature_short}"
+    result="${result//\{\{site_url\}\}/$POLIS_BASE_URL}"
+    result="${result//\{\{site_title\}\}/$site_title}"
+    result="${result//\{\{author_name\}\}/$author_name}"
+    result="${result//\{\{author_url\}\}/$POLIS_BASE_URL}"
+    result="${result//\{\{year\}\}/$(date +%Y)}"
+    result="${result//\{\{blessed_comments\}\}/$blessed_comments}"
+    result="${result//\{\{blessed_count\}\}/$blessed_count}"
+    result="${result//\{\{in_reply_to_url\}\}/$in_reply_to_url}"
+    result="${result//\{\{root_post_url\}\}/$root_post_url}"
+
+    # Write output
+    echo "$result" > "$output_file"
+    return 0  # Rendered
+}
+
+# Render index page
+render_index() {
+    local posts_list=""
+    local post_count=0
+
+    # Read public.jsonl and build posts list
+    if [ -f "$PUBLIC_INDEX" ]; then
+        while IFS= read -r line; do
+            [ -z "$line" ] && continue
+
+            local entry_type=$(echo "$line" | jq -r '.type // "post"')
+            [ "$entry_type" != "post" ] && continue
+
+            local path=$(echo "$line" | jq -r '.path // empty')
+            local title=$(echo "$line" | jq -r '.title // "Untitled"')
+            local published=$(echo "$line" | jq -r '.published // empty')
+
+            [ -z "$path" ] && continue
+
+            local html_path="${path%.md}.html"
+            local published_human=$(format_date_human "$published")
+
+            posts_list+="            <li><a href=\"$html_path\">$title</a> <time>$published_human</time></li>
+"
+            ((post_count++))
+        done < "$PUBLIC_INDEX"
+    fi
+
+    # Get site info
+    local site_title="${POLIS_BASE_URL#https://}"
+    site_title="${site_title#http://}"
+
+    # Substitute template
+    local result="${TEMPLATES[index]}"
+    result="${result//\{\{site_title\}\}/$site_title}"
+    result="${result//\{\{site_url\}\}/$POLIS_BASE_URL}"
+    result="${result//\{\{posts_list\}\}/$posts_list}"
+    result="${result//\{\{post_count\}\}/$post_count}"
+    result="${result//\{\{year\}\}/$(date +%Y)}"
+
+    echo "$result" > "index.html"
+}
+
+# Command: polis render
+cmd_render() {
+    local force=false
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --force)
+                force=true
+                shift
+                ;;
+            --init-templates)
+                init_templates
+                return
+                ;;
+            *)
+                json_error "render" "INVALID_INPUT" "Unknown option: $1. Use: polis render [--force] or polis render --init-templates"
+                ;;
+        esac
+    done
+
+    # Check initialization
+    if [ ! -f "$WELL_KNOWN_DIR/polis" ]; then
+        json_error "render" "INVALID_STATE" "Polis not initialized. Run 'polis init' first."
+    fi
+
+    # Check pandoc
+    if ! command -v pandoc &>/dev/null; then
+        json_error "render" "MISSING_DEPENDENCY" "pandoc is required for rendering. Install with: apt install pandoc (Linux) or brew install pandoc (macOS)"
+    fi
+
+    # Load templates
+    load_templates
+
+    info_human "=== Render Configuration ==="
+    info_human "POLIS_BASE_URL: $POLIS_BASE_URL"
+    info_human "Posts dir: $POSTS_DIR"
+    info_human "Comments dir: $COMMENTS_DIR"
+    info_human "Blessed comments file: $BLESSED_COMMENTS"
+
+    # Show blessed-comments.json summary
+    if [ -f "$BLESSED_COMMENTS" ]; then
+        local bc_posts=$(jq -r '.comments | length' "$BLESSED_COMMENTS" 2>/dev/null || echo "0")
+        info_human "Blessed comments: $bc_posts post(s) with blessed comments"
+        if [ "$bc_posts" -gt 0 ]; then
+            info_human "Posts with blessed comments:"
+            jq -r '.comments[].post' "$BLESSED_COMMENTS" 2>/dev/null | while read -r p; do
+                info_human "  - $p"
+            done
+        fi
+    else
+        info_human "Blessed comments: file not found"
+    fi
+
+    info_human "Templates loaded"
+
+    local posts_rendered=0
+    local posts_skipped=0
+    local comments_rendered=0
+    local comments_skipped=0
+
+    info_human ""
+    info_human "=== Rendering Posts ==="
+
+    # Render posts
+    if [ -d "$POSTS_DIR" ]; then
+        while IFS= read -r post_file; do
+            [ -z "$post_file" ] && continue
+            info_human "Processing: $post_file"
+            if render_file "$post_file" "post" "$force"; then
+                ((posts_rendered++))
+                info_human "  -> Rendered: ${post_file%.md}.html"
+            else
+                ((posts_skipped++))
+                info_human "  -> Skipped (up to date)"
+            fi
+        done < <(find "$POSTS_DIR" -name "*.md" -not -path "*/.versions/*" -type f 2>/dev/null)
+    else
+        info_human "Posts directory not found: $POSTS_DIR"
+    fi
+
+    info_human ""
+    info_human "=== Rendering Comments ==="
+
+    # Render comments
+    if [ -d "$COMMENTS_DIR" ]; then
+        while IFS= read -r comment_file; do
+            [ -z "$comment_file" ] && continue
+            info_human "Processing: $comment_file"
+            if render_file "$comment_file" "comment" "$force"; then
+                ((comments_rendered++))
+                info_human "  -> Rendered: ${comment_file%.md}.html"
+            else
+                ((comments_skipped++))
+                info_human "  -> Skipped (up to date)"
+            fi
+        done < <(find "$COMMENTS_DIR" -name "*.md" -not -path "*/.versions/*" -type f 2>/dev/null)
+    else
+        info_human "Comments directory not found: $COMMENTS_DIR"
+    fi
+
+    info_human ""
+    info_human "=== Generating Index ==="
+
+    # Generate index
+    render_index
+    info_human "Generated: index.html"
+
+    # Output
+    if [ "$JSON_MODE" = true ]; then
+        local result=$(jq -n \
+            --argjson pr "$posts_rendered" \
+            --argjson ps "$posts_skipped" \
+            --argjson cr "$comments_rendered" \
+            --argjson cs "$comments_skipped" \
+            '{posts_rendered: $pr, posts_skipped: $ps, comments_rendered: $cr, comments_skipped: $cs, index_generated: true}')
+        json_success "render" "$result"
+    else
+        echo ""
+        success "Rendering complete!"
+        info "  Posts rendered: $posts_rendered (skipped: $posts_skipped)"
+        info "  Comments rendered: $comments_rendered (skipped: $comments_skipped)"
+        info "  Index: index.html"
+    fi
+}
+
 # Main command router
 main() {
     # Parse global flags before command
@@ -5144,6 +5705,9 @@ main() {
                     ;;
             esac
             ;;
+        render)
+            cmd_render "$@"
+            ;;
         *)
             echo "Polis - Decentralized Social Network CLI"
             echo ""
@@ -5173,6 +5737,8 @@ main() {
             echo "  polis unfollow <author-url>     Unfollow an author"
             echo ""
             echo "Commands related to site administration:"
+            echo "  polis render [--force]          Render markdown posts and comments to HTML"
+            echo "  polis render --init-templates   Create .polis/templates/ with default templates for customization"
             echo "  polis notifications             Show pending actions (blessing requests, domain migrations)"
             echo "  polis migrate <new-domain>      Migrate all content to a new domain (re-signs files, updates DB)"
             echo "  polis migrations apply          Apply discovered domain migrations to local files"

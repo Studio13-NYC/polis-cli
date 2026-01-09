@@ -143,46 +143,83 @@ When interactive prompts are auto-skipped in JSON mode, these defaults are used:
   "status": "success",
   "command": "publish",
   "data": {
-    "file_path": "posts/2025/01/my-post.md",
+    "file_path": "posts/2026/01/my-post.md",
     "content_hash": "sha256:abc123...",
-    "timestamp": "2025-01-15T12:00:00Z",
+    "timestamp": "2026-01-15T12:00:00Z",
     "signature": "-----BEGIN SSH SIGNATURE-----...",
-    "canonical_url": "https://example.com/posts/2025/01/my-post.md"
+    "canonical_url": "https://example.com/posts/2026/01/my-post.md"
   }
 }
 ```
 
-### `polis comment <url>`
+### `polis republish <file>`
+
+```json
+{
+  "status": "success",
+  "command": "republish",
+  "data": {
+    "file_path": "posts/2026/01/my-post.md",
+    "previous_version": "sha256:abc123...",
+    "new_version": "sha256:def456...",
+    "timestamp": "2026-01-15T14:00:00Z",
+    "signature": "-----BEGIN SSH SIGNATURE-----..."
+  }
+}
+```
+
+### `polis preview <url>`
+
+```json
+{
+  "status": "success",
+  "command": "preview",
+  "data": {
+    "url": "https://alice.com/posts/2026/01/hello.md",
+    "type": "post",
+    "title": "Hello World",
+    "published": "2026-01-15T12:00:00Z",
+    "current_version": "sha256:abc123...",
+    "generator": "polis-cli/0.16.0",
+    "in_reply_to": null,
+    "author": "alice@example.com",
+    "signature": {
+      "status": "valid",
+      "message": "Good signature from alice@example.com"
+    },
+    "hash": {
+      "status": "valid"
+    },
+    "validation_issues": [],
+    "body": "# Hello World\n\nThis is my first post..."
+  }
+}
+```
+
+### `polis comment <file> <url>`
 
 ```json
 {
   "status": "success",
   "command": "comment",
   "data": {
-    "file_path": "comments/2025/01/reply.md",
+    "file_path": "comments/2026/01/reply.md",
     "content_hash": "sha256:def456...",
     "in_reply_to": "https://bob.com/posts/original.md",
-    "timestamp": "2025-01-15T12:30:00Z",
+    "timestamp": "2026-01-15T12:30:00Z",
     "beseech_status": "pending"
   }
 }
 ```
 
-### `polis beseech <url>`
+### `polis blessing sync`
 
 ```json
 {
   "status": "success",
-  "command": "beseech",
+  "command": "blessing-sync",
   "data": {
-    "comment_url": "https://alice.com/comments/reply.md",
-    "comment_version": "sha256:...",
-    "in_reply_to": "https://bob.com/posts/original.md",
-    "discovery_response": {
-      "success": true,
-      "message": "Beseech request recorded",
-      "status": "pending"
-    }
+    "synced_count": 3
   }
 }
 ```
@@ -216,7 +253,7 @@ When interactive prompts are auto-skipped in JSON mode, these defaults are used:
   "data": {
     "comment_version": "sha256:f4bac5d0...",
     "comment_url": "https://alice.com/comments/reply.md",
-    "blessed_at": "2025-01-15T13:00:00Z",
+    "blessed_at": "2026-01-15T13:00:00Z",
     "blessed_by": "bob@example.com"
   }
 }
@@ -224,7 +261,52 @@ When interactive prompts are auto-skipped in JSON mode, these defaults are used:
 
 ### `polis blessing deny <hash>`
 
-Similar structure to `blessing grant`, with `denied_at` and `denied_by` fields.
+```json
+{
+  "status": "success",
+  "command": "blessing-deny",
+  "data": {
+    "comment_version": "sha256:f4bac5d0...",
+    "comment_url": "https://alice.com/comments/reply.md",
+    "denied_at": "2026-01-15T13:00:00Z",
+    "denied_by": "bob@example.com"
+  }
+}
+```
+
+### `polis blessing beseech <id>`
+
+Re-request blessing for a comment by database ID.
+
+```json
+{
+  "status": "success",
+  "command": "blessing-beseech",
+  "data": {
+    "comment_url": "https://alice.com/comments/reply.md",
+    "comment_version": "sha256:...",
+    "in_reply_to": "https://bob.com/posts/original.md",
+    "discovery_response": {
+      "success": true,
+      "message": "Beseech request recorded",
+      "status": "pending"
+    }
+  }
+}
+```
+
+If already blessed:
+
+```json
+{
+  "status": "success",
+  "command": "blessing-beseech",
+  "data": {
+    "status": "already_blessed",
+    "comment_id": 42
+  }
+}
+```
 
 ### `polis follow <url>`
 
@@ -260,24 +342,130 @@ Similar structure to `follow`, with `removed_from_following` and `comments_denie
 }
 ```
 
-### `polis reset`
+### `polis render`
 
 ```json
 {
   "status": "success",
-  "command": "reset",
+  "command": "render",
   "data": {
-    "archive_dir": "archive-2025-01-15-120000",
-    "items_archived": {
-      "polis_dir": true,
-      "public_json": true,
-      "blessed_comments": true,
-      "posts": 12,
-      "comments": 5
-    }
+    "posts_rendered": 5,
+    "posts_skipped": 12,
+    "comments_rendered": 3,
+    "comments_skipped": 8,
+    "index_generated": true
   }
 }
 ```
+
+### `polis render --init-templates`
+
+```json
+{
+  "status": "success",
+  "command": "render",
+  "data": {
+    "templates_created": [
+      ".polis/templates/post.html",
+      ".polis/templates/comment.html",
+      ".polis/templates/comment-inline.html",
+      ".polis/templates/index.html"
+    ]
+  }
+}
+```
+
+### `polis index --json`
+
+Returns posts and comments grouped from the public index.
+
+```json
+{
+  "version": "0.16.0",
+  "posts": [
+    {
+      "title": "My First Post",
+      "url": "https://example.com/posts/2026/01/my-first-post.md",
+      "published": "2026-01-15T12:00:00Z",
+      "version": "sha256:abc123..."
+    }
+  ],
+  "comments": [
+    {
+      "title": "Re: Their Post",
+      "url": "https://example.com/comments/2026/01/reply.md",
+      "published": "2026-01-15T14:00:00Z",
+      "in_reply_to": "https://other.com/posts/their-post.md",
+      "version": "sha256:def456..."
+    }
+  ]
+}
+```
+
+Note: This command outputs JSON directly (not wrapped in success envelope) for compatibility with JSONL tooling.
+
+### `polis notifications`
+
+```json
+{
+  "status": "success",
+  "command": "notifications",
+  "data": {
+    "pending_blessings": [
+      {
+        "id": 42,
+        "comment_url": "https://alice.com/comments/reply.md",
+        "author": "alice@example.com",
+        "in_reply_to": "https://example.com/posts/my-post.md",
+        "timestamp": "2026-01-15T12:00:00Z"
+      }
+    ],
+    "domain_migrations": [
+      {
+        "old_domain": "old-site.com",
+        "new_domain": "new-site.com",
+        "migrated_at": "2026-01-14T10:00:00Z"
+      }
+    ]
+  }
+}
+```
+
+### `polis migrate <new-domain>`
+
+```json
+{
+  "status": "success",
+  "command": "migrate",
+  "data": {
+    "old_domain": "old-site.com",
+    "new_domain": "new-site.com",
+    "posts_updated": 12,
+    "comments_updated": 5,
+    "database_updated": true,
+    "database_rows": 17
+  }
+}
+```
+
+### `polis rotate-key`
+
+```json
+{
+  "status": "success",
+  "command": "rotate-key",
+  "data": {
+    "posts_resigned": 12,
+    "posts_failed": 0,
+    "comments_resigned": 5,
+    "comments_failed": 0,
+    "old_key": "archived",
+    "new_key_fingerprint": "SHA256:abc123..."
+  }
+}
+```
+
+The `old_key` field is either `"archived"` or `"deleted"` depending on whether `--delete-old-key` was used.
 
 ## Error Codes
 
@@ -327,31 +515,19 @@ Similar structure to `follow`, with `removed_from_following` and `comments_denie
    polis --json --compact publish test.md   # Minified (default)
    ```
 
-4. **Stdin support for content** ⚠️ **High Priority**
-   ```bash
-   # Pipe content directly to publish
-   echo "# My Post" | polis --json publish --stdin
-
-   # Chain with other tools
-   curl https://example.com/draft.md | polis --json publish --stdin
-
-   # Comment with piped content
-   echo "Great article!" | polis --json comment https://bob.com/post.md
-   ```
-
-5. **Batch mode**
+4. **Batch mode**
    ```bash
    # Process multiple operations from JSON input
    cat operations.json | polis --json --batch
    ```
 
-6. **Webhook integration**
+5. **Webhook integration**
    ```bash
    # Post results to webhook
    polis --json --webhook=https://api.example.com/hooks publish test.md
    ```
 
-7. **Progress tracking for long operations**
+6. **Progress tracking for long operations**
    ```json
    {
      "status": "in_progress",

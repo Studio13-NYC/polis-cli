@@ -23,7 +23,7 @@ Polis is federated social networking where:
 - **AI handles the hard parts** — Your AI controls the algorithm.  Publishing, discovery, summaries, trends.  Bring your own model.
 - **Standards-based** — Just HTTPS, DNS, and cryptography. No blockchain, no tokens, no lock-in
 
-Read the [full manifesto](MANIFESTO.md) for more on our vision.
+Read the [full manifesto](docs/MANIFESTO.md) for more on our vision.
 
 ---
 
@@ -249,7 +249,7 @@ polis --json blessing requests | jq -r '.data.requests[].id' | \
   xargs -I{} polis blessing grant {}
 ```
 
-See [USAGE.md](USAGE.md) for complete JSON mode documentation.
+See [USAGE.md](docs/USAGE.md) for complete JSON mode documentation.
 
 ---
 
@@ -313,10 +313,13 @@ We're not fighting Twitter's network effects. We're serving the people platforms
 
 ## Documentation
 
-- **[MANIFESTO.md](MANIFESTO.md)** — Vision and philosophy
-- **[USAGE.md](USAGE.md)** — Complete command reference
+- **[USAGE.md](docs/USAGE.md)** — Complete command reference
+- **[JSON-MODE.md](docs/JSON-MODE.md)** — JSON output format for scripting
+- **[TEMPLATING.md](docs/TEMPLATING.md)** — HTML template customization
+- **[SECURITY-MODEL.md](docs/SECURITY-MODEL.md)** — Cryptographic security deep-dive
+- **[MANIFESTO.md](docs/MANIFESTO.md)** — Vision and philosophy
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** — Development guidelines
-- **[SECURITY-POLICY.md](SECURITY-POLICY.md)** — Security policy
+- **[SECURITY.md](SECURITY.md)** — Security policy
 
 ---
 

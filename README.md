@@ -233,6 +233,65 @@ $ polis follow https://alice.example.com
 
 ---
 
+## Render to a deployable website
+
+Your posts and comments are markdown files. The `render` command turns them into a complete static website:
+
+```bash
+$ polis render
+[i] Rendering posts...
+[✓] posts/20260106/hello.md → posts/20260106/hello.html
+[✓] posts/20260108/followup.md → posts/20260108/followup.html
+[i] Rendering comments...
+[✓] comments/20260107/reply.md → comments/20260107/reply.html
+[i] Generating index...
+[✓] index.html (2 posts)
+[✓] Render complete: 3 files updated
+```
+
+The result is ready to deploy to any static host—GitHub Pages, Vercel, Netlify, your own server.
+
+### What render does
+
+- **Converts markdown to HTML** using pandoc with customizable templates
+- **Embeds blessed comments** directly in post pages
+- **Generates an index page** listing all your posts
+- **Skips unchanged files** for fast incremental builds
+- **Embeds signed source** in every HTML file (see below)
+
+### Customize your templates
+
+```bash
+$ polis render --init-templates
+[✓] Created .polis/templates/post.html
+[✓] Created .polis/templates/comment.html
+[✓] Created .polis/templates/comment-inline.html
+[✓] Created .polis/templates/index.html
+```
+
+Edit these files to change your site's look. Templates use `{{variable}}` substitution for title, content, dates, signatures, and more. See [TEMPLATING.md](docs/TEMPLATING.md) for the full variable reference.
+
+### Verifiable HTML
+
+Every rendered HTML file includes the original signed markdown as an embedded comment:
+
+```html
+<!--
+=== POLIS SOURCE ===
+Source: posts/20260106/hello.md
+signature: AAAAB3NzaC1lZDI1NTE5...
+---
+# Hello World
+
+This is my first post!
+=== END POLIS SOURCE ===
+-->
+```
+
+This means anyone can verify the HTML matches its cryptographic signature—without needing your original files. The rendered website is as trustworthy as the signed source.
+
+---
+
 ## Scripting & Automation
 
 All commands support `--json` for machine-readable output:

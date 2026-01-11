@@ -199,7 +199,7 @@ These must be true at *every* level for the promise to hold:
 
 1. **Content is always markdown files** — never a proprietary format or database schema
 2. **Signatures are always the same format** — generated the same way, verifiable the same way
-3. **Keys are always exportable** — even custodied keys can be downloaded
+3. **Keys are always exportable** — even custodied keys can be downloaded or content resigned
 4. **Export produces identical output** — a Level 7 export is byte-for-byte usable at Level 1
 5. **CLI is always the foundation** — every layer above is calling it (or reimplementing its logic faithfully)
 

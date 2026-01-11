@@ -281,9 +281,6 @@ Every rendered HTML file includes the original signed markdown as an embedded co
 Source: posts/20260106/hello.md
 signature: AAAAB3NzaC1lZDI1NTE5...
 ---
-# Hello World
-
-This is my first post!
 === END POLIS SOURCE ===
 -->
 ```

@@ -28,7 +28,7 @@ set -e
 #   4. Hardcoded defaults
 
 # Fixed constants (never configurable - required for discovery)
-VERSION="0.19.0"
+VERSION="0.20.0"
 WELL_KNOWN_DIR=".well-known"
 WELL_KNOWN_FILE="polis"
 
@@ -5463,15 +5463,13 @@ render_file() {
     result="${result//\{\{root_post_url\}\}/$(escape_for_replacement "$root_post_url")}"
 
     # Append frontmatter as HTML comment (not full content to avoid duplication)
-    # Extract frontmatter only (between first and second --- lines)
-    local frontmatter_only=$(echo "$content" | awk '/^---$/{if(++count==2){print; exit} print; next} count==1{print}')
-    # Escape -- sequences to prevent breaking HTML comments
-    local escaped_frontmatter="${frontmatter_only//--/&#45;&#45;}"
+    # Extract frontmatter fields only (between --- lines, excluding the delimiters)
+    local frontmatter_fields=$(echo "$content" | awk '/^---$/{if(++count==2) exit; next} count==1{print}')
     result+="
 <!--
 === POLIS SOURCE ===
 Source: ${url}
-${escaped_frontmatter}
+${frontmatter_fields}
 === END POLIS SOURCE ===
 -->"
 

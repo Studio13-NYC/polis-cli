@@ -6,7 +6,7 @@ This document defines the spectrum of user experiences Polis will support, from 
 
 ## The Core Promise
 
-User's own their content. This isn't a feature—it's the foundation everything is built on.
+Users own their content. This isn't a feature—it's the foundation everything is built on.
 
 A casual user who signs up through a hosting provider with a username and password owns their content in exactly the same way a developer running their own infrastructure does. The underlying format is identical: markdown files, cryptographic signatures, exportable keys.
 

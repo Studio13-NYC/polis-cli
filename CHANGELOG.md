@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.22.0] - 2026-01-12
+
+### Added
+- **`polis about`** - Branded info screen with tagline, versions, and project links
+- **`polis config`** - Configuration viewer showing all settings, paths, and key fingerprint (supports `--json`)
+- **TUI comment filename prompt** - Now prompts for filename when creating comments, matching publish workflow
+- **TUI init flexibility** - Offers to initialize polis in directories with non-conflicting files
+  - Previously required empty or git-only directories
+  - Now only checks for actual conflicts (existing `.polis/keys` or `.well-known/polis`)
+- **TUI "View in browser"** - Added option to open previewed URLs and blessing review URLs in browser
+
+### Changed
+- **BREAKING: Content canonicalization** - Signatures and hashes now use canonicalized content
+  - Trims trailing whitespace from each line and ensures exactly one trailing newline
+  - Eliminates verification failures caused by HTTP transfer or editor differences
+  - **Existing signed content must be re-signed** with `polis rotate-key`
+- **`--filename` flag** - Now works in all modes for `publish` and `comment` commands (previously stdin-only)
+- **Color scheme** - Replaced BLUE with CYAN throughout the CLI for better terminal contrast
+- **License correction** - Fixed to AGPL v3 in `polis about` output (was incorrectly showing MIT)
+
+### Fixed
+- **Signature verification** - Fixed false "invalid signature" errors caused by mawk incompatibility
+  - Rewrote `extract_body_from_content` to use pure bash instead of awk
+- **Hash verification** - Fixed false "hash mismatch" errors from trailing newline differences
+- **`--json` flag positioning** - Now works as first or last argument (e.g., `polis --json config`)
+- **`polis index --json`** - No longer conflicts with global `--json` flag
+- **Template overwrite protection** - `polis render --init-templates` no longer overwrites existing templates
+- **Index sorting** - `index.html` now lists posts in descending date order (newest first)
+- **Preview URL flexibility** - `polis preview` now tries alternate extensions (.html ↔ .md) when content not found
+
 ## [0.21.0] - 2026-01-12
 
 ### Added

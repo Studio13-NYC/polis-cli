@@ -20,7 +20,7 @@ set -e
 # VERSION
 # =============================================================================
 
-TUI_VERSION="0.3.0"
+TUI_VERSION="0.4.0"
 
 # =============================================================================
 # LOGGING
@@ -172,6 +172,26 @@ wait_for_key() {
     echo ""
     echo -e "${DIM}$prompt${NC}"
     read -rsn1
+}
+
+# Open URL in default browser (cross-platform)
+open_in_browser() {
+    local url="$1"
+    if [[ -z "$url" ]]; then
+        return 1
+    fi
+
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        open "$url" 2>/dev/null
+    elif command -v xdg-open &>/dev/null; then
+        xdg-open "$url" 2>/dev/null &
+    elif command -v wslview &>/dev/null; then
+        wslview "$url" 2>/dev/null &
+    else
+        warn "Could not detect how to open browser. URL: $url"
+        return 1
+    fi
+    return 0
 }
 
 # =============================================================================
@@ -419,6 +439,20 @@ check_git_status() {
 # Check if polis is initialized
 is_polis_initialized() {
     [[ -f ".well-known/polis" ]]
+}
+
+# Check if directory has files that would conflict with polis init
+# Returns 0 (true) if conflicts exist, 1 (false) if safe to init
+# Only checks for files that would cause polis init to fail or overwrite data
+has_polis_conflicts() {
+    # If already initialized, that's a conflict
+    [[ -f ".well-known/polis" ]] && return 0
+
+    # If keys already exist, polis init will error
+    [[ -f ".polis/keys/id_ed25519" ]] && return 0
+
+    # No conflicts found - safe to offer init
+    return 1
 }
 
 # =============================================================================
@@ -876,11 +910,29 @@ EOF
     local title
     title=$(head -1 "$tmpfile" | sed 's/^#* *//')
 
+    # Prompt for filename using ui_input
+    local default_filename
+    default_filename=$(echo "$title" | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | tr -cd 'a-z0-9-').md
+
+    local filename
+    filename=$(ui_input "Filename" "Enter filename for your comment" "$default_filename")
+
+    # Handle cancel (empty result)
+    if [[ -z "$filename" ]]; then
+        warn "Cancelled."
+        rm -f "$tmpfile"
+        wait_for_key
+        return 0
+    fi
+
+    # Ensure .md extension
+    [[ "$filename" != *.md ]] && filename="${filename}.md"
+
     echo ""
     info "Publishing comment..."
 
     local result
-    result=$(run_polis comment "$tmpfile" "$reply_url")
+    result=$(run_polis comment "$tmpfile" "$reply_url" --filename "$filename")
 
     rm -f "$tmpfile"
 
@@ -941,9 +993,10 @@ do_blessings() {
         fi
 
         # Build list for ui_list_select: "hash" "description" pairs
-        # Also build associative array for author lookup
+        # Also build associative arrays for author and URL lookup
         local list_items=()
         declare -A author_map
+        declare -A url_map
         local skipped_count=0
         local skipped_reasons=()
 
@@ -964,10 +1017,11 @@ do_blessings() {
                 continue
             fi
 
-            local author excerpt hash short_author
+            local author excerpt hash short_author comment_url
             author=$(echo "$line" | jq -r '.author // "unknown"' 2>/dev/null)
+            comment_url=$(echo "$line" | jq -r '.comment_url // ""' 2>/dev/null)
             # Extract filename from comment_url as excerpt (no excerpt field in API)
-            excerpt=$(echo "$line" | jq -r '.comment_url // ""' 2>/dev/null | sed 's|.*/||' | head -c 30)
+            excerpt=$(echo "$comment_url" | sed 's|.*/||' | head -c 30)
             hash=$(echo "$line" | jq -r '.comment_version // ""' 2>/dev/null)
 
             # Skip if we don't have a hash
@@ -980,7 +1034,8 @@ do_blessings() {
             short_author="${author##*/}"
             list_items+=("$hash" "@$short_author - \"$excerpt...\"")
             author_map["$hash"]="$author"
-            log_msg "Added item: hash=$hash author=$short_author"
+            url_map["$hash"]="$comment_url"
+            log_msg "Added item: hash=$hash author=$short_author url=$comment_url"
         done < <(echo "$result" | jq -c '.data.requests[]' 2>/dev/null)
 
         log_msg "Done processing. valid=${#list_items[@]} skipped=$skipped_count"
@@ -1024,7 +1079,8 @@ do_blessings() {
 
         # Review the selected blessing
         local selected_author="${author_map[$selected_hash]}"
-        review_blessing "$selected_hash" "$selected_author"
+        local selected_url="${url_map[$selected_hash]}"
+        review_blessing "$selected_hash" "$selected_author" "$selected_url"
     done
 }
 
@@ -1032,56 +1088,75 @@ do_blessings() {
 review_blessing() {
     local hash="$1"
     local author="$2"
+    local comment_url="$3"
 
-    # Build preview text
-    local preview_text="Hash: $hash\nAuthor: $author"
+    while true; do
+        # Build preview text
+        local short_hash="${hash:7:12}"  # Extract first 12 chars after "sha256:"
+        local preview_text="Author: $author\nHash: $short_hash...\nURL: $comment_url"
 
-    local choice
-    choice=$(ui_menu "Review Blessing" "$preview_text" \
-        "grant" "Grant blessing" \
-        "deny"  "Deny blessing" \
-        "skip"  "Skip (decide later)")
+        local choice
+        choice=$(ui_menu "Review Blessing" "$preview_text" \
+            "view"  "View in browser" \
+            "grant" "Grant blessing" \
+            "deny"  "Deny blessing" \
+            "skip"  "Skip (decide later)")
 
-    case "$choice" in
-        grant)
-            echo ""
-            info "Granting blessing..."
-            local result
-            result=$(run_polis blessing grant "$hash")
-            if is_polis_success "$result"; then
-                ui_message "Success" "Blessing granted!"
-                post_action_workflow "bless" "$author" "metadata/blessed-comments.json"
-            else
-                local err_msg
-                err_msg=$(get_polis_error "$result")
-                if [[ "$err_msg" == "Unknown error" ]]; then
-                    ui_message "Error" "Failed to grant blessing\n\n$result"
+        case "$choice" in
+            view)
+                if [[ -n "$comment_url" ]]; then
+                    info "Opening in browser..."
+                    open_in_browser "$comment_url"
+                    sleep 0.5
                 else
-                    ui_message "Error" "Failed to grant blessing: $err_msg"
+                    warn "No URL available for this comment."
+                    wait_for_key
                 fi
-            fi
-            ;;
-        deny)
-            echo ""
-            info "Denying blessing..."
-            local result
-            result=$(run_polis blessing deny "$hash")
-            if is_polis_success "$result"; then
-                ui_message "Done" "Blessing denied."
-            else
-                local err_msg
-                err_msg=$(get_polis_error "$result")
-                if [[ "$err_msg" == "Unknown error" ]]; then
-                    ui_message "Error" "Failed to deny blessing\n\n$result"
+                # Loop back to menu
+                ;;
+            grant)
+                echo ""
+                info "Granting blessing..."
+                local result
+                result=$(run_polis blessing grant "$hash")
+                if is_polis_success "$result"; then
+                    ui_message "Success" "Blessing granted!"
+                    post_action_workflow "bless" "$author" "metadata/blessed-comments.json"
                 else
-                    ui_message "Error" "Failed to deny blessing: $err_msg"
+                    local err_msg
+                    err_msg=$(get_polis_error "$result")
+                    if [[ "$err_msg" == "Unknown error" ]]; then
+                        ui_message "Error" "Failed to grant blessing\n\n$result"
+                    else
+                        ui_message "Error" "Failed to grant blessing: $err_msg"
+                    fi
                 fi
-            fi
-            ;;
-        skip|"")
-            # Just return to list
-            ;;
-    esac
+                return
+                ;;
+            deny)
+                echo ""
+                info "Denying blessing..."
+                local result
+                result=$(run_polis blessing deny "$hash")
+                if is_polis_success "$result"; then
+                    ui_message "Done" "Blessing denied."
+                else
+                    local err_msg
+                    err_msg=$(get_polis_error "$result")
+                    if [[ "$err_msg" == "Unknown error" ]]; then
+                        ui_message "Error" "Failed to deny blessing\n\n$result"
+                    else
+                        ui_message "Error" "Failed to deny blessing: $err_msg"
+                    fi
+                fi
+                return
+                ;;
+            skip|"")
+                # Return to list
+                return
+                ;;
+        esac
+    done
 }
 
 # =============================================================================
@@ -1222,7 +1297,18 @@ do_preview() {
     # Use human mode for preview display
     run_polis_human preview "$url"
 
-    wait_for_key
+    echo ""
+    local choice
+    choice=$(ui_menu "Preview Complete" "" \
+        "open"   "Open in browser" \
+        "done"   "Done")
+
+    if [[ "$choice" == "open" ]]; then
+        info "Opening in browser..."
+        if open_in_browser "$url"; then
+            sleep 0.5  # Brief pause to let browser open
+        fi
+    fi
 }
 
 # =============================================================================
@@ -1232,12 +1318,16 @@ do_preview() {
 do_about() {
     header "ABOUT POLIS"
 
-    # Get polis CLI version
-    local cli_version
-    cli_version=$("$POLIS_CLI" --json version 2>/dev/null | jq -r '.data.version // "unknown"' 2>/dev/null || echo "unknown")
+    # Get config from polis CLI
+    local config_json
+    config_json=$("$POLIS_CLI" --json config 2>/dev/null || echo '{}')
 
-    # Get author's site URL from environment variable
-    local site_url="${POLIS_BASE_URL:-not configured}"
+    local cli_version
+    cli_version=$(echo "$config_json" | jq -r '.data.cli.version // "unknown"' 2>/dev/null || echo "unknown")
+
+    local site_url
+    site_url=$(echo "$config_json" | jq -r '.data.environment.POLIS_BASE_URL // ""' 2>/dev/null || echo "")
+    [ -z "$site_url" ] && site_url="not configured"
 
     echo ""
     echo -e "${BOLD}Polis${NC} - Decentralized Social Network"
@@ -1253,7 +1343,7 @@ do_about() {
     divider
     echo ""
     echo -e "  ${CYAN}Project:${NC}  https://github.com/vdibart/polis"
-    echo -e "  ${CYAN}License:${NC}  MIT"
+    echo -e "  ${CYAN}License:${NC}  AGPL v3"
     echo ""
 
     wait_for_key
@@ -1396,11 +1486,45 @@ main() {
     if ! is_polis_initialized; then
         clear
         header "POLIS TUI"
-        error "Polis is not initialized in this directory."
-        echo ""
-        echo "Run 'polis init' first to set up your polis site."
-        echo ""
-        exit 1
+
+        # Check if directory has conflicts that would prevent init
+        if ! has_polis_conflicts; then
+            echo ""
+            echo -e "${CYAN}This directory is not set up as a polis site.${NC}"
+            echo ""
+            echo "Would you like to initialize polis here?"
+            echo ""
+            echo -e "  ${DIM}This will create:${NC}"
+            echo -e "  ${DIM}  - .well-known/polis (site metadata)${NC}"
+            echo -e "  ${DIM}  - .polis/keys/ (Ed25519 keypair)${NC}"
+            echo -e "  ${DIM}  - posts/, comments/, metadata/ directories${NC}"
+            echo ""
+
+            local choice
+            read -r -p "Initialize polis? [Y/n] " choice
+            case "$choice" in
+                [nN]|[nN][oO])
+                    echo ""
+                    echo "No changes made. Run 'polis init' manually when ready."
+                    echo ""
+                    exit 0
+                    ;;
+                *)
+                    echo ""
+                    "$POLIS_CLI" init
+                    echo ""
+                    echo -e "${GREEN}Polis initialized!${NC} Press any key to continue..."
+                    read -r -n 1 -s
+                    ;;
+            esac
+        else
+            error "Polis is not initialized in this directory."
+            echo ""
+            echo "Existing polis files detected (.polis/keys or .well-known/polis)."
+            echo "Run 'polis init' manually to resolve any conflicts."
+            echo ""
+            exit 1
+        fi
     fi
 
     # Main loop

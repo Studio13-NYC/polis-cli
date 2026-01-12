@@ -28,7 +28,7 @@ set -e
 #   4. Hardcoded defaults
 
 # Fixed constants (never configurable - required for discovery)
-VERSION="0.21.0"
+VERSION="0.22.0"
 WELL_KNOWN_DIR=".well-known"
 WELL_KNOWN_FILE="polis"
 
@@ -128,7 +128,9 @@ init_config
 # Colors for output
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
+CYAN='\033[0;36m'
 RED='\033[0;31m'
+BOLD='\033[1m'
 DIM='\033[2m'
 NC='\033[0m' # No Color
 
@@ -137,7 +139,7 @@ JSON_MODE=false
 
 # Helper function for colored output
 info() {
-    echo -e "${BLUE}[i]${NC} $1"
+    echo -e "${CYAN}[i]${NC} $1"
 }
 
 success() {
@@ -455,6 +457,24 @@ extract_title() {
     echo "$title"
 }
 
+# Canonicalize content by trimming trailing whitespace/newlines
+# This ensures consistent signing/hashing regardless of editor or transfer differences
+# Result always ends with exactly one newline
+canonicalize_content() {
+    local content="$1"
+    local trimmed
+    # Remove trailing whitespace from each line, then remove trailing empty lines
+    # Finally add exactly one newline at the end
+    trimmed=$(printf '%s' "$content" | sed 's/[[:space:]]*$//' | sed -e :a -e '/^\n*$/{$d;N;ba;}')
+    printf '%s\n' "$trimmed"
+}
+
+# Canonicalize file content (reads file, canonicalizes, outputs to stdout)
+canonicalize_file() {
+    local file="$1"
+    canonicalize_content "$(cat "$file")"
+}
+
 # Calculate SHA-256 hash of file content
 hash_content() {
     local file="$1"
@@ -466,6 +486,17 @@ hash_content() {
     else
         error "Neither sha256sum nor shasum found. Please install coreutils."
     fi
+}
+
+# Calculate SHA-256 hash of canonicalized file content
+# This ensures consistent hashing regardless of trailing whitespace
+hash_content_canonical() {
+    local file="$1"
+    local temp=$(mktemp)
+    canonicalize_file "$file" > "$temp"
+    local hash=$(hash_content "$temp")
+    rm -f "$temp"
+    echo "$hash"
 }
 
 # Generate unified diff between two files (reverse: new -> old)
@@ -1330,14 +1361,35 @@ extract_frontmatter_field_from_content() {
 }
 
 # Extract content body (without frontmatter) from content string
+# Works with both gawk and mawk
 extract_body_from_content() {
     local content="$1"
-    echo "$content" | awk '/^---$/{if(++count==2){skip=0; getline; print; next} skip=1; next} !skip'
+    local in_body=0
+    local dash_count=0
+    local body=""
+
+    while IFS= read -r line; do
+        if [[ "$line" == "---" ]]; then
+            ((dash_count++))
+            if [[ $dash_count -eq 2 ]]; then
+                in_body=1
+            fi
+            continue
+        fi
+        if [[ $in_body -eq 1 ]]; then
+            body+="$line"$'\n'
+        fi
+    done <<< "$content"
+
+    # Print without trailing newline - echo will add it back
+    # This preserves the exact trailing newline count through command substitution
+    printf '%s' "$body"
 }
 
 # Verify signature of remote content
 # Args: $1=content, $2=public_key, $3=author_email
 # Returns: 0 if valid, 1 if invalid
+# Canonicalizes content before verification for consistent results
 verify_remote_signature() {
     local content="$1"
     local public_key="$2"
@@ -1364,10 +1416,14 @@ verify_remote_signature() {
     echo "$signature" >> "$temp_sig"
     echo "-----END SSH SIGNATURE-----" >> "$temp_sig"
 
-    # Reconstruct the content without signature field (what was originally signed)
-    echo "$content" | sed '/^signature:/d' > "$temp_content"
+    # Reconstruct the content without signature field and canonicalize
+    # Canonicalization ensures consistent verification regardless of whitespace differences
+    local base_content
+    base_content=$(echo "$content" | sed '/^signature:/d')
 
-    # Verify using ssh-keygen
+    # Canonicalize the content before verification
+    canonicalize_content "$base_content" > "$temp_content"
+
     local result=1
     if ssh-keygen -Y verify -f "$temp_allowed" -I "$author_email" -n file -s "$temp_sig" < "$temp_content" >/dev/null 2>&1; then
         result=0
@@ -1822,6 +1878,7 @@ append_to_index() {
 }
 
 # Sign file with Ed25519 key
+# Canonicalizes content before signing for consistent verification
 sign_file() {
     local file="$1"
     local keyfile="$KEYS_DIR/id_ed25519"
@@ -1830,15 +1887,19 @@ sign_file() {
         error "Private key not found. Run 'polis init' first."
     fi
 
-    # Use ssh-keygen -Y sign to sign the file
-    # The signature will be written to $file.sig
-    ssh-keygen -Y sign -f "$keyfile" -n file "$file" > /dev/null 2>&1
+    # Canonicalize the content before signing
+    # This ensures consistent verification regardless of trailing whitespace
+    local temp_canonical=$(mktemp)
+    canonicalize_file "$file" > "$temp_canonical"
+
+    # Use ssh-keygen -Y sign to sign the canonicalized file
+    ssh-keygen -Y sign -f "$keyfile" -n file "$temp_canonical" > /dev/null 2>&1
 
     # Extract the signature (skip the header/footer lines, get base64 content)
-    local sig=$(grep -v '^-----' "$file.sig" | tr -d '\n')
+    local sig=$(grep -v '^-----' "$temp_canonical.sig" | tr -d '\n')
 
-    # Clean up signature file
-    rm -f "$file.sig"
+    # Clean up
+    rm -f "$temp_canonical" "$temp_canonical.sig"
 
     echo "$sig"
 }
@@ -2270,22 +2331,16 @@ EOF
     esac
 }
 
-# Command: polis blessing beseech <request-id>
-# Retry or check a blessing request by ID
+# Command: polis blessing beseech <hash>
+# Retry or check a blessing request by content hash
 # This command is RARELY needed - polis comment/republish auto-request blessings
 cmd_blessing_beseech() {
-    local comment_id="$1"
+    local input_hash="$1"
 
     # Validate input
-    if [ -z "$comment_id" ]; then
+    if [ -z "$input_hash" ]; then
         json_error "blessing-beseech" "INVALID_INPUT" \
-            "Usage: polis blessing beseech <request-id>"
-    fi
-
-    # Validate comment_id is numeric
-    if ! [[ "$comment_id" =~ ^[0-9]+$ ]]; then
-        json_error "blessing-beseech" "INVALID_INPUT" \
-            "Request ID must be a number (e.g., 42)"
+            "Usage: polis blessing beseech <hash>"
     fi
 
     # Check prerequisites
@@ -2294,31 +2349,43 @@ cmd_blessing_beseech() {
             "POLIS_BESEECH_ENDPOINT not set. See 'polis help' for configuration."
     fi
 
-    info_human "Fetching blessing request #$comment_id from discovery service..."
+    if [ -z "$POLIS_BASE_URL" ]; then
+        json_error "blessing-beseech" "INVALID_STATE" \
+            "POLIS_BASE_URL not set. Export it first."
+    fi
 
-    # Construct requests endpoint (derive from beseech endpoint)
-    local requests_endpoint="${POLIS_BESEECH_ENDPOINT/beseech/requests}"
+    # Resolve short hash to full comment_version
+    info_human "Resolving hash..."
+    local domain=$(echo "$POLIS_BASE_URL" | sed 's|https\?://||' | sed 's|/.*||')
+    local comment_version
 
-    # Fetch request by ID
-    local response=$(curl -s \
-        "${requests_endpoint}?id=${comment_id}" \
-        ${DISCOVERY_SERVICE_KEY:+-H "Authorization: Bearer $DISCOVERY_SERVICE_KEY"})
+    # Check if input is already a full hash (starts with sha256:)
+    if [[ "$input_hash" == sha256:* ]]; then
+        comment_version="$input_hash"
+    else
+        comment_version=$(resolve_short_hash "$input_hash" "$domain")
+    fi
 
-    # Parse response
-    local count=$(echo "$response" | jq -r '.count // 0')
+    if [ -z "$comment_version" ]; then
+        json_error "blessing-beseech" "NOT_FOUND" "No request found matching hash: $input_hash"
+    fi
 
-    if [ "$count" -eq 0 ]; then
-        json_error "blessing-beseech" "NOT_FOUND" \
-            "Request #$comment_id not found in discovery service"
+    local short_hash=$(format_short_hash "$comment_version")
+
+    # Fetch request details
+    info_human "Fetching request details for $short_hash..."
+    local request_json=$(fetch_request_details "$comment_version")
+
+    if [ -z "$request_json" ] || [ "$request_json" = "null" ]; then
+        json_error "blessing-beseech" "NOT_FOUND" "Request $short_hash not found"
     fi
 
     # Extract request data
-    local comment_url=$(echo "$response" | jq -r '.requests[0].comment_url')
-    local comment_version=$(echo "$response" | jq -r '.requests[0].comment_version')
-    local in_reply_to=$(echo "$response" | jq -r '.requests[0].in_reply_to')
-    local blessing_status=$(echo "$response" | jq -r '.requests[0].blessing_status // "unknown"')
+    local comment_url=$(echo "$request_json" | jq -r '.comment_url')
+    local in_reply_to=$(echo "$request_json" | jq -r '.in_reply_to')
+    local blessing_status=$(echo "$request_json" | jq -r '.blessing_status // "unknown"')
 
-    info_human "Found request #$comment_id (status: $blessing_status)"
+    info_human "Found request $short_hash (status: $blessing_status)"
     info_human "Comment: $comment_url"
     info_human "Reply to: $in_reply_to"
 
@@ -2327,7 +2394,7 @@ cmd_blessing_beseech() {
         success_human "This request is already blessed!"
         info_human "No action needed - comment is approved."
         if [ "$JSON_MODE" = true ]; then
-            json_success "blessing-beseech" '{"status":"already_blessed","comment_id":'$comment_id'}'
+            json_success "blessing-beseech" "$(jq -n --arg hash "$short_hash" '{status:"already_blessed",hash:$hash}')"
         fi
         return 0
     fi
@@ -2455,16 +2522,15 @@ cmd_comment() {
 
     # Determine base filename
     local base_filename
-    if [ "$stdin_mode" = true ]; then
-        if [ -n "$explicit_filename" ]; then
-            base_filename="$explicit_filename"
-            # Ensure .md extension
-            [[ ! "$base_filename" =~ \.md$ ]] && base_filename="${base_filename}.md"
-        else
-            # Generate synthetic filename
-            local timestamp_filename=$(date +%Y%m%d-%H%M%S)
-            base_filename="stdin-${timestamp_filename}.md"
-        fi
+    if [ -n "$explicit_filename" ]; then
+        # Explicit filename takes precedence in all modes
+        base_filename="$explicit_filename"
+        # Ensure .md extension
+        [[ ! "$base_filename" =~ \.md$ ]] && base_filename="${base_filename}.md"
+    elif [ "$stdin_mode" = true ]; then
+        # Generate synthetic filename for stdin
+        local timestamp_filename=$(date +%Y%m%d-%H%M%S)
+        base_filename="stdin-${timestamp_filename}.md"
     else
         # Regular file mode - convert to absolute path for comparison
         if command -v realpath > /dev/null 2>&1; then
@@ -2565,8 +2631,8 @@ cmd_comment() {
     # Read original content
     local content=$(cat "$input_file")
 
-    # Hash the content
-    local content_hash=$(hash_content "$input_file")
+    # Hash the canonicalized content for consistent verification
+    local content_hash=$(hash_content_canonical "$input_file")
     local hash_short="${content_hash:0:6}-${content_hash: -6}"
 
     info_human "Content hash: sha256:$content_hash"
@@ -2703,6 +2769,29 @@ cmd_preview() {
 
     # Fetch content
     local content=$(fetch_remote_content "$content_url")
+    local actual_url="$content_url"
+
+    # Check for frontmatter - if not found, try alternate extension
+    if [ -z "$content" ] || ! echo "$content" | head -1 | grep -q '^---$'; then
+        local alt_url=""
+        if [[ "$content_url" =~ \.html$ ]]; then
+            # Try .md instead of .html
+            alt_url="${content_url%.html}.md"
+        elif [[ "$content_url" =~ \.md$ ]]; then
+            # Try .html instead of .md
+            alt_url="${content_url%.md}.html"
+        fi
+
+        if [ -n "$alt_url" ]; then
+            info_human "Trying alternate URL: $alt_url..."
+            local alt_content=$(fetch_remote_content "$alt_url")
+            if [ -n "$alt_content" ] && echo "$alt_content" | head -1 | grep -q '^---$'; then
+                content="$alt_content"
+                actual_url="$alt_url"
+                info_human "Found valid content at $alt_url"
+            fi
+        fi
+    fi
 
     if [ -z "$content" ]; then
         json_error "preview" "FETCH_ERROR" "Failed to fetch content from $content_url"
@@ -2712,6 +2801,9 @@ cmd_preview() {
     if ! echo "$content" | head -1 | grep -q '^---$'; then
         json_error "preview" "INVALID_CONTENT" "Content has no frontmatter (not a valid Polis post/comment)"
     fi
+
+    # Use actual_url for the rest of the function
+    content_url="$actual_url"
 
     # Auto-detect content type (post vs comment)
     local content_type="post"
@@ -2771,18 +2863,21 @@ cmd_preview() {
     local hash_status="unknown"
     if [ -n "$current_version" ]; then
         local temp_body=$(mktemp)
-        # Strip leading empty line (frontmatter adds blank line after closing ---)
-        # The original file didn't have this leading newline
-        echo "$body" | tail -n +2 > "$temp_body"
-        local actual_hash=$(hash_content "$temp_body")
-        rm -f "$temp_body"
-
         local expected_hash="${current_version#sha256:}"
+
+        # Strip leading empty line (frontmatter adds blank line after closing ---)
+        # and canonicalize for consistent verification
+        local body_without_leading
+        body_without_leading=$(echo "$body" | tail -n +2)
+        canonicalize_content "$body_without_leading" > "$temp_body"
+
+        local actual_hash=$(hash_content "$temp_body")
         if [ "$actual_hash" = "$expected_hash" ]; then
             hash_status="valid"
         else
             hash_status="mismatch"
         fi
+        rm -f "$temp_body"
     fi
 
     # Collect validation issues
@@ -3192,31 +3287,16 @@ cmd_rebuild() {
     fi
 }
 
-# Command: polis index [--json]
-# View the content index in JSONL or JSON format (read-only)
+# Command: polis index
+# View the content index (JSONL by default, grouped JSON with --json)
 cmd_index() {
-    local format="jsonl"  # default
-
-    # Parse flags
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --json)
-                format="json"
-                shift
-                ;;
-            *)
-                json_error "index" "INVALID_INPUT" "Unknown option: $1. Use: polis index [--json]"
-                ;;
-        esac
-    done
-
     # Check if index exists
     if [ ! -f "$PUBLIC_INDEX" ]; then
         json_error "index" "FILE_NOT_FOUND" "Index file not found. Run 'polis rebuild' first."
     fi
 
-    # Output based on format
-    if [ "$format" = "json" ]; then
+    # Output based on JSON_MODE
+    if [ "$JSON_MODE" = true ]; then
         # Convert JSONL to grouped JSON for readability
         jq -s --arg version "$VERSION" '{
             version: $version,
@@ -3236,6 +3316,175 @@ cmd_version() {
         jq -n --arg version "$VERSION" '{ status: "success", command: "version", data: { version: $version } }'
     else
         echo "polis $VERSION"
+    fi
+}
+
+# Command: polis about
+# Display branded info about Polis (human-readable only)
+cmd_about() {
+    # Get versions from metadata files
+    local site_version="not initialized"
+    local following_version="not initialized"
+    local blessings_version="not initialized"
+
+    if [ -f "$WELL_KNOWN_DIR/polis" ]; then
+        site_version=$(jq -r '.version // "unknown"' "$WELL_KNOWN_DIR/polis" 2>/dev/null || echo "unknown")
+    fi
+
+    if [ -f "$FOLLOWING_INDEX" ]; then
+        following_version=$(jq -r '.version // "unknown"' "$FOLLOWING_INDEX" 2>/dev/null || echo "unknown")
+    fi
+
+    if [ -f "$BLESSED_COMMENTS" ]; then
+        blessings_version=$(jq -r '.version // "unknown"' "$BLESSED_COMMENTS" 2>/dev/null || echo "unknown")
+    fi
+
+    # Get site URL
+    local site_url="${POLIS_BASE_URL:-not configured}"
+
+    # Display branded output
+    echo ""
+    echo -e "${BOLD}${CYAN}Polis${NC} - Decentralized Social Network"
+    echo -e "${DIM}Your content, free from platform control${NC}"
+    echo ""
+    echo "────────────────────────────────────────"
+    echo -e "  ${CYAN}CLI version:${NC}        $VERSION"
+    echo -e "  ${CYAN}Site version:${NC}       $site_version"
+    echo -e "  ${CYAN}Following version:${NC}  $following_version"
+    echo -e "  ${CYAN}Blessings version:${NC}  $blessings_version"
+    echo ""
+    echo -e "  ${CYAN}Your site:${NC}          $site_url"
+    echo "────────────────────────────────────────"
+    echo -e "  ${CYAN}Project:${NC}  https://github.com/vdibart/polis"
+    echo -e "  ${CYAN}License:${NC}  AGPL v3"
+    echo ""
+}
+
+# Command: polis config
+# Display configuration settings (supports --json)
+cmd_config() {
+    # Get key info
+    local key_exists=false
+    local key_fingerprint="n/a"
+    local pub_key_file="$KEYS_DIR/id_ed25519.pub"
+
+    if [ -f "$pub_key_file" ]; then
+        key_exists=true
+        key_fingerprint=$(ssh-keygen -lf "$pub_key_file" 2>/dev/null | awk '{print $2}' || echo "unknown")
+    fi
+
+    # Get metadata versions
+    local wellknown_version="not initialized"
+    local following_version="not initialized"
+    local blessings_version="not initialized"
+
+    if [ -f "$WELL_KNOWN_DIR/polis" ]; then
+        wellknown_version=$(jq -r '.version // "unknown"' "$WELL_KNOWN_DIR/polis" 2>/dev/null || echo "unknown")
+    fi
+
+    if [ -f "$FOLLOWING_INDEX" ]; then
+        following_version=$(jq -r '.version // "unknown"' "$FOLLOWING_INDEX" 2>/dev/null || echo "unknown")
+    fi
+
+    if [ -f "$BLESSED_COMMENTS" ]; then
+        blessings_version=$(jq -r '.version // "unknown"' "$BLESSED_COMMENTS" 2>/dev/null || echo "unknown")
+    fi
+
+    # Mask sensitive values
+    local discovery_key_status="[not set]"
+    if [ -n "$DISCOVERY_SERVICE_KEY" ]; then
+        discovery_key_status="[set]"
+    fi
+
+    if [ "$JSON_MODE" = true ]; then
+        jq -n \
+            --arg cli_version "$VERSION" \
+            --arg base_url "${POLIS_BASE_URL:-}" \
+            --arg endpoint_base "$POLIS_ENDPOINT_BASE" \
+            --arg discovery_key "$discovery_key_status" \
+            --arg keys_dir "$KEYS_DIR" \
+            --arg posts_dir "$POSTS_DIR" \
+            --arg comments_dir "$COMMENTS_DIR" \
+            --arg versions_dir "$VERSIONS_DIR_NAME" \
+            --arg public_index "$PUBLIC_INDEX" \
+            --arg blessed_comments "$BLESSED_COMMENTS" \
+            --arg following_index "$FOLLOWING_INDEX" \
+            --argjson key_exists "$key_exists" \
+            --arg key_fingerprint "$key_fingerprint" \
+            --arg pub_key_file "$pub_key_file" \
+            --arg wellknown_version "$wellknown_version" \
+            --arg following_version "$following_version" \
+            --arg blessings_version "$blessings_version" \
+            '{
+                status: "success",
+                command: "config",
+                data: {
+                    cli: { version: $cli_version },
+                    environment: {
+                        POLIS_BASE_URL: $base_url,
+                        POLIS_ENDPOINT_BASE: $endpoint_base,
+                        DISCOVERY_SERVICE_KEY: $discovery_key
+                    },
+                    directories: {
+                        keys: $keys_dir,
+                        posts: $posts_dir,
+                        comments: $comments_dir,
+                        versions: $versions_dir
+                    },
+                    files: {
+                        public_index: $public_index,
+                        blessed_comments: $blessed_comments,
+                        following: $following_index
+                    },
+                    keys: {
+                        exists: $key_exists,
+                        fingerprint: $key_fingerprint,
+                        public_key_file: $pub_key_file
+                    },
+                    metadata_versions: {
+                        well_known_polis: $wellknown_version,
+                        following: $following_version,
+                        blessed_comments: $blessings_version
+                    }
+                }
+            }'
+    else
+        echo ""
+        echo -e "${BOLD}Polis Configuration${NC}"
+        echo "════════════════════════════════════════"
+        echo ""
+        echo -e "${CYAN}CLI${NC}"
+        echo "  Version:              $VERSION"
+        echo ""
+        echo -e "${CYAN}Environment${NC}"
+        echo "  POLIS_BASE_URL:       ${POLIS_BASE_URL:-[not set]}"
+        echo "  POLIS_ENDPOINT_BASE:  $POLIS_ENDPOINT_BASE"
+        echo "  DISCOVERY_SERVICE_KEY: $discovery_key_status"
+        echo ""
+        echo -e "${CYAN}Directories${NC}"
+        echo "  Keys:                 $KEYS_DIR"
+        echo "  Posts:                $POSTS_DIR"
+        echo "  Comments:             $COMMENTS_DIR"
+        echo "  Versions:             $VERSIONS_DIR_NAME"
+        echo ""
+        echo -e "${CYAN}Files${NC}"
+        echo "  Public index:         $PUBLIC_INDEX"
+        echo "  Blessed comments:     $BLESSED_COMMENTS"
+        echo "  Following:            $FOLLOWING_INDEX"
+        echo ""
+        echo -e "${CYAN}Keys${NC}"
+        if [ "$key_exists" = true ]; then
+            echo "  Status:               initialized"
+            echo "  Fingerprint:          $key_fingerprint"
+        else
+            echo "  Status:               not initialized"
+        fi
+        echo ""
+        echo -e "${CYAN}Metadata Versions${NC}"
+        echo "  .well-known/polis:    $wellknown_version"
+        echo "  following.json:       $following_version"
+        echo "  blessed-comments.json: $blessings_version"
+        echo ""
     fi
 }
 
@@ -4160,9 +4409,9 @@ cmd_blessing() {
             error "Unknown blessing subcommand: $subcommand
 
 Usage: polis blessing requests
-       polis blessing grant <request-id>
-       polis blessing deny <request-id>
-       polis blessing beseech <request-id>
+       polis blessing grant <hash>
+       polis blessing deny <hash>
+       polis blessing beseech <hash>
        polis blessing sync"
             ;;
     esac
@@ -4257,16 +4506,15 @@ cmd_publish() {
 
     # Determine base filename
     local base_filename
-    if [ "$stdin_mode" = true ]; then
-        if [ -n "$explicit_filename" ]; then
-            base_filename="$explicit_filename"
-            # Ensure .md extension
-            [[ ! "$base_filename" =~ \.md$ ]] && base_filename="${base_filename}.md"
-        else
-            # Generate synthetic filename
-            local timestamp_filename=$(date +%Y%m%d-%H%M%S)
-            base_filename="stdin-${timestamp_filename}.md"
-        fi
+    if [ -n "$explicit_filename" ]; then
+        # Explicit filename takes precedence in all modes
+        base_filename="$explicit_filename"
+        # Ensure .md extension
+        [[ ! "$base_filename" =~ \.md$ ]] && base_filename="${base_filename}.md"
+    elif [ "$stdin_mode" = true ]; then
+        # Generate synthetic filename for stdin
+        local timestamp_filename=$(date +%Y%m%d-%H%M%S)
+        base_filename="stdin-${timestamp_filename}.md"
     else
         # Regular file mode - convert to absolute path for comparison
         if command -v realpath > /dev/null 2>&1; then
@@ -4304,8 +4552,8 @@ cmd_publish() {
     # Read original content
     local content=$(cat "$input_file")
 
-    # Hash the content
-    local content_hash=$(hash_content "$input_file")
+    # Hash the canonicalized content for consistent verification
+    local content_hash=$(hash_content_canonical "$input_file")
     local hash_short="${content_hash:0:6}-${content_hash: -6}"
 
     info_human "Content hash: sha256:$content_hash"
@@ -5245,23 +5493,72 @@ load_templates() {
 # Initialize templates directory with defaults
 init_templates() {
     local template_dir=".polis/templates"
+    local created=()
+    local skipped=()
 
     mkdir -p "$template_dir"
 
-    echo "$DEFAULT_TEMPLATE_POST" > "$template_dir/post.html"
-    echo "$DEFAULT_TEMPLATE_COMMENT" > "$template_dir/comment.html"
-    echo "$DEFAULT_TEMPLATE_COMMENT_INLINE" > "$template_dir/comment-inline.html"
-    echo "$DEFAULT_TEMPLATE_INDEX" > "$template_dir/index.html"
+    # Only create files that don't already exist
+    if [ ! -f "$template_dir/post.html" ]; then
+        echo "$DEFAULT_TEMPLATE_POST" > "$template_dir/post.html"
+        created+=("post.html")
+    else
+        skipped+=("post.html")
+    fi
+
+    if [ ! -f "$template_dir/comment.html" ]; then
+        echo "$DEFAULT_TEMPLATE_COMMENT" > "$template_dir/comment.html"
+        created+=("comment.html")
+    else
+        skipped+=("comment.html")
+    fi
+
+    if [ ! -f "$template_dir/comment-inline.html" ]; then
+        echo "$DEFAULT_TEMPLATE_COMMENT_INLINE" > "$template_dir/comment-inline.html"
+        created+=("comment-inline.html")
+    else
+        skipped+=("comment-inline.html")
+    fi
+
+    if [ ! -f "$template_dir/index.html" ]; then
+        echo "$DEFAULT_TEMPLATE_INDEX" > "$template_dir/index.html"
+        created+=("index.html")
+    else
+        skipped+=("index.html")
+    fi
 
     if [ "$JSON_MODE" = true ]; then
-        json_success "render" '{"templates_created": 4, "path": ".polis/templates/"}'
+        local created_json="[]"
+        local skipped_json="[]"
+        if [ ${#created[@]} -gt 0 ]; then
+            created_json=$(printf '%s\n' "${created[@]}" | jq -R . | jq -s .)
+        fi
+        if [ ${#skipped[@]} -gt 0 ]; then
+            skipped_json=$(printf '%s\n' "${skipped[@]}" | jq -R . | jq -s .)
+        fi
+        json_success "render" "$(jq -n \
+            --argjson created "$created_json" \
+            --argjson skipped "$skipped_json" \
+            --arg path "$template_dir/" \
+            '{templates_created: ($created | length), templates_skipped: ($skipped | length), created: $created, skipped: $skipped, path: $path}')"
     else
-        success "Created template files in $template_dir/"
-        info "  - post.html"
-        info "  - comment.html"
-        info "  - comment-inline.html"
-        info "  - index.html"
-        info "Edit these files to customize your HTML output."
+        if [ ${#created[@]} -gt 0 ]; then
+            success "Created template files in $template_dir/"
+            for f in "${created[@]}"; do
+                info "  - $f"
+            done
+        fi
+        if [ ${#skipped[@]} -gt 0 ]; then
+            info "Skipped existing templates (not overwritten):"
+            for f in "${skipped[@]}"; do
+                info "  - $f"
+            done
+        fi
+        if [ ${#created[@]} -gt 0 ]; then
+            info "Edit these files to customize your HTML output."
+        elif [ ${#skipped[@]} -eq 4 ]; then
+            info "All templates already exist. No changes made."
+        fi
     fi
 }
 
@@ -5507,17 +5804,18 @@ render_index() {
     local posts_list=""
     local post_count=0
 
-    # Read public.jsonl and build posts list
+    # Read public.jsonl, filter posts, sort by published date descending (latest first)
     if [ -f "$PUBLIC_INDEX" ]; then
-        while IFS= read -r line; do
-            [ -z "$line" ] && continue
+        local sorted_posts
+        sorted_posts=$(jq -s '[.[] | select(.type == "post" or .type == null)] | sort_by(.published) | reverse' "$PUBLIC_INDEX")
 
-            local entry_type=$(echo "$line" | jq -r '.type // "post"')
-            [ "$entry_type" != "post" ] && continue
+        local num_posts
+        num_posts=$(echo "$sorted_posts" | jq 'length')
 
-            local path=$(echo "$line" | jq -r '.path // empty')
-            local title=$(echo "$line" | jq -r '.title // "Untitled"')
-            local published=$(echo "$line" | jq -r '.published // empty')
+        for ((i=0; i<num_posts; i++)); do
+            local path=$(echo "$sorted_posts" | jq -r ".[$i].path // empty")
+            local title=$(echo "$sorted_posts" | jq -r ".[$i].title // \"Untitled\"")
+            local published=$(echo "$sorted_posts" | jq -r ".[$i].published // empty")
 
             [ -z "$path" ] && continue
 
@@ -5527,7 +5825,7 @@ render_index() {
             posts_list+="            <li><a href=\"$html_path\">$title</a> <time>$published_human</time></li>
 "
             ((++post_count))
-        done < "$PUBLIC_INDEX"
+        done
     fi
 
     # Get site info
@@ -5678,23 +5976,34 @@ cmd_render() {
 
 # Main command router
 main() {
-    # Parse global flags before command
-    while [[ $# -gt 0 ]]; do
-        case $1 in
-            --json)
-                JSON_MODE=true
-                # Disable colors in JSON mode
-                GREEN=''
-                BLUE=''
-                RED=''
-                NC=''
-                shift
-                ;;
-            *)
-                break
-                ;;
-        esac
-    done
+    # Parse global --json flag from start OR end of arguments
+    # This allows both: polis --json <cmd> AND polis <cmd> [args] --json
+    local args=("$@")
+    local new_args=()
+
+    # Check for --json at start
+    if [[ "${args[0]:-}" == "--json" ]]; then
+        JSON_MODE=true
+        args=("${args[@]:1}")  # Remove first element
+    fi
+
+    # Check for --json at end (if not already found)
+    if [[ "$JSON_MODE" != true && "${args[-1]:-}" == "--json" ]]; then
+        JSON_MODE=true
+        unset 'args[-1]'  # Remove last element
+    fi
+
+    # Apply JSON mode settings
+    if [[ "$JSON_MODE" == true ]]; then
+        # Disable colors in JSON mode
+        GREEN=''
+        BLUE=''
+        RED=''
+        NC=''
+    fi
+
+    # Reconstruct positional parameters
+    set -- "${args[@]}"
 
     local command="$1"
     shift
@@ -5723,6 +6032,12 @@ main() {
             ;;
         version)
             cmd_version "$@"
+            ;;
+        about)
+            cmd_about "$@"
+            ;;
+        config)
+            cmd_config "$@"
             ;;
         rotate-key)
             cmd_rotate_key "$@"
@@ -5778,9 +6093,9 @@ main() {
             echo ""
             echo "Commands related to requesting, reviewing, or granting blessings on comments:"
             echo "  polis blessing requests         List pending blessing requests; use 'polis preview' to see details"
-            echo "  polis blessing grant <id>       Grant a blessing request"
-            echo "  polis blessing deny <id>        Deny a blessing request"
-            echo "  polis blessing beseech <id>     Re-request blessing by ID"
+            echo "  polis blessing grant <hash>     Grant a blessing request by content hash"
+            echo "  polis blessing deny <hash>      Deny a blessing request by content hash"
+            echo "  polis blessing beseech <hash>   Re-request blessing by content hash"
             echo "  polis blessing sync             Sync auto-blessed comments from discovery service"
             echo ""
             echo "Commands related to following or unfollowing an author:"
@@ -5802,8 +6117,10 @@ main() {
             echo "    --versions-dir <path>         Custom versions directory (default: .versions)"
             echo "  polis rebuild --content|--comments|--all"
             echo "                                  Rebuild local indexes (flags are combinable)"
-            echo "  polis index [--json]            View index (JSONL or JSON format)"
+            echo "  polis index                     View index (JSONL; use --json for grouped)"
             echo "  polis version                   Print CLI version"
+            echo "  polis about                     Show branded info, versions, and project links"
+            echo "  polis config                    Show all configuration settings (supports --json)"
             echo "  polis rotate-key [--delete-old-key]"
             echo "                                  Generate new keypair and re-sign all content"
             echo "  polis get-version <file> <hash> Reconstruct a specific version of a file"
@@ -5826,12 +6143,6 @@ main() {
             echo "    polis --json publish my-post.md | jq -r '.data.content_hash'"
             echo "    polis --json comment my-comment.md https://example.com/post.md"
             echo "    echo '# Test' | polis --json publish - | jq"
-            echo ""
-            echo "Configuration (in order of precedence):"
-            echo "  1. Environment variables"
-            echo "  2. .env file in current directory"
-            echo "  3. config section in .well-known/polis"
-            echo "  4. Built-in defaults"
             echo ""
             exit 1
             ;;

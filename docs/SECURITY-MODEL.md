@@ -113,6 +113,85 @@ This means:
 - If you lose domain control, you lose identity control
 - Domain migration requires cryptographic proof of continuity
 
+### Implementation Security Audit
+
+The following audit was performed on the CLI implementation to verify private key handling follows security best practices.
+
+#### Private Key Never Printed or Logged
+
+**Verified:** The private key contents are never:
+- Printed to stdout or stderr
+- Included in JSON output (only the *path* is returned, not contents)
+- Written to log files
+- Stored in environment variables
+
+**How signing works:**
+```bash
+# The private key is only passed as a file path to ssh-keygen
+ssh-keygen -Y sign -f "$keyfile" -n file "$temp_file" > /dev/null 2>&1
+```
+
+The key file path is passed to `ssh-keygen`, which reads the key internally. The CLI never reads or handles the key material directly.
+
+#### No Shell Tracing of Key Operations
+
+**Verified:** The `polis` script uses `set -e` (exit on error) but never enables `set -x` (trace mode), which could leak sensitive operations to stderr.
+
+**polis-tui consideration:** The TUI has an optional `--log 3` mode that enables bash tracing, but this only traces polis-tui's own operations (the external `polis` commands it invokes), not the internals of the polis script itself.
+
+#### File Permissions
+
+**Verified:** Private keys are created with restricted permissions:
+- `ssh-keygen` automatically sets `600` (owner read/write only) on private keys
+- Public keys get `644` (world-readable) which is appropriate
+
+#### Git Exclusion
+
+**Verified:** The `polis init` command creates a `.gitignore` that excludes:
+- The private key file (`.polis/keys/id_ed25519`)
+- Environment files (`.env*`)
+
+This prevents accidental commits of sensitive material.
+
+#### Public Key Only in Output
+
+**Verified:** The only key material that appears in output or logs is the public key:
+- `init` command outputs the public key to `.well-known/polis`
+- JSON mode returns key *paths*, not contents
+- Human-readable output mentions paths, not key contents
+
+#### Temporary Files
+
+**Verified:** Temporary files created during signing contain only:
+- Content being signed (posts, comments, payloads)
+- Never the private key
+
+Temp files are cleaned up immediately after use:
+```bash
+rm -f "$temp_file" "$temp_file.sig"
+```
+
+#### Error Messages
+
+**Verified:** Error messages reference keys by path only:
+- "Private key not found. Run 'polis init' first."
+- "Failed to sign payload. Check your private key."
+
+No error condition causes key material to be printed.
+
+#### Audit Summary
+
+| Check | Status |
+|-------|--------|
+| Private key never echoed/printed | ✓ Pass |
+| Private key not in JSON output | ✓ Pass |
+| Private key not in logs | ✓ Pass |
+| No shell tracing of key operations | ✓ Pass |
+| Proper file permissions (600) | ✓ Pass |
+| Git exclusion configured | ✓ Pass |
+| Temp files don't contain keys | ✓ Pass |
+| Error messages don't leak keys | ✓ Pass |
+
 ---
 
 ## Signature Model
@@ -589,6 +668,7 @@ Optional encryption for private content. Would require:
 
 ## Document History
 
+- 2026-01-12: Added Implementation Security Audit section (private key handling verification)
 - 2026-01-07: Initial version
 
 ---

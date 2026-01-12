@@ -28,7 +28,7 @@ set -e
 #   4. Hardcoded defaults
 
 # Fixed constants (never configurable - required for discovery)
-VERSION="0.20.0"
+VERSION="0.21.0"
 WELL_KNOWN_DIR=".well-known"
 WELL_KNOWN_FILE="polis"
 
@@ -205,10 +205,9 @@ warn_human() {
 }
 
 # Print to stderr in JSON mode (for showing defaults)
+# NOTE: Disabled - output interferes with tools that capture stderr
 log_default() {
-    if [ "$JSON_MODE" = true ]; then
-        echo "[default] $1" >&2
-    fi
+    :  # No-op - info is redundant with JSON response
 }
 
 # Command: polis init
@@ -1136,6 +1135,11 @@ update_blessed_comments_json() {
     local in_reply_to="$3"
     local blessed_at="$4"
 
+    # Normalize post URL to always use .md extension
+    local base="${in_reply_to%.html}"
+    base="${base%.md}"
+    in_reply_to="${base}.md"
+
     local blessed_file="$BLESSED_COMMENTS"
 
     if [ ! -f "$blessed_file" ]; then
@@ -1961,6 +1965,7 @@ update_wellknown_pubkey() {
 # Internal function for file-based beseech (used by auto-beseech in comment/republish)
 _internal_beseech_from_file() {
     local input_file="$1"
+    local suppress_output="${2:-false}"  # If true, echo result instead of json_success
 
     if [ -z "$input_file" ]; then
         json_error "beseech" "INVALID_INPUT" "Usage: _internal_beseech_from_file <filename>"
@@ -2169,7 +2174,11 @@ EOF
                                 status: $status
                             }
                         }')
-                    json_success "beseech" "$result"
+                    if [ "$suppress_output" = "true" ]; then
+                        echo "$result"
+                    else
+                        json_success "beseech" "$result"
+                    fi
                 else
                     success "Comment automatically blessed!"
                     echo ""
@@ -2197,7 +2206,11 @@ EOF
                                 status: $status
                             }
                         }')
-                    json_success "beseech" "$result"
+                    if [ "$suppress_output" = "true" ]; then
+                        echo "$result"
+                    else
+                        json_success "beseech" "$result"
+                    fi
                 else
                     success "Blessing request sent successfully!"
                     echo ""
@@ -2227,7 +2240,11 @@ EOF
                             status: $status
                         }
                     }')
-                json_success "beseech" "$result"
+                if [ "$suppress_output" = "true" ]; then
+                    echo "$result"
+                else
+                    json_success "beseech" "$result"
+                fi
             else
                 warn "This comment version was already submitted (HTTP 409)"
                 echo ""
@@ -2636,26 +2653,29 @@ signature: $signature
         echo ""
     fi
     info_human "Automatically requesting blessing for comment..."
-    _internal_beseech_from_file "$canonical_path"
-    local beseech_status="pending"
 
     # Output results
     if [ "$JSON_MODE" = true ]; then
+        # Capture beseech result (suppress its JSON output)
+        local beseech_result
+        beseech_result=$(_internal_beseech_from_file "$canonical_path" "true")
+
         local result=$(jq -n \
             --arg path "$canonical_path" \
             --arg hash "sha256:$content_hash" \
             --arg reply_to "$reply_to_url" \
             --arg timestamp "$timestamp" \
-            --arg status "$beseech_status" \
+            --argjson beseech "$beseech_result" \
             '{
                 file_path: $path,
                 content_hash: $hash,
                 in_reply_to: $reply_to,
                 timestamp: $timestamp,
-                beseech_status: $status
+                beseech: $beseech
             }')
         json_success "comment" "$result"
     else
+        _internal_beseech_from_file "$canonical_path"
         echo ""
         success "Comment created!"
         echo ""
@@ -5302,8 +5322,12 @@ render_blessed_comments() {
 
     # Get blessed comments for this post
     # Use -c for compact output (one JSON object per line)
+    # Try both .md and .html extensions since blessed-comments.json might have either
     local comments_json
-    comments_json=$(jq -c --arg url "$post_url" '.comments[] | select(.post == $url) | .blessed[]' "$BLESSED_COMMENTS" 2>/dev/null)
+    local post_url_md="${post_url%.html}.md"
+    local post_url_html="${post_url%.md}.html"
+    comments_json=$(jq -c --arg url "$post_url" --arg url_md "$post_url_md" --arg url_html "$post_url_html" \
+        '.comments[] | select(.post == $url or .post == $url_md or .post == $url_html) | .blessed[]' "$BLESSED_COMMENTS" 2>/dev/null)
 
     if [ -z "$comments_json" ]; then
         echo ""
@@ -5808,20 +5832,6 @@ main() {
             echo "  2. .env file in current directory"
             echo "  3. config section in .well-known/polis"
             echo "  4. Built-in defaults"
-            echo ""
-            echo "Required for blessing commands:"
-            echo "  POLIS_BASE_URL                  Your public HTTPS URL"
-            echo "  DISCOVERY_SERVICE_KEY           Discovery service API key"
-            echo ""
-            echo "Optional:"
-            echo "  POLIS_ENDPOINT_BASE             Discovery service base URL (has default)"
-            echo "  KEYS_DIR, POSTS_DIR, etc.       Custom directory paths"
-            echo ""
-            echo "Create a .env file from template:"
-            echo "  cp .env.example .env && vim .env"
-            echo ""
-            echo "Initialize with custom paths:"
-            echo "  polis init --posts-dir articles --comments-dir replies"
             echo ""
             exit 1
             ;;

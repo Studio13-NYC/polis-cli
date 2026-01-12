@@ -1,0 +1,1429 @@
+#!/usr/bin/env bash
+#
+# polis-tui - Terminal User Interface for Polis CLI
+#
+# A menu-based interface for common polis operations.
+# Wraps the polis CLI and provides a dashboard with status and actions.
+#
+# Dependencies:
+#   - polis CLI (must be in PATH or same directory)
+#   - jq (for parsing JSON output)
+#   - bash 4.0+
+#
+# Usage:
+#   polis-tui
+#
+
+set -e
+
+# =============================================================================
+# VERSION
+# =============================================================================
+
+TUI_VERSION="0.3.0"
+
+# =============================================================================
+# LOGGING
+# =============================================================================
+# Log levels: 0=off, 1=commands, 2=+responses, 3=+bash trace
+
+LOG_LEVEL=0
+LOG_FILE=""
+
+# File descriptor 3 is used for menu display output (always goes to terminal)
+# Initialize it immediately so it's available even before init_logging
+exec 3>&2
+
+# Initialize logging
+init_logging() {
+    local level="$1"
+    LOG_LEVEL="$level"
+    LOG_FILE="/tmp/polis-tui-$(date +%Y%m%d-%H%M%S).log"
+
+    # fd 3 is already initialized above to point to terminal
+
+    if [[ $LOG_LEVEL -ge 1 ]]; then
+        echo "# polis-tui log started $(date)" > "$LOG_FILE"
+        echo "# Log level: $LOG_LEVEL" >> "$LOG_FILE"
+        echo "# Working directory: $(pwd)" >> "$LOG_FILE"
+        echo "" >> "$LOG_FILE"
+    fi
+
+    if [[ $LOG_LEVEL -ge 3 ]]; then
+        # Redirect stderr to log file only (bash trace goes here)
+        # Menu display uses fd 3 which still points to terminal
+        exec 2>>"$LOG_FILE"
+        set -x
+    fi
+}
+
+# Log a polis command (level 1+)
+log_cmd() {
+    if [[ $LOG_LEVEL -ge 1 && -n "$LOG_FILE" ]]; then
+        echo "# $(date +%H:%M:%S)" >> "$LOG_FILE"
+        echo "polis $*" >> "$LOG_FILE"
+    fi
+}
+
+# Log a response (level 2+)
+log_response() {
+    if [[ $LOG_LEVEL -ge 2 && -n "$LOG_FILE" ]]; then
+        echo "# Response:" >> "$LOG_FILE"
+        echo "$1" | sed 's/^/# /' >> "$LOG_FILE"
+        echo "" >> "$LOG_FILE"
+    fi
+}
+
+# Log a message (any level)
+log_msg() {
+    if [[ $LOG_LEVEL -ge 1 && -n "$LOG_FILE" ]]; then
+        echo "# $1" >> "$LOG_FILE"
+    fi
+}
+
+# =============================================================================
+# COLORS AND FORMATTING
+# =============================================================================
+
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+RED='\033[0;31m'
+YELLOW='\033[0;33m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+DIM='\033[2m'
+REVERSE='\033[7m'
+NC='\033[0m'
+
+# Cursor control
+CURSOR_HIDE='\033[?25l'
+CURSOR_SHOW='\033[?25h'
+CLEAR_LINE='\033[2K'
+
+# =============================================================================
+# OUTPUT HELPERS
+# =============================================================================
+
+info() {
+    echo -e "${BLUE}[i]${NC} $1"
+}
+
+success() {
+    echo -e "${GREEN}[✓]${NC} $1"
+}
+
+error() {
+    echo -e "${RED}[x]${NC} $1"
+}
+
+warn() {
+    echo -e "${YELLOW}[!]${NC} $1"
+}
+
+divider() {
+    echo -e "${DIM}────────────────────────────────────────────────────────────${NC}"
+}
+
+# Print a simple header
+header() {
+    local title="$1"
+    echo ""
+    echo -e "${BOLD}${CYAN}$title${NC}"
+    echo -e "${DIM}─────────────────────────────────${NC}"
+}
+
+# =============================================================================
+# INPUT HELPERS
+# =============================================================================
+
+# Read a single key without Enter
+# Handles escape sequences for arrow keys
+read_key() {
+    local key
+    IFS= read -rsn1 key
+
+    # Handle escape sequences (arrow keys)
+    if [[ "$key" == $'\x1b' ]]; then
+        read -rsn2 -t 0.1 key 2>/dev/null || true
+        case "$key" in
+            '[A') echo "up" ;;
+            '[B') echo "down" ;;
+            '[C') echo "right" ;;
+            '[D') echo "left" ;;
+            *) echo "escape" ;;
+        esac
+    else
+        echo "$key"
+    fi
+}
+
+# Prompt for confirmation
+confirm() {
+    local prompt="$1"
+    local response
+    echo -ne "$prompt ${DIM}[y/N]${NC} "
+    read -r response
+    [[ "$response" =~ ^[Yy]$ ]]
+}
+
+# Wait for any key
+wait_for_key() {
+    local prompt="${1:-Press any key to continue...}"
+    echo ""
+    echo -e "${DIM}$prompt${NC}"
+    read -rsn1
+}
+
+# =============================================================================
+# INLINE UI FUNCTIONS
+# =============================================================================
+# Pure bash inline selection - no external dependencies, feels like a terminal
+
+# Inline menu selection - the core UI function
+# Returns selected tag via stdout (all display goes to fd 3 = terminal)
+# Uses fd 3 so display works even when stderr is redirected (e.g., --log 3)
+# Usage: choice=$(inline_select "Prompt" "tag1" "desc1" "tag2" "desc2" ...)
+inline_select() {
+    local prompt="$1"
+    shift
+    local items=("$@")
+    local count=$((${#items[@]} / 2))
+    local selected=0
+    local first_draw=1
+
+    [[ $count -eq 0 ]] && return 1
+
+    # Print prompt (to fd 3 for display - always goes to terminal)
+    [[ -n "$prompt" ]] && echo -e "\n${BOLD}$prompt${NC}\n" >&3
+
+    # Hide cursor during selection
+    printf "${CURSOR_HIDE}" >&3
+
+    # Selection loop - redraw menu on each iteration
+    while true; do
+        # Move cursor up to redraw menu (skip on first draw)
+        if [[ $first_draw -eq 0 ]]; then
+            # Move up: count items + 1 hint line, but cursor is on hint line so just count
+            printf "\033[%dA\r" "$count" >&3
+        fi
+        first_draw=0
+
+        # Draw all menu items (clearing each line first)
+        for ((i = 0; i < count; i++)); do
+            local label="${items[$((i * 2 + 1))]}"
+            local num=$((i + 1))
+            printf "\r${CLEAR_LINE}" >&3
+            if [[ $i -eq $selected ]]; then
+                printf "  ${REVERSE} %d. %s ${NC}" "$num" "$label" >&3
+            else
+                printf "  ${DIM}%d.${NC} %s" "$num" "$label" >&3
+            fi
+            printf "\n" >&3
+        done
+
+        # Print navigation hint (no newline - cursor stays here)
+        printf "\r${CLEAR_LINE}${DIM}(↑/↓ navigate, 1-%d select, Enter confirm, q cancel)${NC}" "$count" >&3
+
+        # Read key
+        local key
+        key=$(read_key)
+
+        case "$key" in
+            k|up)
+                ((selected = (selected - 1 + count) % count))
+                ;;
+            j|down)
+                ((selected = (selected + 1) % count))
+                ;;
+            [1-9])
+                if [[ $key -le $count ]]; then
+                    selected=$((key - 1))
+                    printf "${CURSOR_SHOW}" >&3
+                    echo "" >&3
+                    echo "${items[$((selected * 2))]}"
+                    return 0
+                fi
+                ;;
+            "")  # Enter
+                printf "${CURSOR_SHOW}" >&3
+                echo "" >&3
+                echo "${items[$((selected * 2))]}"
+                return 0
+                ;;
+            q|Q|escape)
+                printf "${CURSOR_SHOW}" >&3
+                echo "" >&3
+                return 1
+                ;;
+        esac
+    done
+}
+
+# Inline text input
+# Usage: filename=$(inline_input "Enter filename" "default.md")
+inline_input() {
+    local prompt="$1"
+    local default="${2:-}"
+
+    if [[ -n "$default" ]]; then
+        read -rp "$prompt [$default]: " value
+        echo "${value:-$default}"
+    else
+        read -rp "$prompt: " value
+        echo "$value"
+    fi
+}
+
+# Inline yes/no confirmation
+# Usage: if inline_confirm "Push to remote?"; then ...
+inline_confirm() {
+    local prompt="$1"
+    local default="${2:-n}"
+
+    local hint="[y/N]"
+    [[ "$default" == "y" ]] && hint="[Y/n]"
+
+    local response
+    read -rp "$prompt $hint " response
+    response="${response:-$default}"
+    [[ "$response" =~ ^[Yy]$ ]]
+}
+
+# Simple message display
+inline_message() {
+    local title="$1"
+    local text="$2"
+
+    echo ""
+    [[ -n "$title" ]] && echo -e "${BOLD}$title${NC}"
+    echo -e "$text"
+}
+
+# =============================================================================
+# COMPATIBILITY ALIASES
+# =============================================================================
+# Keep old function names working during transition
+
+ui_menu() {
+    local title="$1"
+    local text="$2"
+    shift 2
+    inline_select "$title" "$@" || true
+}
+
+ui_input() {
+    local title="$1"
+    local prompt="$2"
+    local default="${3:-}"
+    inline_input "$prompt" "$default"
+}
+
+ui_confirm() {
+    local title="$1"
+    local text="$2"
+    inline_confirm "$text"
+}
+
+ui_list_select() {
+    local title="$1"
+    shift
+    inline_select "$title" "$@" || true
+}
+
+ui_message() {
+    local title="$1"
+    local text="$2"
+    inline_message "$title" "$text"
+    wait_for_key
+}
+
+# =============================================================================
+# POLIS CLI INTERFACE
+# =============================================================================
+
+# Find polis CLI
+find_polis_cli() {
+    # Check same directory first
+    local script_dir
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+    if [[ -x "$script_dir/polis" ]]; then
+        echo "$script_dir/polis"
+        return 0
+    fi
+
+    # Check PATH
+    if command -v polis &>/dev/null; then
+        command -v polis
+        return 0
+    fi
+
+    return 1
+}
+
+# Run polis command and return JSON result
+# Uses || true to prevent set -e from exiting on polis errors
+# Note: --json must come BEFORE the command per polis CLI spec
+run_polis() {
+    local cmd="$1"
+    shift
+    log_cmd "--json $cmd $*"
+    local result
+    result=$("$POLIS_CLI" --json "$cmd" "$@" 2>&1) || true
+    log_response "$result"
+    echo "$result"
+}
+
+# Run polis command in human mode (for display)
+# Uses || true to prevent set -e from exiting on polis errors
+run_polis_human() {
+    local cmd="$1"
+    shift
+    log_cmd "$cmd $*"
+    local result
+    result=$("$POLIS_CLI" "$cmd" "$@" 2>&1) || true
+    log_response "$result"
+    echo "$result"
+}
+
+# Check if polis result is success
+is_polis_success() {
+    local result="$1"
+    echo "$result" | jq -e '.status == "success"' >/dev/null 2>&1
+}
+
+# Get error message from polis result
+get_polis_error() {
+    local result="$1"
+    echo "$result" | jq -r '.error.message // "Unknown error"' 2>/dev/null
+}
+
+# =============================================================================
+# CONFIGURATION AND STATE
+# =============================================================================
+
+POLIS_CLI=""
+IS_GIT_REPO=false
+HAS_GIT_REMOTE=false
+
+# Check if we're in a git repo
+check_git_status() {
+    if git rev-parse --is-inside-work-tree &>/dev/null; then
+        IS_GIT_REPO=true
+        if git remote get-url origin &>/dev/null; then
+            HAS_GIT_REMOTE=true
+        fi
+    fi
+}
+
+# Check if polis is initialized
+is_polis_initialized() {
+    [[ -f ".well-known/polis" ]]
+}
+
+# =============================================================================
+# EDITOR INTEGRATION
+# =============================================================================
+
+# Launch editor with fallback chain
+launch_editor() {
+    local file="$1"
+    local editor="${EDITOR:-${VISUAL:-}}"
+
+    # Fallback chain: $EDITOR -> $VISUAL -> nano -> vi
+    if [[ -z "$editor" ]] || ! command -v "$editor" &>/dev/null; then
+        if command -v nano &>/dev/null; then
+            editor="nano"
+        elif command -v vi &>/dev/null; then
+            editor="vi"
+        else
+            error "No editor found. Please set \$EDITOR"
+            return 1
+        fi
+    fi
+
+    "$editor" "$file"
+}
+
+# =============================================================================
+# GIT INTEGRATION
+# =============================================================================
+
+# Generate commit message based on action
+generate_commit_message() {
+    local action="$1"
+    local title="$2"
+    local date_str
+    date_str=$(date +%Y-%m-%d)
+
+    case "$action" in
+        publish)
+            echo "Add post: $title
+
+Published new post '$title' on $date_str.
+Signed and added to public index."
+            ;;
+        comment)
+            # title is actually the reply_url for comments
+            local reply_domain
+            reply_domain=$(echo "$title" | sed 's|https\?://||' | cut -d'/' -f1)
+            echo "Add comment on $reply_domain
+
+Commented on: $title
+Published on $date_str and sent blessing request."
+            ;;
+        bless)
+            echo "Bless comment from $title
+
+Granted blessing to comment from $title.
+Comment will now appear on the post."
+            ;;
+        deny)
+            echo "Deny blessing request from $title
+
+Denied blessing request from $title."
+            ;;
+        render)
+            echo "Rebuild HTML
+
+Regenerated HTML files from markdown sources."
+            ;;
+        *)
+            echo "$action: $title"
+            ;;
+    esac
+}
+
+# Allow user to edit commit message
+edit_commit_message() {
+    local msg="$1"
+    local tmpfile
+    tmpfile=$(mktemp)
+
+    echo "$msg" > "$tmpfile"
+    launch_editor "$tmpfile"
+    cat "$tmpfile"
+    rm -f "$tmpfile"
+}
+
+# Post-action workflow: render, commit, push
+post_action_workflow() {
+    local action="$1"
+    local title="$2"
+    shift 2
+    local files=("$@")
+
+    # Build info text about what happened
+    local info_text="Operation completed successfully!"
+    if [[ ${#files[@]} -gt 0 ]]; then
+        info_text+="\n\nFiles changed:"
+        for f in "${files[@]}"; do
+            if [[ -f "$f" ]]; then
+                info_text+="\n  + $f"
+            fi
+        done
+    fi
+
+    # Build menu options
+    local menu_items=(
+        "rebuild"     "Rebuild site (polis render)"
+        "rebuild_git" "Rebuild and git add/commit/push"
+        "nothing"     "Do nothing"
+    )
+
+    local choice
+    choice=$(ui_menu "Success" "$info_text" "${menu_items[@]}")
+
+    case "$choice" in
+        rebuild)
+            prompt_and_render
+            ;;
+        rebuild_git)
+            prompt_and_render
+            if [[ "$IS_GIT_REPO" == true ]]; then
+                post_git_workflow "$action" "$title" "${files[@]}"
+            fi
+            ;;
+        nothing|"")
+            return 0
+            ;;
+    esac
+}
+
+# Prompt for render options and execute
+prompt_and_render() {
+    local force_choice
+    force_choice=$(ui_menu "Render Options" "How do you want to render?" \
+        "normal" "Render (skip unchanged files)" \
+        "force"  "Render with --force (re-render all)")
+
+    case "$force_choice" in
+        force)
+            do_render "--force"
+            ;;
+        normal|"")
+            do_render
+            ;;
+    esac
+}
+
+# Git commit and push workflow
+post_git_workflow() {
+    local action="$1"
+    local title="$2"
+    shift 2
+    local files=("$@")
+
+    local suggested_msg
+    suggested_msg=$(generate_commit_message "$action" "$title")
+
+    # Show commit message options menu
+    local msg_text="Suggested message:\n\n  $suggested_msg"
+    local choice
+    choice=$(ui_menu "Git Commit" "$msg_text" \
+        "use"  "Use this message" \
+        "edit" "Edit message in \$EDITOR" \
+        "skip" "Skip commit")
+
+    local commit_msg="$suggested_msg"
+
+    case "$choice" in
+        edit)
+            commit_msg=$(edit_commit_message "$suggested_msg")
+            ;;
+        skip|"")
+            ui_message "Skipped" "Commit skipped"
+            return 0
+            ;;
+        use)
+            # Use suggested message
+            ;;
+    esac
+
+    # Perform git add and commit
+    echo ""
+    info "Committing changes..."
+
+    # Add all changed files, or specific files if provided
+    if [[ ${#files[@]} -gt 0 ]]; then
+        git add "${files[@]}" 2>/dev/null || git add -A
+    else
+        git add -A
+    fi
+
+    if git commit -m "$commit_msg" 2>/dev/null; then
+        local commit_hash
+        commit_hash=$(git rev-parse --short HEAD)
+
+        # Offer push if remote exists
+        if [[ "$HAS_GIT_REMOTE" == true ]]; then
+            local push_choice
+            push_choice=$(ui_menu "Committed: $commit_hash" "Changes committed successfully" \
+                "push" "Push to remote" \
+                "back" "Back to dashboard")
+
+            case "$push_choice" in
+                push)
+                    info "Pushing to remote..."
+                    if git push 2>/dev/null; then
+                        ui_message "Pushed" "Changes pushed successfully"
+                    else
+                        ui_message "Error" "Push failed"
+                    fi
+                    ;;
+            esac
+        else
+            ui_message "Committed" "Changes committed: $commit_hash"
+        fi
+    else
+        ui_message "Notice" "Nothing to commit (no changes)"
+    fi
+}
+
+# Run polis render
+# Usage: do_render [--force]
+do_render() {
+    local force_flag="${1:-}"
+
+    echo ""
+    if [[ "$force_flag" == "--force" ]]; then
+        info "Regenerating HTML (force re-render all)..."
+        run_polis_human render --force 2>&1
+    else
+        info "Regenerating HTML..."
+        run_polis_human render 2>&1
+    fi
+
+    wait_for_key
+}
+
+# =============================================================================
+# DASHBOARD
+# =============================================================================
+
+# Fetch dashboard stats
+fetch_stats() {
+    local posts_count=0
+    local comments_count=0
+    local blessings_count=0
+    local following_count=0
+
+    # Count posts from index
+    if [[ -f "metadata/public.jsonl" ]]; then
+        posts_count=$(wc -l < "metadata/public.jsonl" 2>/dev/null | tr -d ' ')
+    fi
+
+    # Count following
+    if [[ -f "metadata/following.json" ]]; then
+        following_count=$(jq 'length' "metadata/following.json" 2>/dev/null || echo 0)
+    fi
+
+    # Fetch pending blessings (with timeout to avoid blocking startup)
+    # Skip if POLIS_CLI not set or timeout unavailable
+    if [[ -n "$POLIS_CLI" ]] && command -v timeout &>/dev/null; then
+        local blessing_result
+        blessing_result=$(timeout 3 "$POLIS_CLI" --json blessing requests 2>/dev/null || echo '{"data":[]}')
+        if is_polis_success "$blessing_result"; then
+            blessings_count=$(echo "$blessing_result" | jq '.data.count // (.data.requests | length) // 0' 2>/dev/null || echo 0)
+        fi
+    fi
+
+    echo "$posts_count $following_count $blessings_count"
+}
+
+# Build stats description string for dashboard
+build_stats_text() {
+    local stats
+    stats=$(fetch_stats)
+    local posts_count following_count blessings_count
+    read -r posts_count following_count blessings_count <<< "$stats"
+
+    local stats_text="Posts: $posts_count | Following: $following_count | Blessings: $blessings_count"
+
+    # Add git status if in repo
+    if [[ "$IS_GIT_REPO" == true ]]; then
+        local git_status
+        git_status=$(git status --porcelain 2>/dev/null | head -1)
+        if [[ -n "$git_status" ]]; then
+            stats_text="$stats_text | Git: uncommitted"
+        else
+            stats_text="$stats_text | Git: clean"
+        fi
+    fi
+
+    echo "$stats_text"
+}
+
+# Show main menu and return selected action
+show_main_menu() {
+    local stats_text
+    stats_text=$(build_stats_text)
+
+    # Get blessing count for menu item
+    local stats
+    stats=$(fetch_stats)
+    local posts_count following_count blessings_count
+    read -r posts_count following_count blessings_count <<< "$stats"
+
+    local blessing_desc="Review blessings"
+    if [[ "$blessings_count" -gt 0 ]]; then
+        blessing_desc="Review blessings ($blessings_count pending)"
+    fi
+
+    inline_select "$stats_text" \
+        "publish"   "Publish new post" \
+        "comment"   "Comment on a post" \
+        "blessings" "$blessing_desc" \
+        "discover"  "Discover content" \
+        "preview"   "Preview a URL" \
+        "refresh"   "Refresh" \
+        "about"     "About" \
+        "quit"      "Quit" \
+        || true
+}
+
+# =============================================================================
+# PUBLISH FLOW
+# =============================================================================
+
+do_publish() {
+    header "PUBLISH NEW POST"
+
+    # Create temp file
+    local tmpfile
+    tmpfile=$(mktemp --suffix=.md)
+
+    # Add template content
+    cat > "$tmpfile" << 'EOF'
+# Your Post Title
+
+Write your content here...
+
+EOF
+
+    info "Opening editor..."
+    echo -e "${DIM}Save and close the editor when done.${NC}"
+    echo ""
+
+    launch_editor "$tmpfile"
+
+    # Check if file has content beyond template
+    local content
+    content=$(cat "$tmpfile")
+    if [[ "$content" == "# Your Post Title"*"Write your content here..."* ]] || [[ -z "$content" ]]; then
+        warn "Post appears empty or unchanged. Aborting."
+        rm -f "$tmpfile"
+        wait_for_key
+        return 0
+    fi
+
+    # Extract title from first heading
+    local title
+    title=$(head -1 "$tmpfile" | sed 's/^#* *//')
+
+    # Prompt for filename using ui_input
+    local default_filename
+    default_filename=$(echo "$title" | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | tr -cd 'a-z0-9-').md
+
+    local filename
+    filename=$(ui_input "Filename" "Enter filename for your post" "$default_filename")
+
+    # Handle cancel (empty result)
+    if [[ -z "$filename" ]]; then
+        warn "Cancelled."
+        rm -f "$tmpfile"
+        wait_for_key
+        return 0
+    fi
+
+    # Ensure .md extension
+    [[ "$filename" != *.md ]] && filename="${filename}.md"
+
+    echo ""
+    info "Publishing..."
+
+    local result
+    result=$(run_polis publish "$tmpfile" --filename "$filename")
+
+    rm -f "$tmpfile"
+
+    if is_polis_success "$result"; then
+        local published_file
+        published_file=$(echo "$result" | jq -r '.data.file // empty' 2>/dev/null)
+        success "Published: $published_file"
+
+        post_action_workflow "publish" "$title" "$published_file" "metadata/public.jsonl"
+    else
+        error "Failed to publish"
+        # Show detailed error - either JSON error message or raw output
+        local err_msg
+        err_msg=$(get_polis_error "$result")
+        if [[ "$err_msg" == "Unknown error" ]]; then
+            # Not valid JSON, show raw output
+            echo ""
+            echo "$result"
+        else
+            error "$err_msg"
+        fi
+        wait_for_key
+    fi
+}
+
+# =============================================================================
+# COMMENT FLOW
+# =============================================================================
+
+do_comment() {
+    # Prompt for URL using ui_input
+    local reply_url
+    reply_url=$(ui_input "Comment on Post" "Enter the URL of the post to reply to" "")
+
+    if [[ -z "$reply_url" ]]; then
+        warn "No URL provided. Aborting."
+        wait_for_key
+        return 0
+    fi
+
+    # Create temp file
+    local tmpfile
+    tmpfile=$(mktemp --suffix=.md)
+
+    cat > "$tmpfile" << 'EOF'
+# Your Comment
+
+Write your comment here...
+
+EOF
+
+    echo ""
+    info "Opening editor..."
+    echo -e "${DIM}Save and close the editor when done.${NC}"
+    echo ""
+
+    launch_editor "$tmpfile"
+
+    # Check if file has content
+    local content
+    content=$(cat "$tmpfile")
+    if [[ "$content" == "# Your Comment"*"Write your comment here..."* ]] || [[ -z "$content" ]]; then
+        warn "Comment appears empty or unchanged. Aborting."
+        rm -f "$tmpfile"
+        wait_for_key
+        return 0
+    fi
+
+    # Extract title
+    local title
+    title=$(head -1 "$tmpfile" | sed 's/^#* *//')
+
+    echo ""
+    info "Publishing comment..."
+
+    local result
+    result=$(run_polis comment "$tmpfile" "$reply_url")
+
+    rm -f "$tmpfile"
+
+    if is_polis_success "$result"; then
+        local published_file
+        published_file=$(echo "$result" | jq -r '.data.file_path // empty' 2>/dev/null)
+        success "Comment published: $published_file"
+
+        post_action_workflow "comment" "$reply_url" "$published_file" "metadata/public.jsonl"
+    else
+        error "Failed to publish comment"
+        local err_msg
+        err_msg=$(get_polis_error "$result")
+        if [[ "$err_msg" == "Unknown error" ]]; then
+            echo ""
+            echo "$result"
+        else
+            error "$err_msg"
+        fi
+        wait_for_key
+    fi
+}
+
+# =============================================================================
+# BLESSING REVIEW
+# =============================================================================
+
+do_blessings() {
+    log_msg "Entering do_blessings"
+    while true; do
+        # Fetch pending requests
+        local result
+        result=$(run_polis blessing requests)
+        log_msg "Blessing requests fetched, checking success"
+
+        if ! is_polis_success "$result"; then
+            log_msg "Blessing requests failed"
+            error "Failed to fetch blessing requests"
+            local err_msg
+            err_msg=$(get_polis_error "$result")
+            if [[ "$err_msg" == "Unknown error" ]]; then
+                echo ""
+                echo "$result"
+            else
+                error "$err_msg"
+            fi
+            wait_for_key
+            return 0
+        fi
+
+        local count
+        count=$(echo "$result" | jq '.data.count // (.data.requests | length) // 0' 2>/dev/null || echo 0)
+        log_msg "Raw blessing count from API: $count"
+
+        if [[ "$count" -eq 0 ]]; then
+            ui_message "Blessing Requests" "No pending blessing requests!"
+            return 0
+        fi
+
+        # Build list for ui_list_select: "hash" "description" pairs
+        # Also build associative array for author lookup
+        local list_items=()
+        declare -A author_map
+        local skipped_count=0
+        local skipped_reasons=()
+
+        log_msg "Processing blessing items..."
+        while IFS= read -r line; do
+            log_msg "Processing line: ${line:0:100}..."
+            # Skip if line is empty
+            if [[ -z "$line" ]]; then
+                log_msg "Skipping empty line"
+                continue
+            fi
+
+            # Check if it's a valid JSON object
+            if ! echo "$line" | jq -e 'type == "object"' &>/dev/null; then
+                skipped_count=$((skipped_count + 1))
+                skipped_reasons+=("Invalid data format: ${line:0:50}")
+                log_msg "Skipping invalid JSON: ${line:0:50}"
+                continue
+            fi
+
+            local author excerpt hash short_author
+            author=$(echo "$line" | jq -r '.author // "unknown"' 2>/dev/null)
+            # Extract filename from comment_url as excerpt (no excerpt field in API)
+            excerpt=$(echo "$line" | jq -r '.comment_url // ""' 2>/dev/null | sed 's|.*/||' | head -c 30)
+            hash=$(echo "$line" | jq -r '.comment_version // ""' 2>/dev/null)
+
+            # Skip if we don't have a hash
+            if [[ -z "$hash" ]]; then
+                skipped_count=$((skipped_count + 1))
+                skipped_reasons+=("Missing hash from $author")
+                continue
+            fi
+
+            short_author="${author##*/}"
+            list_items+=("$hash" "@$short_author - \"$excerpt...\"")
+            author_map["$hash"]="$author"
+            log_msg "Added item: hash=$hash author=$short_author"
+        done < <(echo "$result" | jq -c '.data.requests[]' 2>/dev/null)
+
+        log_msg "Done processing. valid=${#list_items[@]} skipped=$skipped_count"
+
+        # Check if we actually got any valid items
+        if [[ ${#list_items[@]} -eq 0 ]]; then
+            log_msg "No valid items, showing message"
+            local msg="No valid blessing requests found."
+            if [[ $skipped_count -gt 0 ]]; then
+                msg+="\n\n${skipped_count} request(s) skipped due to invalid data:"
+                for reason in "${skipped_reasons[@]}"; do
+                    msg+="\n  - $reason"
+                done
+                msg+="\n\nThis may indicate stale requests pointing to URLs that no longer exist."
+            fi
+            ui_message "Blessing Requests" "$msg"
+            return 0
+        fi
+
+        # Calculate actual valid count
+        local valid_count=$((${#list_items[@]} / 2))
+
+        # Show warning if some were skipped
+        if [[ $skipped_count -gt 0 ]]; then
+            warn "$skipped_count request(s) skipped (invalid data)" >&2
+        fi
+
+        # Show list selection
+        log_msg "Showing list selection with ${#list_items[@]} items"
+        local selected_hash
+        local title="Blessing Requests ($valid_count pending)"
+        if [[ $skipped_count -gt 0 ]]; then
+            title="Blessing Requests ($valid_count pending, $skipped_count invalid)"
+        fi
+        selected_hash=$(ui_list_select "$title" "${list_items[@]}")
+
+        # Handle cancel/back
+        if [[ -z "$selected_hash" ]]; then
+            return 0
+        fi
+
+        # Review the selected blessing
+        local selected_author="${author_map[$selected_hash]}"
+        review_blessing "$selected_hash" "$selected_author"
+    done
+}
+
+# Review a single blessing request
+review_blessing() {
+    local hash="$1"
+    local author="$2"
+
+    # Build preview text
+    local preview_text="Hash: $hash\nAuthor: $author"
+
+    local choice
+    choice=$(ui_menu "Review Blessing" "$preview_text" \
+        "grant" "Grant blessing" \
+        "deny"  "Deny blessing" \
+        "skip"  "Skip (decide later)")
+
+    case "$choice" in
+        grant)
+            echo ""
+            info "Granting blessing..."
+            local result
+            result=$(run_polis blessing grant "$hash")
+            if is_polis_success "$result"; then
+                ui_message "Success" "Blessing granted!"
+                post_action_workflow "bless" "$author" "metadata/blessed-comments.json"
+            else
+                local err_msg
+                err_msg=$(get_polis_error "$result")
+                if [[ "$err_msg" == "Unknown error" ]]; then
+                    ui_message "Error" "Failed to grant blessing\n\n$result"
+                else
+                    ui_message "Error" "Failed to grant blessing: $err_msg"
+                fi
+            fi
+            ;;
+        deny)
+            echo ""
+            info "Denying blessing..."
+            local result
+            result=$(run_polis blessing deny "$hash")
+            if is_polis_success "$result"; then
+                ui_message "Done" "Blessing denied."
+            else
+                local err_msg
+                err_msg=$(get_polis_error "$result")
+                if [[ "$err_msg" == "Unknown error" ]]; then
+                    ui_message "Error" "Failed to deny blessing\n\n$result"
+                else
+                    ui_message "Error" "Failed to deny blessing: $err_msg"
+                fi
+            fi
+            ;;
+        skip|"")
+            # Just return to list
+            ;;
+    esac
+}
+
+# =============================================================================
+# DISCOVER FLOW
+# =============================================================================
+
+do_discover() {
+    # Check if following.json exists
+    if [[ ! -f "metadata/following.json" ]]; then
+        ui_message "Discover Content" "No following list found.\n\nUse 'polis follow <author-url>' to follow authors."
+        return 0
+    fi
+
+    # Read following list
+    local following_count
+    following_count=$(jq '.following | length' "metadata/following.json" 2>/dev/null || echo 0)
+
+    if [[ "$following_count" -eq 0 ]]; then
+        ui_message "Discover Content" "You're not following anyone yet.\n\nUse 'polis follow <author-url>' to follow authors."
+        return 0
+    fi
+
+    # Build list for ui_list_select
+    local list_items=()
+
+    while IFS= read -r line; do
+        local author_url name
+        author_url=$(echo "$line" | jq -r '.url // empty')
+        name=$(echo "$line" | jq -r '.name // empty')
+
+        if [[ -z "$name" ]]; then
+            name="${author_url##*/}"
+            name="${name%%/*}"
+        fi
+
+        list_items+=("$author_url" "$name ($author_url)")
+    done < <(jq -c '.following[]' "metadata/following.json" 2>/dev/null)
+
+    while true; do
+        # Show list selection
+        local selected_url
+        selected_url=$(ui_list_select "Authors You Follow ($following_count)" "${list_items[@]}")
+
+        # Handle cancel/back
+        if [[ -z "$selected_url" ]]; then
+            return 0
+        fi
+
+        # View the selected author's site
+        view_author_site "$selected_url"
+    done
+}
+
+# View an author's site/posts
+view_author_site() {
+    local author_url="$1"
+
+    header "AUTHOR: ${author_url}"
+
+    info "Fetching author's public index..."
+    echo ""
+
+    # Try to fetch their .well-known/polis
+    local well_known_url="${author_url}/.well-known/polis"
+    local polis_info
+    polis_info=$(curl -sL "$well_known_url" 2>/dev/null)
+
+    if [[ -n "$polis_info" ]]; then
+        local author_name email
+        author_name=$(echo "$polis_info" | jq -r '.author // "Unknown"')
+        email=$(echo "$polis_info" | jq -r '.email // ""')
+
+        echo -e "  ${DIM}Author:${NC} $author_name"
+        [[ -n "$email" ]] && echo -e "  ${DIM}Email:${NC}  $email"
+        echo ""
+    fi
+
+    # Try to fetch their index
+    local index_url="${author_url}/metadata/public.jsonl"
+    local index_content
+    index_content=$(curl -sL "$index_url" 2>/dev/null | head -10)
+
+    if [[ -n "$index_content" ]]; then
+        echo -e "${BOLD}Recent Posts:${NC}"
+        divider
+
+        local post_count=0
+        while IFS= read -r line; do
+            if [[ -n "$line" ]]; then
+                local title url
+                title=$(echo "$line" | jq -r '.title // "Untitled"')
+                url=$(echo "$line" | jq -r '.url // empty')
+
+                ((post_count++))
+                echo -e "  [$post_count] $title"
+                echo -e "      ${DIM}$url${NC}"
+            fi
+        done <<< "$index_content"
+
+        if [[ $post_count -eq 0 ]]; then
+            info "No posts found in their index."
+        fi
+    else
+        warn "Could not fetch author's index."
+    fi
+
+    echo ""
+    echo "Enter a URL to preview, or press Enter to go back:"
+    read -rp "> " preview_url
+
+    if [[ -n "$preview_url" ]]; then
+        echo ""
+        run_polis_human preview "$preview_url"
+    fi
+
+    wait_for_key
+}
+
+# =============================================================================
+# PREVIEW FLOW
+# =============================================================================
+
+do_preview() {
+    # Prompt for URL using ui_input
+    local url
+    url=$(ui_input "Preview URL" "Enter the URL to preview" "")
+
+    if [[ -z "$url" ]]; then
+        warn "No URL provided."
+        wait_for_key
+        return 0
+    fi
+
+    echo ""
+    info "Fetching and verifying..."
+    echo ""
+
+    # Use human mode for preview display
+    run_polis_human preview "$url"
+
+    wait_for_key
+}
+
+# =============================================================================
+# ABOUT
+# =============================================================================
+
+do_about() {
+    header "ABOUT POLIS"
+
+    # Get polis CLI version
+    local cli_version
+    cli_version=$("$POLIS_CLI" --json version 2>/dev/null | jq -r '.data.version // "unknown"' 2>/dev/null || echo "unknown")
+
+    # Get author's site URL from environment variable
+    local site_url="${POLIS_BASE_URL:-not configured}"
+
+    echo ""
+    echo -e "${BOLD}Polis${NC} - Decentralized Social Network"
+    echo -e "${DIM}Your content, free from platform control${NC}"
+    echo ""
+    divider
+    echo ""
+    echo -e "  ${CYAN}polis-tui version:${NC}  $TUI_VERSION"
+    echo -e "  ${CYAN}polis CLI version:${NC}  $cli_version"
+    echo ""
+    echo -e "  ${CYAN}Your site:${NC}          $site_url"
+    echo ""
+    divider
+    echo ""
+    echo -e "  ${CYAN}Project:${NC}  https://github.com/vdibart/polis"
+    echo -e "  ${CYAN}License:${NC}  MIT"
+    echo ""
+
+    wait_for_key
+}
+
+# =============================================================================
+# CLEANUP AND EXIT
+# =============================================================================
+
+cleanup() {
+    # Restore cursor in case we were in a menu
+    printf "${CURSOR_SHOW}" >&2
+    echo ""
+    echo ""
+    echo -e "${CYAN}Thanks for using Polis TUI!${NC}"
+    if [[ $LOG_LEVEL -ge 1 && -n "$LOG_FILE" ]]; then
+        echo -e "${DIM}Log file: $LOG_FILE${NC}"
+    fi
+    echo ""
+    exit 0
+}
+
+trap cleanup INT TERM
+
+# =============================================================================
+# DEPENDENCY CHECKS
+# =============================================================================
+
+check_dependencies() {
+    local missing=()
+
+    # Check for jq
+    if ! command -v jq &>/dev/null; then
+        missing+=("jq")
+    fi
+
+    # Check for polis CLI
+    if ! POLIS_CLI=$(find_polis_cli); then
+        missing+=("polis")
+    fi
+
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        error "Missing required dependencies: ${missing[*]}"
+        echo ""
+        echo "Please install them and try again."
+        exit 1
+    fi
+}
+
+# =============================================================================
+# HELP AND VERSION
+# =============================================================================
+
+show_help() {
+    cat << EOF
+polis-tui - Terminal User Interface for Polis CLI
+
+USAGE:
+    polis-tui [OPTIONS]
+
+OPTIONS:
+    -h, --help          Show this help message
+    -v, --version       Show version information
+    --log LEVEL         Enable logging to /tmp/polis-tui-*.log
+                        1 = commands only (replayable)
+                        2 = commands + JSON responses
+                        3 = verbose (full bash trace)
+
+DESCRIPTION:
+    A menu-based interface for common polis operations.
+    Provides a dashboard with status and quick access to:
+    - Publish new posts
+    - Comment on posts
+    - Review blessing requests
+    - Discover content from followed authors
+    - Preview URLs with signature verification
+
+NAVIGATION:
+    Arrow keys (↑/↓) or j/k to move selection
+    Number keys (1-9) to jump directly to an option
+    Enter to confirm selection
+    q or Escape to go back/cancel
+    Ctrl+C to exit
+
+REQUIREMENTS:
+    - polis CLI must be installed and in PATH (or same directory)
+    - jq for JSON parsing
+    - Polis must be initialized in current directory (run 'polis init' first)
+
+EOF
+}
+
+show_version() {
+    echo "polis-tui $TUI_VERSION"
+}
+
+# =============================================================================
+# MAIN LOOP
+# =============================================================================
+
+main() {
+    # Parse command line arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                show_help
+                exit 0
+                ;;
+            -v|--version)
+                show_version
+                exit 0
+                ;;
+            --log)
+                if [[ -z "${2:-}" || ! "$2" =~ ^[1-3]$ ]]; then
+                    error "Invalid log level. Use 1, 2, or 3."
+                    exit 1
+                fi
+                init_logging "$2"
+                info "Logging to: $LOG_FILE"
+                shift 2
+                ;;
+            -*)
+                error "Unknown option: $1"
+                echo "Use --help for usage information."
+                exit 1
+                ;;
+            *)
+                break
+                ;;
+        esac
+    done
+
+    # Check dependencies
+    check_dependencies
+
+    # Check git status
+    check_git_status
+
+    # Check if polis is initialized
+    if ! is_polis_initialized; then
+        clear
+        header "POLIS TUI"
+        error "Polis is not initialized in this directory."
+        echo ""
+        echo "Run 'polis init' first to set up your polis site."
+        echo ""
+        exit 1
+    fi
+
+    # Main loop
+    while true; do
+        clear
+        header "POLIS"
+
+        local choice
+        choice=$(show_main_menu)
+
+        case "$choice" in
+            publish) do_publish ;;
+            comment) do_comment ;;
+            blessings) do_blessings ;;
+            discover) do_discover ;;
+            preview) do_preview ;;
+            refresh) continue ;;
+            about) do_about ;;
+            quit|"") cleanup ;;
+            *) ;;
+        esac
+    done
+}
+
+# Run main
+main "$@"

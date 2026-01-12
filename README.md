@@ -5,7 +5,7 @@
 
 **Decentralized social networking for the AI era.**
 
-Your content. Your domain. Your network.
+Your content, free from platform control.
 
 ---
 
@@ -20,10 +20,57 @@ Polis is federated social networking where:
 - **Your content lives on your domain** — Publish to GitHub Pages, Vercel, Netlify, or any static host
 - **No platform algorithms** — Follow who you choose, no engagement optimization
 - **Cryptographically signed** — Ed25519 signatures prove authorship, SHA-256 hashes ensure integrity
-- **AI handles the hard parts** — Your AI controls the algorithm.  Publishing, discovery, summaries, trends.  Bring your own model.
+- **AI handles the hard parts** — Your AI controls the algorithm. Publishing, discovery, summaries, trends. Bring your own model.
 - **Standards-based** — Just HTTPS, DNS, and cryptography. No blockchain, no tokens, no lock-in
 
 Read the [full manifesto](docs/MANIFESTO.md) for more on our vision.
+
+---
+
+## Try it now
+
+Two paths based on how you like to work:
+
+### Interactive mode (recommended for new users)
+
+```bash
+$ ./bin/polis-tui
+```
+
+Menu-driven dashboard with keyboard navigation:
+- **Publish** — Write posts in your editor, auto-suggested filenames
+- **Comment** — Preview target post, compose reply
+- **Blessings** — Review requests one-by-one with grant/deny/skip
+- **Discover** — Browse posts from authors you follow
+- **Preview** — View any polis content with signature verification
+
+No commands to memorize. Git integration built in.
+
+### Command line mode
+
+```bash
+$ polis init
+[OK] Generated Ed25519 keypair in .polis/keys/
+[OK] Created .well-known/polis (public metadata)
+[OK] Ready to publish
+
+$ polis publish my-thoughts.md
+[i] Content hash: sha256:a3b5c7d9e1f2...
+[i] Signing with Ed25519 key...
+[OK] Published: posts/20260106/my-thoughts.md
+```
+
+Full scriptability, JSON output for automation, composable with other tools.
+
+### Learn by doing
+
+New to Polis? Try the interactive tutorial:
+
+```bash
+$ ./bin/polis-tutorial
+```
+
+Walks you through the complete workflow with simulated commands—no real changes to your system.
 
 ---
 
@@ -42,10 +89,10 @@ Claude: Based on 47 posts from 12 authors you follow:
 You: "Show me everything Bob commented on yesterday"
 
 Claude: Bob left 4 comments yesterday:
-        • On Alice's "LLM Reasoning" post - disagreeing with her benchmark methodology
-        • On your "Polis Architecture" post - asking about signature verification
-        • On Carol's "Distributed Systems pt 2" - sharing a related paper
-        • On David's "First Post" - welcoming him to the network
+        - On Alice's "LLM Reasoning" post - disagreeing with her benchmark methodology
+        - On your "Polis Architecture" post - asking about signature verification
+        - On Carol's "Distributed Systems pt 2" - sharing a related paper
+        - On David's "First Post" - welcoming him to the network
 
 You: "Who's been most active in discussions about distributed systems?"
 
@@ -62,99 +109,61 @@ The structured data—signed markdown, blessed comments, following graphs—is d
 
 ---
 
-## See it in action
-
-### Initialize and publish a post
-
-```bash
-$ polis init
-[OK] Generated Ed25519 keypair in .polis/keys/
-[OK] Created .well-known/polis (public metadata)
-[OK] Ready to publish
-
-$ polis publish my-thoughts.md
-[i] Content hash: sha256:a3b5c7d9e1f2...
-[i] Signing with Ed25519 key...
-[OK] Published: posts/20260106/my-thoughts.md
-```
-
-### Comment on someone's post
-
-```bash
-$ polis comment reply.md https://alice.example.com/posts/hello.md
-[i] Content hash: sha256:b4c6d8e0f1a2...
-[i] Signing with Ed25519 key...
-[OK] Created: comments/20260106/reply.md
-[OK] Blessing requested from alice.example.com
-```
-
-### Curate comments on your posts
-
-```bash
-$ polis blessing requests
-ID    Author              Post
-42    bob@example.com     /posts/hello.md
-73    carol@example.com   /posts/hello.md
-
-$ polis blessing grant 42
-[OK] Comment blessed - now visible to your audience
-```
-
----
-
-## Try the interactive tutorial
-
-![Polis interactive tutorial walkthrough](./assets/tutorial.gif)
-
-New to Polis? Learn by doing with our interactive tutorial:
-
-```bash
-./bin/polis-tutorial
-```
-
-The tutorial walks you through the complete workflow with simulated commands - no real changes are made to your system. Type the commands shown or press Enter to advance.
-
----
-
 ## Quick start
-
-```bash
-# Clone and add to PATH
-git clone https://github.com/vdibart/polis-cli.git
-export PATH="$PATH:$(pwd)/polis-cli/bin"
-
-# Initialize your site
-mkdir my-blog && cd my-blog
-polis init
-
-# Set your domain
-export POLIS_BASE_URL="https://yourdomain.com"
-
-# Write and publish
-echo "# Hello World" > hello.md
-polis publish hello.md
-
-# Deploy to any static host
-git init && git add . && git commit -m "First post"
-git push  # to GitHub Pages, Netlify, etc.
-```
 
 ### Prerequisites
 
 - **OpenSSH 8.0+** — Ed25519 signing
 - **jq** — JSON processing
 - **curl** — API communication
+- **pandoc** — Markdown to HTML (for `polis render`)
 - **git** — Version control (optional)
 
 ```bash
 # macOS
-brew install openssh jq curl git
+brew install openssh jq curl pandoc git
 
 # Ubuntu/Debian
-sudo apt-get install openssh-client jq curl git
+sudo apt-get install openssh-client jq curl pandoc git
 ```
 
-### Verifying Your Download
+### Install
+
+```bash
+git clone https://github.com/vdibart/polis-cli.git
+export PATH="$PATH:$(pwd)/polis-cli/bin"
+```
+
+### Initialize your site
+
+```bash
+mkdir my-blog && cd my-blog
+polis init
+export POLIS_BASE_URL="https://yourdomain.com"
+```
+
+### Publish your first post
+
+**Interactive:**
+```bash
+polis-tui  # Select "Publish", write in your editor
+```
+
+**Command line:**
+```bash
+echo "# Hello World" > hello.md
+polis publish hello.md
+```
+
+### Deploy
+
+```bash
+polis render                    # Generate HTML
+git init && git add . && git commit -m "First post"
+git push                        # To GitHub Pages, Netlify, etc.
+```
+
+### Verifying your download
 
 After cloning, verify the scripts haven't been altered:
 
@@ -170,7 +179,7 @@ You should see `polis: OK` and `polis-tutorial: OK`
 
 ## How it works
 
-### System Architecture
+### System architecture
 
 Polis is a three-part system:
 
@@ -192,11 +201,11 @@ Polis is a three-part system:
 
 No single point of failure. Move hosts anytime. Run your own discovery service if you want.
 
-### 1. You own your content
+### You own your content
 
 Posts are markdown files with cryptographic signatures. Host them anywhere—GitHub Pages, Vercel, Netlify, your own server. Move anytime. No lock-in. No export needed.
 
-### 2. The blessing model
+### The blessing model
 
 When someone comments on your post:
 1. They publish the comment on *their* domain
@@ -219,7 +228,7 @@ When someone comments on your post:
 
 **Anyone can respond. You curate what gets amplified.** Anti-spam without censorship.
 
-### 3. Following and trust
+### Following and trust
 
 - **Follow an author** — Auto-bless all their future comments
 - **Bless a comment** — Auto-bless their future comments on that post
@@ -257,7 +266,7 @@ The result is ready to deploy to any static host—GitHub Pages, Vercel, Netlify
 - **Embeds blessed comments** directly in post pages
 - **Generates an index page** listing all your posts
 - **Skips unchanged files** for fast incremental builds
-- **Embeds signed source** in every HTML file (see below)
+- **Embeds signed frontmatter** in every HTML file (see below)
 
 ### Customize your templates
 
@@ -273,23 +282,26 @@ Edit these files to change your site's look. Templates use `{{variable}}` substi
 
 ### Verifiable HTML
 
-Every rendered HTML file includes the original signed markdown as an embedded comment:
+Every rendered HTML file includes the signed frontmatter as an embedded comment:
 
 ```html
 <!--
 === POLIS SOURCE ===
-Source: posts/20260106/hello.md
+Source: https://yourdomain.com/posts/20260106/hello.md
+title: Hello World
+published: 2026-01-06T12:00:00Z
 signature: AAAAB3NzaC1lZDI1NTE5...
----
 === END POLIS SOURCE ===
 -->
 ```
 
-This means anyone can verify the HTML matches its cryptographic signature—without needing your original files. The rendered website is as trustworthy as the signed source.
+This means anyone can verify the HTML matches its cryptographic signature—the signature and metadata travel with the rendered page.
 
 ---
 
-## Scripting & Automation
+## Going deeper
+
+### Scripting & automation
 
 All commands support `--json` for machine-readable output:
 
@@ -305,11 +317,9 @@ polis --json blessing requests | jq -r '.data.requests[].id' | \
   xargs -I{} polis blessing grant {}
 ```
 
-See [USAGE.md](docs/USAGE.md) for complete JSON mode documentation.
+See [USAGE.md](docs/USAGE.md) for complete command reference and JSON mode documentation.
 
----
-
-## Claude Code Integration
+### Claude Code integration
 
 Polis includes a [Claude Code](https://claude.ai/claude-code) skill for AI-powered workflows. Instead of memorizing commands, just describe what you want:
 
@@ -319,9 +329,7 @@ You: "check if I have any pending blessing requests"
 You: "comment on Alice's latest post agreeing with her point about caching"
 ```
 
-### Installing the Skill
-
-After cloning the repo, symlink the skill to your Claude Code skills directory:
+#### Installing the skill
 
 ```bash
 # Create skills directory if it doesn't exist
@@ -331,7 +339,7 @@ mkdir -p ~/.claude/skills
 ln -s "$(pwd)/cli/skills/polis" ~/.claude/skills/polis
 ```
 
-### What the Skill Does
+#### What the skill does
 
 - **Publish** — Signs and publishes posts, suggests titles, offers git commits
 - **Discover** — Searches your network for relevant content
@@ -341,7 +349,7 @@ ln -s "$(pwd)/cli/skills/polis" ~/.claude/skills/polis
 
 The skill uses `--json` mode for reliable parsing and handles errors gracefully.
 
-### Skill Documentation
+#### Skill documentation
 
 - **[skills/polis/SKILL.md](skills/polis/SKILL.md)** — Skill overview and workflows
 - **[skills/polis/references/commands.md](skills/polis/references/commands.md)** — CLI command reference
@@ -393,4 +401,4 @@ Questions or issues? [Open a GitHub issue](https://github.com/vdibart/polis-cli/
 
 ---
 
-*Polis: Self-governed social networking*
+*Polis: Your content, free from platform control.*

@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.21.0] - 2026-01-12
+
+### Added
+- **polis-tui** - New interactive terminal user interface for Polis
+  - Menu-driven dashboard with keyboard navigation
+  - Real-time stats display (posts, following, blessings, git status)
+  - Integrated workflows: publish, comment, blessing management, discover, preview
+  - Post-action options: rebuild, git commit/push, or continue
+  - Built-in git integration with detailed commit messages
+  - About screen with version info and configuration
+- **Documentation** - Added "Implementation Security Audit" section to SECURITY-MODEL.md
+  - Comprehensive verification that private keys are never printed or logged
+  - Audit of file permissions, git exclusion, temp file handling
+  - Complete security checklist for key management practices
+
+### Fixed
+- **Blessed comments not rendering** - Fixed `polis render` failing to find blessed comments when URLs had mismatched extensions
+  - Normalized `update_blessed_comments_json` to always store post URLs with `.md` extension
+  - Now checks both `.md` and `.html` extensions when looking up posts
+
+### Changed
+- **README restructure** - Reorganized for better new user experience
+  - New "Try it now" section featuring polis-tui as recommended path
+  - Updated tagline: "Your content, free from platform control"
+  - Command-line mode section for users who prefer CLI workflows
+
 ## [0.20.0] - 2026-01-10
 
 ### Fixed

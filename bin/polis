@@ -28,7 +28,7 @@ set -e
 #   4. Hardcoded defaults
 
 # Fixed constants (never configurable - required for discovery)
-VERSION="0.22.0"
+VERSION="0.23.0"
 WELL_KNOWN_DIR=".well-known"
 WELL_KNOWN_FILE="polis"
 
@@ -113,6 +113,7 @@ apply_defaults() {
     : "${PUBLIC_INDEX:=metadata/public.jsonl}"
     : "${BLESSED_COMMENTS:=metadata/blessed-comments.json}"
     : "${FOLLOWING_INDEX:=metadata/following.json}"
+    : "${MANIFEST:=metadata/manifest.json}"
 }
 
 # Main configuration initialization
@@ -349,6 +350,19 @@ EOF
 EOF
     files_created+=("$following_index")
     success_human "Created $following_index"
+
+    # Create initial manifest.json
+    local manifest_path="$metadata_dir/manifest.json"
+    cat > "$manifest_path" << EOF
+{
+  "version": "$VERSION",
+  "last_published": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+  "post_count": 0,
+  "comment_count": 0
+}
+EOF
+    files_created+=("$manifest_path")
+    success_human "Created $manifest_path"
 
     # Create .gitignore if it doesn't exist
     local private_key_path="$keys_dir/id_ed25519"
@@ -1528,6 +1542,137 @@ is_comment_blessed() {
     [ "$count" -gt 0 ]
 }
 
+# ============================================================================
+# CLONE HELPERS
+# ============================================================================
+
+# Normalize a server URL (add https if missing, remove trailing slash)
+normalize_server_url() {
+    local url="$1"
+    # Add https:// if no protocol
+    [[ ! "$url" =~ ^https?:// ]] && url="https://$url"
+    # Remove trailing slash
+    url="${url%/}"
+    echo "$url"
+}
+
+# Extract domain from URL for default target directory name
+extract_domain_for_clone() {
+    local url="$1"
+    echo "$url" | sed -E 's|https?://([^/]+).*|\1|'
+}
+
+# Download a single file from remote server to local directory
+# Args: $1=server_url, $2=target_dir, $3=file_path
+# Returns: 0 on success, 1 on failure
+clone_single_file() {
+    local server_url="$1"
+    local target_dir="$2"
+    local file_path="$3"
+
+    local remote_url="${server_url}/${file_path}"
+    local local_path="${target_dir}/${file_path}"
+
+    # Create directory structure
+    mkdir -p "$(dirname "$local_path")"
+
+    # Fetch content (use -f to fail on HTTP errors)
+    local content
+    content=$(curl -s --max-time 30 -f "$remote_url" 2>/dev/null)
+
+    if [ $? -ne 0 ] || [ -z "$content" ]; then
+        return 1
+    fi
+
+    # Write to file
+    echo "$content" > "$local_path"
+    return 0
+}
+
+# Get the .versions path for a content file
+# Input: posts/2025/01/hello.md
+# Output: posts/2025/01/.versions/hello.md
+get_versions_path_for_clone() {
+    local content_path="$1"
+    local dir=$(dirname "$content_path")
+    local filename=$(basename "$content_path")
+    echo "$dir/.versions/$filename"
+}
+
+# Write clone state file for incremental syncs
+# Args: $1=target_dir, $2=server_url, $3=entries_json (array)
+write_clone_state() {
+    local target_dir="$1"
+    local server_url="$2"
+    local entries_json="$3"
+    local blessed_urls_json="${4:-[]}"
+
+    local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+    jq -n \
+        --arg version "$VERSION" \
+        --arg url "$server_url" \
+        --arg ts "$timestamp" \
+        --argjson entries "$entries_json" \
+        --argjson blessed "$blessed_urls_json" \
+        '{
+            polis_version: $version,
+            server_url: $url,
+            last_sync: $ts,
+            entries: $entries,
+            blessed_comments_cached: $blessed
+        }' > "$target_dir/.polis-clone-state.json"
+}
+
+# Clone blessed comments from other authors
+# Args: $1=target_dir, $2=blessed_content (JSON)
+# Echoes: count of cached comments
+clone_blessed_comments() {
+    local target_dir="$1"
+    local blessed_content="$2"
+
+    local count=0
+    local cached_urls=()
+    local cache_dir="$target_dir/.blessed-comments-cache"
+    mkdir -p "$cache_dir"
+
+    # Parse blessed-comments.json and download each blessed comment
+    # Structure: { "comments": [{ "post": "...", "blessed": [{ "url": "...", "version": "..." }] }] }
+
+    while IFS= read -r comment_entry; do
+        [ -z "$comment_entry" ] && continue
+
+        local comment_url=$(echo "$comment_entry" | jq -r '.url // empty')
+        local comment_version=$(echo "$comment_entry" | jq -r '.version // empty')
+
+        [ -z "$comment_url" ] && continue
+
+        # Download blessed comment from other author's domain
+        local comment_content
+        comment_content=$(fetch_remote_content "$comment_url")
+
+        if [ -n "$comment_content" ]; then
+            # Use URL hash as filename
+            local url_hash=$(echo -n "$comment_url" | sha256sum | cut -c1-16)
+            echo "$comment_content" > "$cache_dir/${url_hash}.md"
+
+            # Store metadata
+            jq -nc --arg url "$comment_url" --arg version "$comment_version" \
+                --arg cached_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+                '{url: $url, version: $version, cached_at: $cached_at}' \
+                > "$cache_dir/${url_hash}.json"
+
+            cached_urls+=("$comment_url")
+            count=$((count + 1))
+        fi
+    done < <(echo "$blessed_content" | jq -c '.comments[].blessed[]' 2>/dev/null)
+
+    # Return URLs as JSON array for state tracking
+    printf '%s\n' "${cached_urls[@]}" | jq -R . | jq -s . > "$target_dir/.blessed-urls-temp.json"
+
+    echo "$count"
+}
+
 # Sync blessed comments from discovery service to local blessed-comments.json
 # Fetches all blessed comments for current user's posts and adds any missing entries
 # Returns: count of newly synced comments (echoed to stdout)
@@ -1823,6 +1968,52 @@ rebuild_index() {
 
     local total_count=$((post_count + comment_count))
     success "Rebuilt public.jsonl ($total_count entries: $post_count posts, $comment_count comments)"
+}
+
+# Generate manifest.json from public.jsonl
+# Contains summary metadata for efficient discovery polling
+generate_manifest() {
+    local silent="${1:-false}"
+
+    # Check if public.jsonl exists
+    if [ ! -f "$PUBLIC_INDEX" ]; then
+        if [ "$silent" != "true" ]; then
+            error "public.jsonl not found. Run 'polis rebuild' first."
+        fi
+        return 1
+    fi
+
+    # Count posts and comments from public.jsonl
+    local post_count=$(jq -s '[.[] | select(.type == "post")] | length' "$PUBLIC_INDEX" 2>/dev/null || echo "0")
+    local comment_count=$(jq -s '[.[] | select(.type == "comment")] | length' "$PUBLIC_INDEX" 2>/dev/null || echo "0")
+
+    # Get the most recent published timestamp
+    local last_published=$(jq -s 'map(.published) | sort | last // empty' "$PUBLIC_INDEX" 2>/dev/null)
+
+    # If no content yet, use current time
+    if [ -z "$last_published" ] || [ "$last_published" = "null" ]; then
+        last_published="\"$(date -u +"%Y-%m-%dT%H:%M:%SZ")\""
+    fi
+
+    # Generate manifest.json
+    local metadata_dir=$(dirname "$MANIFEST")
+    mkdir -p "$metadata_dir"
+
+    jq -n \
+        --arg version "$VERSION" \
+        --argjson last_published "$last_published" \
+        --argjson post_count "$post_count" \
+        --argjson comment_count "$comment_count" \
+        '{
+            version: $version,
+            last_published: $last_published,
+            post_count: $post_count,
+            comment_count: $comment_count
+        }' > "$MANIFEST"
+
+    if [ "$silent" != "true" ]; then
+        success "Generated $MANIFEST (last_published: $(echo $last_published | tr -d '"'), $post_count posts, $comment_count comments)"
+    fi
 }
 
 # Append a single entry to public.jsonl
@@ -2714,6 +2905,9 @@ signature: $signature
     # Append to public.jsonl index
     append_to_index "$canonical_path" "comment"
 
+    # Regenerate manifest.json
+    generate_manifest true
+
     # Request blessing from discovery service with comment
     if [ "$JSON_MODE" = false ]; then
         echo ""
@@ -3309,6 +3503,193 @@ cmd_index() {
     fi
 }
 
+# Command: polis manifest
+# Regenerate manifest.json from public.jsonl
+cmd_manifest() {
+    generate_manifest
+}
+
+# Command: polis discover
+# Check followed authors for new content
+cmd_discover() {
+    local specific_author=""
+    local since_date=""
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --author)
+                specific_author="$2"
+                shift 2
+                ;;
+            --since)
+                since_date="$2"
+                shift 2
+                ;;
+            *)
+                error "Unknown option: $1. Use 'polis discover [--author <url>] [--since <date>]'"
+                ;;
+        esac
+    done
+
+    # Check if following.json exists
+    if [ ! -f "$FOLLOWING_INDEX" ]; then
+        json_error "discover" "FILE_NOT_FOUND" "following.json not found. Run 'polis init' first."
+    fi
+
+    # Get list of followed authors
+    local authors
+    if [ -n "$specific_author" ]; then
+        # Check if we're following this specific author
+        local is_following=$(jq --arg url "$specific_author" '.following[] | select(.url == $url)' "$FOLLOWING_INDEX")
+        if [ -z "$is_following" ]; then
+            json_error "discover" "NOT_FOLLOWING" "Not following $specific_author"
+        fi
+        authors=$(jq -c --arg url "$specific_author" '[.following[] | select(.url == $url)]' "$FOLLOWING_INDEX")
+    else
+        authors=$(jq -c '.following' "$FOLLOWING_INDEX")
+    fi
+
+    local author_count=$(echo "$authors" | jq 'length')
+
+    if [ "$author_count" -eq 0 ]; then
+        info "Not following any authors. Use 'polis follow <url>' to follow someone."
+        return 0
+    fi
+
+    info "Checking $author_count followed author(s)..."
+    echo ""
+
+    local total_new_items=0
+    local authors_with_new=0
+    local all_new_items="[]"
+
+    # Process each followed author
+    echo "$authors" | jq -c '.[]' | while IFS= read -r author_entry; do
+        local author_url=$(echo "$author_entry" | jq -r '.url')
+        local last_checked=$(echo "$author_entry" | jq -r '.last_checked // empty')
+
+        # Normalize URL (remove trailing slash)
+        author_url="${author_url%/}"
+
+        # Use since_date if provided, otherwise use last_checked
+        local check_since="$since_date"
+        if [ -z "$check_since" ] && [ -n "$last_checked" ]; then
+            check_since="$last_checked"
+        fi
+
+        # Calculate human-readable "last checked" time
+        local last_checked_human="never"
+        if [ -n "$last_checked" ]; then
+            local last_ts=$(date -d "$last_checked" +%s 2>/dev/null || date -j -f "%Y-%m-%dT%H:%M:%SZ" "$last_checked" +%s 2>/dev/null)
+            local now_ts=$(date +%s)
+            local diff_seconds=$((now_ts - last_ts))
+            local diff_days=$((diff_seconds / 86400))
+            if [ "$diff_days" -eq 0 ]; then
+                local diff_hours=$((diff_seconds / 3600))
+                if [ "$diff_hours" -eq 0 ]; then
+                    last_checked_human="just now"
+                else
+                    last_checked_human="${diff_hours}h ago"
+                fi
+            else
+                last_checked_human="${diff_days}d ago"
+            fi
+        fi
+
+        echo -n "$author_url (last checked: $last_checked_human)"
+
+        # Fetch manifest.json from author's site
+        local manifest_url="${author_url}/metadata/manifest.json"
+        local manifest_response=$(curl -s --max-time 10 "$manifest_url" 2>/dev/null)
+
+        if [ -z "$manifest_response" ] || ! echo "$manifest_response" | jq -e '.' > /dev/null 2>&1; then
+            echo " - offline or no manifest"
+            continue
+        fi
+
+        local author_last_published=$(echo "$manifest_response" | jq -r '.last_published // empty')
+
+        if [ -z "$author_last_published" ]; then
+            echo " - invalid manifest"
+            continue
+        fi
+
+        # Check if there's new content
+        local has_new_content=false
+        if [ -z "$check_since" ]; then
+            has_new_content=true  # Never checked, assume new
+        elif [[ "$author_last_published" > "$check_since" ]]; then
+            has_new_content=true
+        fi
+
+        if [ "$has_new_content" = false ]; then
+            echo " - no new content"
+            # Update last_checked even if no new content
+            update_last_checked "$author_url"
+            continue
+        fi
+
+        # Fetch public.jsonl to get new items
+        local index_url="${author_url}/metadata/public.jsonl"
+        local index_response=$(curl -s --max-time 30 "$index_url" 2>/dev/null)
+
+        if [ -z "$index_response" ]; then
+            echo " - could not fetch index"
+            continue
+        fi
+
+        # Filter for new items
+        local new_items
+        if [ -n "$check_since" ]; then
+            new_items=$(echo "$index_response" | jq -s --arg since "$check_since" '[.[] | select(.published > $since)]')
+        else
+            # Show last 10 items if never checked
+            new_items=$(echo "$index_response" | jq -s 'sort_by(.published) | reverse | .[0:10]')
+        fi
+
+        local new_count=$(echo "$new_items" | jq 'length')
+
+        if [ "$new_count" -eq 0 ]; then
+            echo " - no new content"
+        else
+            echo ""
+            echo "  → $new_count new item(s):"
+
+            # Display each new item
+            echo "$new_items" | jq -r '.[] | "  [\(.type | ascii_upcase)] \(.title) - \(.published | split("T")[0])"'
+
+            total_new_items=$((total_new_items + new_count))
+            authors_with_new=$((authors_with_new + 1))
+        fi
+
+        # Update last_checked in following.json
+        update_last_checked "$author_url"
+
+    done
+
+    echo ""
+    if [ "$total_new_items" -gt 0 ]; then
+        success "Found $total_new_items new item(s) from $authors_with_new author(s)"
+    else
+        info "No new content from followed authors"
+    fi
+}
+
+# Update last_checked timestamp for an author in following.json
+update_last_checked() {
+    local author_url="$1"
+    local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+    local temp_file="${FOLLOWING_INDEX}.tmp"
+
+    jq --arg url "$author_url" --arg ts "$timestamp" \
+        '.following |= map(if .url == $url then .last_checked = $ts else . end)' \
+        "$FOLLOWING_INDEX" > "$temp_file"
+
+    mv "$temp_file" "$FOLLOWING_INDEX"
+}
+
 # Command: polis version
 # Print CLI version
 cmd_version() {
@@ -3390,6 +3771,11 @@ cmd_config() {
         blessings_version=$(jq -r '.version // "unknown"' "$BLESSED_COMMENTS" 2>/dev/null || echo "unknown")
     fi
 
+    local manifest_version="not initialized"
+    if [ -f "$MANIFEST" ]; then
+        manifest_version=$(jq -r '.version // "unknown"' "$MANIFEST" 2>/dev/null || echo "unknown")
+    fi
+
     # Mask sensitive values
     local discovery_key_status="[not set]"
     if [ -n "$DISCOVERY_SERVICE_KEY" ]; then
@@ -3409,17 +3795,25 @@ cmd_config() {
             --arg public_index "$PUBLIC_INDEX" \
             --arg blessed_comments "$BLESSED_COMMENTS" \
             --arg following_index "$FOLLOWING_INDEX" \
+            --arg manifest "$MANIFEST" \
             --argjson key_exists "$key_exists" \
             --arg key_fingerprint "$key_fingerprint" \
             --arg pub_key_file "$pub_key_file" \
             --arg wellknown_version "$wellknown_version" \
             --arg following_version "$following_version" \
             --arg blessings_version "$blessings_version" \
+            --arg manifest_version "$manifest_version" \
             '{
                 status: "success",
                 command: "config",
                 data: {
-                    cli: { version: $cli_version },
+                    versions: {
+                        cli: $cli_version,
+                        well_known_polis: $wellknown_version,
+                        following: $following_version,
+                        blessed_comments: $blessings_version,
+                        manifest: $manifest_version
+                    },
                     environment: {
                         POLIS_BASE_URL: $base_url,
                         POLIS_ENDPOINT_BASE: $endpoint_base,
@@ -3434,17 +3828,13 @@ cmd_config() {
                     files: {
                         public_index: $public_index,
                         blessed_comments: $blessed_comments,
-                        following: $following_index
+                        following: $following_index,
+                        manifest: $manifest
                     },
                     keys: {
                         exists: $key_exists,
                         fingerprint: $key_fingerprint,
                         public_key_file: $pub_key_file
-                    },
-                    metadata_versions: {
-                        well_known_polis: $wellknown_version,
-                        following: $following_version,
-                        blessed_comments: $blessings_version
                     }
                 }
             }'
@@ -3453,37 +3843,37 @@ cmd_config() {
         echo -e "${BOLD}Polis Configuration${NC}"
         echo "════════════════════════════════════════"
         echo ""
-        echo -e "${CYAN}CLI${NC}"
-        echo "  Version:              $VERSION"
+        echo -e "${CYAN}Versions${NC}"
+        echo "  CLI:                   $VERSION"
+        echo "  .well-known/polis:     $wellknown_version"
+        echo "  following.json:        $following_version"
+        echo "  blessed-comments.json: $blessings_version"
+        echo "  manifest.json:         $manifest_version"
         echo ""
         echo -e "${CYAN}Environment${NC}"
-        echo "  POLIS_BASE_URL:       ${POLIS_BASE_URL:-[not set]}"
-        echo "  POLIS_ENDPOINT_BASE:  $POLIS_ENDPOINT_BASE"
+        echo "  POLIS_BASE_URL:        ${POLIS_BASE_URL:-[not set]}"
+        echo "  POLIS_ENDPOINT_BASE:   $POLIS_ENDPOINT_BASE"
         echo "  DISCOVERY_SERVICE_KEY: $discovery_key_status"
         echo ""
         echo -e "${CYAN}Directories${NC}"
-        echo "  Keys:                 $KEYS_DIR"
-        echo "  Posts:                $POSTS_DIR"
-        echo "  Comments:             $COMMENTS_DIR"
-        echo "  Versions:             $VERSIONS_DIR_NAME"
+        echo "  Keys:                  $KEYS_DIR"
+        echo "  Posts:                 $POSTS_DIR"
+        echo "  Comments:              $COMMENTS_DIR"
+        echo "  Versions:              $VERSIONS_DIR_NAME"
         echo ""
-        echo -e "${CYAN}Files${NC}"
-        echo "  Public index:         $PUBLIC_INDEX"
-        echo "  Blessed comments:     $BLESSED_COMMENTS"
-        echo "  Following:            $FOLLOWING_INDEX"
+        echo -e "${CYAN}Paths${NC}"
+        echo "  Public index:          $PUBLIC_INDEX"
+        echo "  Blessed comments:      $BLESSED_COMMENTS"
+        echo "  Following:             $FOLLOWING_INDEX"
+        echo "  Manifest:              $MANIFEST"
         echo ""
         echo -e "${CYAN}Keys${NC}"
         if [ "$key_exists" = true ]; then
-            echo "  Status:               initialized"
-            echo "  Fingerprint:          $key_fingerprint"
+            echo "  Status:                initialized"
+            echo "  Fingerprint:           $key_fingerprint"
         else
-            echo "  Status:               not initialized"
+            echo "  Status:                not initialized"
         fi
-        echo ""
-        echo -e "${CYAN}Metadata Versions${NC}"
-        echo "  .well-known/polis:    $wellknown_version"
-        echo "  following.json:       $following_version"
-        echo "  blessed-comments.json: $blessings_version"
         echo ""
     fi
 }
@@ -4628,6 +5018,9 @@ signature: $signature
     # Append to public.jsonl index
     append_to_index "$canonical_path" "post"
 
+    # Regenerate manifest.json
+    generate_manifest true
+
     # Output results
     if [ "$JSON_MODE" = true ]; then
         # Build canonical URL
@@ -5144,6 +5537,419 @@ cmd_notifications() {
             echo ""
             info "Run 'polis migrations apply' to update local references."
         fi
+    fi
+}
+
+# ============================================================================
+# CLONE COMMAND
+# ============================================================================
+
+# Full clone: download all content from remote polis site
+clone_full() {
+    local server_url="$1"
+    local target_dir="$2"
+
+    # Create target directory
+    mkdir -p "$target_dir"
+
+    # Fetch and save .well-known/polis
+    info_human "Fetching author metadata..."
+    local wellknown_content=$(fetch_remote_content "${server_url}/.well-known/polis")
+    if [ -z "$wellknown_content" ]; then
+        json_error "clone" "FETCH_ERROR" "Failed to fetch .well-known/polis from $server_url"
+    fi
+    mkdir -p "$target_dir/.well-known"
+    echo "$wellknown_content" > "$target_dir/.well-known/polis"
+
+    # Get config paths from .well-known/polis
+    local public_index_path=$(echo "$wellknown_content" | jq -r '.config.files.public_index // "metadata/public.jsonl"')
+    local blessed_comments_path=$(echo "$wellknown_content" | jq -r '.config.files.blessed_comments // "metadata/blessed-comments.json"')
+    local following_path=$(echo "$wellknown_content" | jq -r '.config.files.following // "metadata/following.json"')
+
+    # Fetch public.jsonl manifest
+    info_human "Fetching content manifest..."
+    local manifest_content=$(fetch_remote_content "${server_url}/${public_index_path}")
+
+    if [ -z "$manifest_content" ]; then
+        json_error "clone" "FETCH_ERROR" "Failed to fetch manifest from $server_url/$public_index_path"
+    fi
+
+    mkdir -p "$target_dir/metadata"
+    echo "$manifest_content" > "$target_dir/${public_index_path}"
+
+    # Track statistics
+    local posts_downloaded=0
+    local comments_downloaded=0
+    local versions_downloaded=0
+    local html_downloaded=0
+    local errors=0
+    local state_entries="[]"
+
+    # Process each entry in manifest (JSONL format)
+    info_human "Downloading content files..."
+    while IFS= read -r entry; do
+        [ -z "$entry" ] && continue
+
+        local entry_type=$(echo "$entry" | jq -r '.type // "post"')
+        local entry_path=$(echo "$entry" | jq -r '.path // empty')
+        local entry_version=$(echo "$entry" | jq -r '.current_version // empty')
+
+        if [ -z "$entry_path" ]; then
+            continue
+        fi
+
+        # Download content file
+        if clone_single_file "$server_url" "$target_dir" "$entry_path"; then
+            if [ "$entry_type" = "post" ]; then
+                posts_downloaded=$((posts_downloaded + 1))
+            else
+                comments_downloaded=$((comments_downloaded + 1))
+            fi
+
+            # Track state entry
+            state_entries=$(echo "$state_entries" | jq --arg path "$entry_path" --arg version "$entry_version" \
+                '. + [{path: $path, version: $version}]')
+
+            # Download version history (optional, don't fail if missing)
+            local versions_path=$(get_versions_path_for_clone "$entry_path")
+            if clone_single_file "$server_url" "$target_dir" "$versions_path" 2>/dev/null; then
+                versions_downloaded=$((versions_downloaded + 1))
+            fi
+
+            # Try to download HTML version (optional)
+            local html_path="${entry_path%.md}.html"
+            if clone_single_file "$server_url" "$target_dir" "$html_path" 2>/dev/null; then
+                html_downloaded=$((html_downloaded + 1))
+            fi
+        else
+            errors=$((errors + 1))
+            warn_human "Failed to download: $entry_path"
+        fi
+    done <<< "$manifest_content"
+
+    # Fetch following.json (optional)
+    local following_content=$(fetch_remote_content "${server_url}/${following_path}")
+    if [ -n "$following_content" ] && [ "$following_content" != "null" ]; then
+        echo "$following_content" > "$target_dir/${following_path}"
+    fi
+
+    # Fetch blessed-comments.json
+    info_human "Fetching blessed comments..."
+    local blessed_content=$(fetch_remote_content "${server_url}/${blessed_comments_path}")
+    local blessed_comments_downloaded=0
+    local blessed_urls="[]"
+
+    if [ -n "$blessed_content" ] && [ "$blessed_content" != "null" ]; then
+        echo "$blessed_content" > "$target_dir/${blessed_comments_path}"
+
+        # Download blessed comments from other authors
+        blessed_comments_downloaded=$(clone_blessed_comments "$target_dir" "$blessed_content")
+
+        # Get cached URLs for state
+        if [ -f "$target_dir/.blessed-urls-temp.json" ]; then
+            blessed_urls=$(cat "$target_dir/.blessed-urls-temp.json")
+            rm -f "$target_dir/.blessed-urls-temp.json"
+        fi
+    fi
+
+    # Write state file
+    write_clone_state "$target_dir" "$server_url" "$state_entries" "$blessed_urls"
+
+    # Output results
+    if [ "$JSON_MODE" = true ]; then
+        local result=$(jq -n \
+            --arg mode "full" \
+            --arg server "$server_url" \
+            --arg target "$target_dir" \
+            --argjson posts "$posts_downloaded" \
+            --argjson comments "$comments_downloaded" \
+            --argjson versions "$versions_downloaded" \
+            --argjson html "$html_downloaded" \
+            --argjson blessed "$blessed_comments_downloaded" \
+            --argjson errors "$errors" \
+            '{
+                mode: $mode,
+                server_url: $server,
+                target_dir: $target,
+                posts_downloaded: $posts,
+                comments_downloaded: $comments,
+                versions_downloaded: $versions,
+                html_downloaded: $html,
+                blessed_comments_cached: $blessed,
+                errors: $errors
+            }')
+        json_success "clone" "$result"
+    else
+        success "Clone complete!"
+        info "  Posts downloaded: $posts_downloaded"
+        info "  Comments downloaded: $comments_downloaded"
+        info "  Version histories: $versions_downloaded"
+        info "  HTML files: $html_downloaded"
+        info "  Blessed comments cached: $blessed_comments_downloaded"
+        [ "$errors" -gt 0 ] && warn "  Errors: $errors"
+        info "  Target directory: $target_dir"
+    fi
+}
+
+# Incremental clone: only download new/changed content
+clone_diff() {
+    local server_url="$1"
+    local target_dir="$2"
+
+    # Load existing state
+    local state_file="$target_dir/.polis-clone-state.json"
+    if [ ! -f "$state_file" ]; then
+        warn_human "No state file found, falling back to full clone"
+        clone_full "$server_url" "$target_dir"
+        return
+    fi
+
+    local old_state=$(cat "$state_file")
+
+    # Fetch current manifest
+    info_human "Fetching current manifest..."
+    local wellknown_content=$(fetch_remote_content "${server_url}/.well-known/polis")
+    if [ -z "$wellknown_content" ]; then
+        json_error "clone" "FETCH_ERROR" "Failed to fetch .well-known/polis from $server_url"
+    fi
+
+    local public_index_path=$(echo "$wellknown_content" | jq -r '.config.files.public_index // "metadata/public.jsonl"')
+    local blessed_comments_path=$(echo "$wellknown_content" | jq -r '.config.files.blessed_comments // "metadata/blessed-comments.json"')
+
+    local manifest_content=$(fetch_remote_content "${server_url}/${public_index_path}")
+    if [ -z "$manifest_content" ]; then
+        json_error "clone" "FETCH_ERROR" "Failed to fetch manifest from $server_url/$public_index_path"
+    fi
+
+    # Track statistics
+    local new_files=0
+    local updated_files=0
+    local unchanged_files=0
+    local versions_downloaded=0
+    local html_downloaded=0
+    local errors=0
+    local state_entries="[]"
+
+    # Process each entry
+    info_human "Checking for changes..."
+    while IFS= read -r entry; do
+        [ -z "$entry" ] && continue
+
+        local entry_path=$(echo "$entry" | jq -r '.path // empty')
+        local entry_version=$(echo "$entry" | jq -r '.current_version // empty')
+        local entry_type=$(echo "$entry" | jq -r '.type // "post"')
+
+        [ -z "$entry_path" ] && continue
+
+        # Check if file exists in old state
+        local old_version=$(echo "$old_state" | jq -r --arg path "$entry_path" \
+            '.entries[] | select(.path == $path) | .version // empty')
+
+        local should_download=false
+        local is_new=false
+
+        if [ -z "$old_version" ]; then
+            # New file
+            should_download=true
+            is_new=true
+        elif [ "$old_version" != "$entry_version" ]; then
+            # Version changed - verify with local hash if file exists
+            if [ -f "$target_dir/$entry_path" ]; then
+                local local_hash=$(hash_content_canonical "$target_dir/$entry_path")
+                local remote_hash="${entry_version#sha256:}"
+
+                if [ "$local_hash" != "$remote_hash" ]; then
+                    should_download=true
+                fi
+            else
+                should_download=true
+                is_new=true
+            fi
+        fi
+
+        if [ "$should_download" = true ]; then
+            if clone_single_file "$server_url" "$target_dir" "$entry_path"; then
+                if [ "$is_new" = true ]; then
+                    new_files=$((new_files + 1))
+                else
+                    updated_files=$((updated_files + 1))
+                fi
+
+                # Download version history and HTML
+                local versions_path=$(get_versions_path_for_clone "$entry_path")
+                if clone_single_file "$server_url" "$target_dir" "$versions_path" 2>/dev/null; then
+                    versions_downloaded=$((versions_downloaded + 1))
+                fi
+
+                local html_path="${entry_path%.md}.html"
+                if clone_single_file "$server_url" "$target_dir" "$html_path" 2>/dev/null; then
+                    html_downloaded=$((html_downloaded + 1))
+                fi
+            else
+                errors=$((errors + 1))
+            fi
+        else
+            unchanged_files=$((unchanged_files + 1))
+        fi
+
+        # Track state entry
+        state_entries=$(echo "$state_entries" | jq --arg path "$entry_path" --arg version "$entry_version" \
+            '. + [{path: $path, version: $version}]')
+    done <<< "$manifest_content"
+
+    # Update metadata files
+    mkdir -p "$target_dir/.well-known" "$target_dir/metadata"
+    echo "$wellknown_content" > "$target_dir/.well-known/polis"
+    echo "$manifest_content" > "$target_dir/${public_index_path}"
+
+    # Update blessed comments
+    info_human "Syncing blessed comments..."
+    local blessed_content=$(fetch_remote_content "${server_url}/${blessed_comments_path}")
+    local blessed_updated=0
+    local blessed_urls="[]"
+
+    if [ -n "$blessed_content" ] && [ "$blessed_content" != "null" ]; then
+        echo "$blessed_content" > "$target_dir/${blessed_comments_path}"
+
+        # Get previously cached URLs
+        local old_cached=$(echo "$old_state" | jq -r '.blessed_comments_cached // []')
+
+        # Check each blessed comment
+        local cache_dir="$target_dir/.blessed-comments-cache"
+        mkdir -p "$cache_dir"
+        local cached_urls=()
+
+        while IFS= read -r comment_entry; do
+            [ -z "$comment_entry" ] && continue
+
+            local comment_url=$(echo "$comment_entry" | jq -r '.url // empty')
+            local comment_version=$(echo "$comment_entry" | jq -r '.version // empty')
+
+            [ -z "$comment_url" ] && continue
+
+            # Check if already cached
+            local is_cached=$(echo "$old_cached" | jq -r --arg url "$comment_url" \
+                'if . | type == "array" then (. | index($url) != null) else false end')
+
+            if [ "$is_cached" != "true" ]; then
+                # New comment, download it
+                local comment_content=$(fetch_remote_content "$comment_url")
+                if [ -n "$comment_content" ]; then
+                    local url_hash=$(echo -n "$comment_url" | sha256sum | cut -c1-16)
+                    echo "$comment_content" > "$cache_dir/${url_hash}.md"
+                    jq -nc --arg url "$comment_url" --arg version "$comment_version" \
+                        --arg cached_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+                        '{url: $url, version: $version, cached_at: $cached_at}' \
+                        > "$cache_dir/${url_hash}.json"
+                    blessed_updated=$((blessed_updated + 1))
+                fi
+            fi
+            cached_urls+=("$comment_url")
+        done < <(echo "$blessed_content" | jq -c '.comments[].blessed[]' 2>/dev/null)
+
+        blessed_urls=$(printf '%s\n' "${cached_urls[@]}" | jq -R . | jq -s .)
+    fi
+
+    # Update state file
+    write_clone_state "$target_dir" "$server_url" "$state_entries" "$blessed_urls"
+
+    # Output results
+    if [ "$JSON_MODE" = true ]; then
+        local result=$(jq -n \
+            --arg mode "diff" \
+            --arg server "$server_url" \
+            --arg target "$target_dir" \
+            --argjson new "$new_files" \
+            --argjson updated "$updated_files" \
+            --argjson unchanged "$unchanged_files" \
+            --argjson versions "$versions_downloaded" \
+            --argjson html "$html_downloaded" \
+            --argjson blessed "$blessed_updated" \
+            --argjson errors "$errors" \
+            '{
+                mode: $mode,
+                server_url: $server,
+                target_dir: $target,
+                new_files: $new,
+                updated_files: $updated,
+                unchanged_files: $unchanged,
+                versions_downloaded: $versions,
+                html_downloaded: $html,
+                blessed_comments_synced: $blessed,
+                errors: $errors
+            }')
+        json_success "clone" "$result"
+    else
+        success "Incremental sync complete!"
+        info "  New files: $new_files"
+        info "  Updated files: $updated_files"
+        info "  Unchanged: $unchanged_files"
+        info "  Version histories: $versions_downloaded"
+        info "  HTML files: $html_downloaded"
+        info "  Blessed comments synced: $blessed_updated"
+        [ "$errors" -gt 0 ] && warn "  Errors: $errors"
+        info "  Target directory: $target_dir"
+    fi
+}
+
+# Main clone command
+cmd_clone() {
+    # Parse arguments
+    local server_url=""
+    local target_dir=""
+    local mode="auto"  # auto, full, diff
+    local positional_args=()
+
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --full)
+                mode="full"
+                shift
+                ;;
+            --diff)
+                mode="diff"
+                shift
+                ;;
+            *)
+                positional_args+=("$1")
+                shift
+                ;;
+        esac
+    done
+
+    server_url="${positional_args[0]:-}"
+    target_dir="${positional_args[1]:-}"
+
+    # Validation
+    if [ -z "$server_url" ]; then
+        json_error "clone" "INVALID_INPUT" "Usage: polis clone <server-url> [target-dir] [--full|--diff]"
+    fi
+
+    # Normalize server URL (ensure https, remove trailing slash)
+    server_url=$(normalize_server_url "$server_url")
+
+    # Derive target directory from domain if not specified
+    if [ -z "$target_dir" ]; then
+        target_dir=$(extract_domain_for_clone "$server_url")
+    fi
+
+    # Determine mode: if state file exists, default to diff; otherwise full
+    if [ "$mode" = "auto" ]; then
+        if [ -f "$target_dir/.polis-clone-state.json" ]; then
+            mode="diff"
+            info_human "Previous clone found, using incremental mode (use --full to re-download all)"
+        else
+            mode="full"
+        fi
+    fi
+
+    info_human "Cloning $server_url to $target_dir (mode: $mode)..."
+
+    # Execute clone
+    if [ "$mode" = "full" ]; then
+        clone_full "$server_url" "$target_dir"
+    else
+        clone_diff "$server_url" "$target_dir"
     fi
 }
 
@@ -5703,7 +6509,12 @@ render_file() {
 
     # Skip if output is newer than input (unless force)
     if [ "$force" != "true" ] && [ -f "$output_file" ] && [ "$output_file" -nt "$input_file" ]; then
-        return 1  # Skipped
+        # For posts, also check if blessed-comments.json is newer (new comments to render)
+        if [ "$type" = "post" ] && [ -f "$BLESSED_COMMENTS" ] && [ "$BLESSED_COMMENTS" -nt "$output_file" ]; then
+            : # Don't skip - blessed comments may have changed
+        else
+            return 1  # Skipped
+        fi
     fi
 
     # Check pandoc availability
@@ -5956,6 +6767,9 @@ cmd_render() {
     render_index
     info_human "Generated: index.html"
 
+    # Regenerate manifest.json
+    generate_manifest true
+
     # Output
     if [ "$JSON_MODE" = true ]; then
         local result=$(jq -n \
@@ -6030,6 +6844,12 @@ main() {
         index)
             cmd_index "$@"
             ;;
+        manifest)
+            cmd_manifest "$@"
+            ;;
+        discover)
+            cmd_discover "$@"
+            ;;
         version)
             cmd_version "$@"
             ;;
@@ -6074,6 +6894,9 @@ main() {
         render)
             cmd_render "$@"
             ;;
+        clone)
+            cmd_clone "$@"
+            ;;
         *)
             echo "Polis - Decentralized Social Network CLI"
             echo ""
@@ -6102,12 +6925,23 @@ main() {
             echo "  polis follow <author-url>       Follow an author (auto-bless their comments)"
             echo "  polis unfollow <author-url>     Unfollow an author"
             echo ""
+            echo "Commands related to content discovery:"
+            echo "  polis discover                  Check followed authors for new content"
+            echo "  polis discover --author <url>   Check a specific author"
+            echo "  polis discover --since <date>   Show items since date (ignores last_checked)"
+            echo "  polis manifest                  Regenerate manifest.json (auto-runs on publish)"
+            echo ""
             echo "Commands related to site administration:"
             echo "  polis render [--force]          Render markdown posts and comments to HTML"
             echo "  polis render --init-templates   Create .polis/templates/ with default templates for customization"
             echo "  polis notifications             Show pending actions (blessing requests, domain migrations)"
             echo "  polis migrate <new-domain>      Migrate all content to a new domain (re-signs files, updates DB)"
             echo "  polis migrations apply          Apply discovered domain migrations to local files"
+            echo ""
+            echo "Commands related to cloning remote polis sites:"
+            echo "  polis clone <url> [dir]         Clone a public polis site for local analysis"
+            echo "  polis clone <url> --full        Re-download all content (ignore cached state)"
+            echo "  polis clone <url> --diff        Only download new/changed content (default if previously cloned)"
             echo ""
             echo "Commands related to local configuration management:"
             echo "  polis init [options]            Initialize Polis directory structure"

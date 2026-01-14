@@ -202,14 +202,26 @@ open_in_browser() {
 # Inline menu selection - the core UI function
 # Returns selected tag via stdout (all display goes to fd 3 = terminal)
 # Uses fd 3 so display works even when stderr is redirected (e.g., --log 3)
+# Supports optional refresh callback for background data updates
 # Usage: choice=$(inline_select "Prompt" "tag1" "desc1" "tag2" "desc2" ...)
+# With refresh: choice=$(inline_select "Prompt" --refresh callback_fn "tag1" "desc1" ...)
 inline_select() {
     local prompt="$1"
     shift
+
+    # Check for --refresh flag
+    local refresh_callback=""
+    if [[ "$1" == "--refresh" ]]; then
+        refresh_callback="$2"
+        shift 2
+    fi
+
     local items=("$@")
     local count=$((${#items[@]} / 2))
     local selected=0
     local first_draw=1
+    local need_full_redraw=0
+    local need_redraw=1  # Start with redraw needed
 
     [[ $count -eq 0 ]] && return 1
 
@@ -219,41 +231,104 @@ inline_select() {
     # Hide cursor during selection
     printf "${CURSOR_HIDE}" >&3
 
-    # Selection loop - redraw menu on each iteration
+    # Selection loop - only redraw when needed
     while true; do
-        # Move cursor up to redraw menu (skip on first draw)
-        if [[ $first_draw -eq 0 ]]; then
-            # Move up: count items + 1 hint line, but cursor is on hint line so just count
-            printf "\033[%dA\r" "$count" >&3
+        # Handle full redraw (after refresh callback)
+        if [[ $need_full_redraw -eq 1 ]]; then
+            # Move up past the old menu + prompt to redraw everything
+            local lines_to_clear=$((count + 3))  # menu items + hint + prompt + blank
+            printf "\033[%dA" "$lines_to_clear" >&3
+            for ((i = 0; i < lines_to_clear; i++)); do
+                printf "\r${CLEAR_LINE}\n" >&3
+            done
+            printf "\033[%dA" "$lines_to_clear" >&3
+
+            # Reprint prompt
+            [[ -n "$prompt" ]] && echo -e "\n${BOLD}$prompt${NC}\n" >&3
+            first_draw=1
+            need_full_redraw=0
+            need_redraw=1
         fi
-        first_draw=0
 
-        # Draw all menu items (clearing each line first)
-        for ((i = 0; i < count; i++)); do
-            local label="${items[$((i * 2 + 1))]}"
-            local num=$((i + 1))
-            printf "\r${CLEAR_LINE}" >&3
-            if [[ $i -eq $selected ]]; then
-                printf "  ${REVERSE} %d. %s ${NC}" "$num" "$label" >&3
-            else
-                printf "  ${DIM}%d.${NC} %s" "$num" "$label" >&3
+        # Only redraw menu when something changed
+        if [[ $need_redraw -eq 1 ]]; then
+            # Move cursor up to redraw menu (skip on first draw)
+            if [[ $first_draw -eq 0 ]]; then
+                # Move up: count items + 1 hint line, but cursor is on hint line so just count
+                printf "\033[%dA\r" "$count" >&3
             fi
-            printf "\n" >&3
-        done
+            first_draw=0
 
-        # Print navigation hint (no newline - cursor stays here)
-        printf "\r${CLEAR_LINE}${DIM}(↑/↓ navigate, 1-%d select, Enter confirm, q cancel)${NC}" "$count" >&3
+            # Draw all menu items (clearing each line first)
+            for ((i = 0; i < count; i++)); do
+                local label="${items[$((i * 2 + 1))]}"
+                local num=$((i + 1))
+                printf "\r${CLEAR_LINE}" >&3
+                if [[ $i -eq $selected ]]; then
+                    printf "  ${REVERSE} %d. %s ${NC}" "$num" "$label" >&3
+                else
+                    printf "  ${DIM}%d.${NC} %s" "$num" "$label" >&3
+                fi
+                printf "\n" >&3
+            done
 
-        # Read key
-        local key
-        key=$(read_key)
+            # Print navigation hint (no newline - cursor stays here)
+            printf "\r${CLEAR_LINE}${DIM}(↑/↓ navigate, 1-%d select, Enter confirm, q cancel)${NC}" "$count" >&3
+
+            need_redraw=0
+        fi
+
+        # Read key with timeout (0.5s) to allow refresh checks
+        local key=""
+        IFS= read -rsn1 -t 0.5 key
+        local read_status=$?
+
+        # Handle timeout - check for refresh signal
+        if [[ $read_status -eq 142 ]] || [[ -z "$key" && $read_status -ne 0 ]]; then
+            if [[ -n "$refresh_callback" ]] && has_refresh_signal; then
+                clear_refresh_signal
+                # Call callback to get updated data
+                local new_data
+                new_data=$($refresh_callback)
+                if [[ -n "$new_data" ]]; then
+                    # Parse callback output: first line is prompt, rest are tag|label pairs
+                    local new_prompt new_items=()
+                    new_prompt=$(echo "$new_data" | head -1)
+                    while IFS='|' read -r tag label; do
+                        [[ -n "$tag" ]] && new_items+=("$tag" "$label")
+                    done < <(echo "$new_data" | tail -n +2)
+
+                    if [[ ${#new_items[@]} -gt 0 ]]; then
+                        prompt="$new_prompt"
+                        items=("${new_items[@]}")
+                        count=$((${#items[@]} / 2))
+                        # Clamp selection if count changed
+                        [[ $selected -ge $count ]] && selected=$((count - 1))
+                        need_full_redraw=1
+                    fi
+                fi
+            fi
+            continue
+        fi
+
+        # Handle escape sequences (arrow keys)
+        if [[ "$key" == $'\x1b' ]]; then
+            read -rsn2 -t 0.1 key 2>/dev/null || true
+            case "$key" in
+                '[A') key="up" ;;
+                '[B') key="down" ;;
+                *) key="escape" ;;
+            esac
+        fi
 
         case "$key" in
             k|up)
                 ((selected = (selected - 1 + count) % count))
+                need_redraw=1
                 ;;
             j|down)
                 ((selected = (selected + 1) % count))
+                need_redraw=1
                 ;;
             [1-9])
                 if [[ $key -le $count ]]; then
@@ -691,6 +766,45 @@ do_render() {
     wait_for_key
 }
 
+# Run polis manifest
+do_manifest() {
+    header "REGENERATE MANIFEST"
+    echo ""
+
+    info "Regenerating manifest.json..."
+    run_polis_human manifest 2>&1
+
+    echo ""
+    wait_for_key
+}
+
+# Admin menu for maintenance operations
+do_admin() {
+    while true; do
+        local choice
+        choice=$(inline_select "Admin" \
+            "manifest" "Regenerate manifest.json" \
+            "render"   "Rebuild site (polis render)" \
+            "render_force" "Rebuild site (force re-render all)" \
+            || true)
+
+        case "$choice" in
+            manifest)
+                do_manifest
+                ;;
+            render)
+                do_render
+                ;;
+            render_force)
+                do_render "--force"
+                ;;
+            *)
+                return 0
+                ;;
+        esac
+    done
+}
+
 # =============================================================================
 # DASHBOARD
 # =============================================================================
@@ -709,7 +823,7 @@ fetch_stats() {
 
     # Count following
     if [[ -f "metadata/following.json" ]]; then
-        following_count=$(jq 'length' "metadata/following.json" 2>/dev/null || echo 0)
+        following_count=$(jq '.following | length' "metadata/following.json" 2>/dev/null || echo 0)
     fi
 
     # Fetch pending blessings (with timeout to avoid blocking startup)
@@ -725,12 +839,50 @@ fetch_stats() {
     echo "$posts_count $following_count $blessings_count"
 }
 
+# Cache file paths for background stats
+STATS_CACHE_FILE="/tmp/polis-tui-stats-cache"
+STATS_REFRESH_SIGNAL="/tmp/polis-tui-refresh-signal"
+
+# Get cached stats (fast) or placeholder
+get_cached_stats() {
+    if [[ -f "$STATS_CACHE_FILE" ]]; then
+        cat "$STATS_CACHE_FILE"
+    else
+        echo "... ... ..."  # Placeholder while loading
+    fi
+}
+
+# Fetch stats in background and signal when done
+fetch_stats_background() {
+    (
+        # Do the slow fetch
+        local stats
+        stats=$(fetch_stats)
+
+        # Write to cache file
+        echo "$stats" > "$STATS_CACHE_FILE"
+
+        # Signal that refresh is available
+        touch "$STATS_REFRESH_SIGNAL"
+    ) &
+}
+
+# Clear refresh signal (call after handling refresh)
+clear_refresh_signal() {
+    rm -f "$STATS_REFRESH_SIGNAL"
+}
+
+# Check if refresh signal exists
+has_refresh_signal() {
+    [[ -f "$STATS_REFRESH_SIGNAL" ]]
+}
+
 # Build stats description string for dashboard
+# Accepts optional pre-fetched stats to avoid duplicate API calls
 build_stats_text() {
-    local stats
-    stats=$(fetch_stats)
-    local posts_count following_count blessings_count
-    read -r posts_count following_count blessings_count <<< "$stats"
+    local posts_count="${1:-0}"
+    local following_count="${2:-0}"
+    local blessings_count="${3:-0}"
 
     local stats_text="Posts: $posts_count | Following: $following_count | Blessings: $blessings_count"
 
@@ -748,28 +900,70 @@ build_stats_text() {
     echo "$stats_text"
 }
 
-# Show main menu and return selected action
-show_main_menu() {
-    local stats_text
-    stats_text=$(build_stats_text)
-
-    # Get blessing count for menu item
+# Refresh callback for main menu - returns updated menu data
+# Output format: first line is stats text, remaining lines are tag|label pairs
+_main_menu_refresh_callback() {
     local stats
-    stats=$(fetch_stats)
+    stats=$(get_cached_stats)
     local posts_count following_count blessings_count
     read -r posts_count following_count blessings_count <<< "$stats"
 
+    local stats_text
+    stats_text=$(build_stats_text "$posts_count" "$following_count" "$blessings_count")
+
     local blessing_desc="Review blessings"
-    if [[ "$blessings_count" -gt 0 ]]; then
+    if [[ "$blessings_count" != "..." && "$blessings_count" -gt 0 ]]; then
         blessing_desc="Review blessings ($blessings_count pending)"
     fi
 
-    inline_select "$stats_text" \
+    # Output in expected format
+    echo "$stats_text"
+    echo "publish|Publish new post"
+    echo "comment|Comment on a post"
+    echo "blessings|$blessing_desc"
+    echo "discover|Discover content"
+    echo "preview|Preview a URL"
+    echo "admin|Admin"
+    echo "refresh|Refresh"
+    echo "about|About"
+    echo "quit|Quit"
+}
+
+# Track if background fetch has been started
+STATS_FETCH_STARTED=""
+
+# Show main menu and return selected action
+show_main_menu() {
+    # Start background fetch on first call (only once per session)
+    if [[ -z "$STATS_FETCH_STARTED" ]]; then
+        # Clear any stale signal from previous run
+        clear_refresh_signal
+        fetch_stats_background
+        STATS_FETCH_STARTED=1
+    fi
+
+    # Use cached stats for instant display
+    local stats
+    stats=$(get_cached_stats)
+    local posts_count following_count blessings_count
+    read -r posts_count following_count blessings_count <<< "$stats"
+
+    # Build stats text using cached values
+    local stats_text
+    stats_text=$(build_stats_text "$posts_count" "$following_count" "$blessings_count")
+
+    local blessing_desc="Review blessings"
+    if [[ "$blessings_count" != "..." && "$blessings_count" -gt 0 ]]; then
+        blessing_desc="Review blessings ($blessings_count pending)"
+    fi
+
+    inline_select "$stats_text" --refresh _main_menu_refresh_callback \
         "publish"   "Publish new post" \
         "comment"   "Comment on a post" \
         "blessings" "$blessing_desc" \
         "discover"  "Discover content" \
         "preview"   "Preview a URL" \
+        "admin"     "Admin" \
         "refresh"   "Refresh" \
         "about"     "About" \
         "quit"      "Quit" \
@@ -1179,6 +1373,41 @@ do_discover() {
         return 0
     fi
 
+    while true; do
+        # Show discover menu
+        local choice
+        choice=$(inline_select "Discover ($following_count authors)" \
+            "check" "Check for new content" \
+            "browse" "Browse followed authors" \
+            || true)
+
+        case "$choice" in
+            check)
+                do_discover_check
+                ;;
+            browse)
+                do_discover_browse
+                ;;
+            *)
+                return 0
+                ;;
+        esac
+    done
+}
+
+# Check followed authors for new content using polis discover
+do_discover_check() {
+    header "CHECKING FOR NEW CONTENT"
+    echo ""
+
+    run_polis_human discover
+
+    echo ""
+    wait_for_key
+}
+
+# Browse followed authors list
+do_discover_browse() {
     # Build list for ui_list_select
     local list_items=()
 
@@ -1194,6 +1423,9 @@ do_discover() {
 
         list_items+=("$author_url" "$name ($author_url)")
     done < <(jq -c '.following[]' "metadata/following.json" 2>/dev/null)
+
+    local following_count=${#list_items[@]}
+    following_count=$((following_count / 2))
 
     while true; do
         # Show list selection
@@ -1541,7 +1773,13 @@ main() {
             blessings) do_blessings ;;
             discover) do_discover ;;
             preview) do_preview ;;
-            refresh) continue ;;
+            admin) do_admin ;;
+            refresh)
+                # Force re-fetch stats on manual refresh
+                STATS_FETCH_STARTED=""
+                rm -f "$STATS_CACHE_FILE"
+                continue
+                ;;
             about) do_about ;;
             quit|"") cleanup ;;
             *) ;;

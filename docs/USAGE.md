@@ -86,11 +86,11 @@ polis comment comments/reply.md ${POLIS_BASE_URL}/posts/$(date +%Y%m%d)/hello.md
 # 7. View pending blessing requests
 polis blessing requests
 
-# 8. Grant the blessing (using the comment ID from step 7)
-polis blessing grant <comment-id>
+# 8. Grant the blessing (using the comment hash from step 7)
+polis blessing grant <comment-hash>
 
 # Alternatively, deny a blessing:
-# polis blessing deny <comment-id>
+# polis blessing deny <comment-hash>
 
 # 9. Set up git for your content
 git init
@@ -530,8 +530,79 @@ polis version
 
 **Example output:**
 ```
-polis 0.2.0
+polis 0.22.0
 ```
+
+### `polis about`
+
+Display branded information about Polis including version numbers and project links.
+
+```bash
+polis about
+```
+
+**Example output:**
+```
+Polis - Decentralized Social Networking
+Your content, free from platform control
+
+────────────────────────────────────────
+  CLI version:          0.22.0
+  Site version:         0.22.0
+  Following version:    0.1.0
+  Blessings version:    0.1.0
+
+  Your site:            https://example.com
+────────────────────────────────────────
+  Project:  https://github.com/anthropics/polis
+  License:  AGPL v3
+```
+
+**Note:** This command is human-readable only. For scripted access to configuration, use `polis config --json`.
+
+### `polis config`
+
+Display current configuration including CLI version, environment variables, directory paths, and key information.
+
+```bash
+# Human-readable output
+polis config
+
+# JSON output for scripting
+polis --json config
+polis config --json
+```
+
+**Example output:**
+```
+Polis Configuration
+════════════════════════════════════════
+
+CLI
+  Version:              0.22.0
+
+Environment
+  POLIS_BASE_URL:       https://example.com
+  POLIS_ENDPOINT_BASE:  https://xxx.supabase.co/functions/v1
+  DISCOVERY_SERVICE_KEY: [set]
+
+Directories
+  Keys:                 .polis/keys
+  Posts:                posts
+  Comments:             comments
+  Versions:             .versions
+
+Files
+  Public index:         metadata/public.jsonl
+  Blessed comments:     metadata/blessed-comments.json
+  Following:            metadata/following.json
+
+Keys
+  Status:               initialized
+  Fingerprint:          SHA256:abc123...
+```
+
+**JSON mode:** See [JSON-MODE.md](JSON-MODE.md) for the full JSON response format.
 
 ### `polis render [--force]`
 
@@ -690,12 +761,12 @@ ID    Author              Post                    Status
 73    carol@example.com   /posts/hello.md         pending
 ```
 
-#### `polis blessing grant <id>`
+#### `polis blessing grant <hash>`
 
-Approve a pending blessing request.
+Approve a pending blessing request by content hash.
 
 ```bash
-polis blessing grant 42
+polis blessing grant abc123-def456
 ```
 
 **What it does:**
@@ -703,24 +774,24 @@ polis blessing grant 42
 2. Adds entry to `metadata/blessed-comments.json`
 3. Comment becomes visible to your audience
 
-#### `polis blessing deny <id>`
+#### `polis blessing deny <hash>`
 
-Reject a pending blessing request.
+Reject a pending blessing request by content hash.
 
 ```bash
-polis blessing deny 42
+polis blessing deny abc123-def456
 ```
 
 **What it does:**
 1. Updates discovery service status to "denied"
 2. Comment remains on author's site but won't be amplified
 
-#### `polis blessing beseech <id>`
+#### `polis blessing beseech <hash>`
 
-Re-request blessing for a comment (retry after changes).
+Re-request blessing for a comment by content hash (retry after changes).
 
 ```bash
-polis blessing beseech 42
+polis blessing beseech abc123-def456
 ```
 
 **Use when:**
@@ -937,10 +1008,11 @@ The Polis CLI supports a `--json` flag for machine-readable output, enabling scr
 
 ### Usage
 
-Add `--json` before any command:
+Add `--json` before or after the command:
 
 ```bash
 polis --json <command> [options]
+polis <command> --json [options]   # Also works
 ```
 
 ### Features
@@ -1056,7 +1128,7 @@ git push origin main
 
 # If you do need to retry a blessing request:
 polis blessing requests           # View pending requests
-polis blessing beseech <id>       # Retry request by ID
+polis blessing beseech <hash>     # Retry request by hash
 ```
 
 ## Common Use Cases

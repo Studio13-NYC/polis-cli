@@ -2,7 +2,14 @@
 
 ## Feature Description
 
-JSON Mode adds machine-readable output to all polis CLI commands via a global `--json` flag. This enables:
+JSON Mode adds machine-readable output to all polis CLI commands via a global `--json` flag. The flag can be placed at the **start or end** of the command:
+
+```bash
+polis --json publish article.md   # Flag at start
+polis publish article.md --json   # Flag at end (also works)
+```
+
+This enables:
 
 - **Scriptable workflows** - Chain commands together programmatically
 - **Error handling** - Structured error codes for better automation
@@ -135,6 +142,50 @@ When interactive prompts are auto-skipped in JSON mode, these defaults are used:
   }
 }
 ```
+
+### `polis config`
+
+Returns current configuration including CLI version, environment variables, directory paths, and key information.
+
+```json
+{
+  "status": "success",
+  "command": "config",
+  "data": {
+    "cli": {
+      "version": "0.22.0"
+    },
+    "environment": {
+      "POLIS_BASE_URL": "https://example.com",
+      "POLIS_ENDPOINT_BASE": "https://xxx.supabase.co/functions/v1",
+      "DISCOVERY_SERVICE_KEY": "[set]"
+    },
+    "directories": {
+      "keys": ".polis/keys",
+      "posts": "posts",
+      "comments": "comments",
+      "versions": ".versions"
+    },
+    "files": {
+      "public_index": "metadata/public.jsonl",
+      "blessed_comments": "metadata/blessed-comments.json",
+      "following": "metadata/following.json"
+    },
+    "keys": {
+      "exists": true,
+      "fingerprint": "SHA256:abc123...",
+      "public_key_file": ".polis/keys/id_ed25519.pub"
+    },
+    "metadata_versions": {
+      "well_known_polis": "0.22.0",
+      "following": "0.1.0",
+      "blessed_comments": "0.1.0"
+    }
+  }
+}
+```
+
+Note: Sensitive values like `DISCOVERY_SERVICE_KEY` show `[set]` or `[not set]` instead of the actual value.
 
 ### `polis publish <file>`
 
@@ -274,9 +325,9 @@ When interactive prompts are auto-skipped in JSON mode, these defaults are used:
 }
 ```
 
-### `polis blessing beseech <id>`
+### `polis blessing beseech <hash>`
 
-Re-request blessing for a comment by database ID.
+Re-request blessing for a comment by its content hash (short form like `abc123-def456` or full SHA256).
 
 ```json
 {
@@ -284,7 +335,7 @@ Re-request blessing for a comment by database ID.
   "command": "blessing-beseech",
   "data": {
     "comment_url": "https://alice.com/comments/reply.md",
-    "comment_version": "sha256:...",
+    "comment_version": "sha256:abc123...",
     "in_reply_to": "https://bob.com/posts/original.md",
     "discovery_response": {
       "success": true,
@@ -303,7 +354,7 @@ If already blessed:
   "command": "blessing-beseech",
   "data": {
     "status": "already_blessed",
-    "comment_id": 42
+    "comment_version": "sha256:abc123..."
   }
 }
 ```

@@ -78,20 +78,21 @@ The `.md` files remain the source of truth. HTML files are regenerated from them
 
 ### Site Information
 
-The templating system reads site information from `.well-known/polis`:
+The templating system reads site information from `metadata/manifest.json`:
 
 ```json
 {
-  "name": "Your Name",
-  "email": "you@example.com",
-  "public_key": "...",
-  "config": {
-    "site_title": "My Polis Site"
-  }
+  "version": "0.25.0",
+  "last_published": "2026-01-14T00:00:00Z",
+  "post_count": 5,
+  "comment_count": 3,
+  "site_title": "My Polis Site"
 }
 ```
 
-If `site_title` is not set, it defaults to the author's name.
+Set the site title during initialization with `polis init --site-title "My Site"`.
+
+If `site_title` is not set, it defaults to the domain from `POLIS_BASE_URL`.
 
 ### Environment Variables
 
@@ -106,7 +107,7 @@ If `site_title` is not set, it defaults to the author's name.
 | Variable | Description | Example |
 |----------|-------------|---------|
 | `{{site_url}}` | Base URL from `POLIS_BASE_URL` | `https://example.com` |
-| `{{site_title}}` | From `.well-known/polis` config or author name | `My Polis Site` |
+| `{{site_title}}` | From `manifest.json` or domain fallback | `My Polis Site` |
 | `{{year}}` | Current year (for copyright) | `2026` |
 
 ### Post and Comment Templates

@@ -154,7 +154,14 @@ Initialize a new Polis directory with keys and metadata.
 
 ```bash
 polis init
+polis init --site-title "My Awesome Blog"
 ```
+
+**Options:**
+- `--site-title <title>` - Set a custom site title for branding (optional)
+- `--posts-dir <dir>` - Custom posts directory (default: `posts`)
+- `--comments-dir <dir>` - Custom comments directory (default: `comments`)
+- `--keys-dir <dir>` - Custom keys directory (default: `.polis/keys`)
 
 **Creates:**
 - `.polis/keys/` - Ed25519 keypair for signing
@@ -164,6 +171,7 @@ polis init
 - `metadata/public.jsonl` - Content index (JSONL format)
 - `metadata/blessed-comments.json` - Blessed comments index
 - `metadata/following.json` - Following list
+- `metadata/manifest.json` - Site metadata (includes `site_title` if provided)
 
 ### `polis publish <file>`
 
@@ -973,12 +981,28 @@ DISCOVERY_SERVICE_KEY=eyJhbGciOiJI...
 
 **Security Note:** Never commit `.env` files containing secrets. The `.env.example` file is safe to commit as a template.
 
+### Site Title
+
+Set a custom site title for branding in rendered HTML and comment attribution:
+
+```bash
+polis init --site-title "My Awesome Blog"
+```
+
+The site title is stored in `metadata/manifest.json` and used:
+- In HTML page titles and headers (`{{site_title}}` template variable)
+- When displaying your comments on other people's posts
+- In `polis about` and `polis config` output
+
+If not set, the domain from `POLIS_BASE_URL` is used as a fallback.
+
 ### Custom Directory Paths
 
 You can customize directory paths during initialization:
 
 ```bash
 polis init --posts-dir articles --comments-dir replies
+polis init --site-title "My Blog" --posts-dir articles
 ```
 
 Or edit the `config` section in `.well-known/polis` after initialization:

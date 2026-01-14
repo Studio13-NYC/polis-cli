@@ -28,7 +28,7 @@ set -e
 #   4. Hardcoded defaults
 
 # Fixed constants (never configurable - required for discovery)
-VERSION="0.24.0"
+VERSION="0.25.0"
 WELL_KNOWN_DIR=".well-known"
 WELL_KNOWN_FILE="polis"
 
@@ -223,6 +223,7 @@ cmd_init() {
     local custom_blessed_comments=""
     local custom_following_index=""
     local custom_versions_dir=""
+    local custom_site_title=""
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -252,6 +253,10 @@ cmd_init() {
                 ;;
             --versions-dir)
                 custom_versions_dir="$2"
+                shift 2
+                ;;
+            --site-title)
+                custom_site_title="$2"
                 shift 2
                 ;;
             *)
@@ -353,14 +358,29 @@ EOF
 
     # Create initial manifest.json
     local manifest_path="$metadata_dir/manifest.json"
-    cat > "$manifest_path" << EOF
-{
-  "version": "$VERSION",
-  "last_published": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
-  "post_count": 0,
-  "comment_count": 0
-}
-EOF
+    if [ -n "$custom_site_title" ]; then
+        jq -n \
+            --arg version "$VERSION" \
+            --arg last_published "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+            --arg site_title "$custom_site_title" \
+            '{
+                version: $version,
+                last_published: $last_published,
+                post_count: 0,
+                comment_count: 0,
+                site_title: $site_title
+            }' > "$manifest_path"
+    else
+        jq -n \
+            --arg version "$VERSION" \
+            --arg last_published "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+            '{
+                version: $version,
+                last_published: $last_published,
+                post_count: 0,
+                comment_count: 0
+            }' > "$manifest_path"
+    fi
     files_created+=("$manifest_path")
     success_human "Created $manifest_path"
 
@@ -1995,21 +2015,43 @@ generate_manifest() {
         last_published="\"$(date -u +"%Y-%m-%dT%H:%M:%SZ")\""
     fi
 
+    # Preserve existing site_title if set
+    local site_title=""
+    if [ -f "$MANIFEST" ]; then
+        site_title=$(jq -r '.site_title // empty' "$MANIFEST" 2>/dev/null)
+    fi
+
     # Generate manifest.json
     local metadata_dir=$(dirname "$MANIFEST")
     mkdir -p "$metadata_dir"
 
-    jq -n \
-        --arg version "$VERSION" \
-        --argjson last_published "$last_published" \
-        --argjson post_count "$post_count" \
-        --argjson comment_count "$comment_count" \
-        '{
-            version: $version,
-            last_published: $last_published,
-            post_count: $post_count,
-            comment_count: $comment_count
-        }' > "$MANIFEST"
+    if [ -n "$site_title" ]; then
+        jq -n \
+            --arg version "$VERSION" \
+            --argjson last_published "$last_published" \
+            --argjson post_count "$post_count" \
+            --argjson comment_count "$comment_count" \
+            --arg site_title "$site_title" \
+            '{
+                version: $version,
+                last_published: $last_published,
+                post_count: $post_count,
+                comment_count: $comment_count,
+                site_title: $site_title
+            }' > "$MANIFEST"
+    else
+        jq -n \
+            --arg version "$VERSION" \
+            --argjson last_published "$last_published" \
+            --argjson post_count "$post_count" \
+            --argjson comment_count "$comment_count" \
+            '{
+                version: $version,
+                last_published: $last_published,
+                post_count: $post_count,
+                comment_count: $comment_count
+            }' > "$MANIFEST"
+    fi
 
     if [ "$silent" != "true" ]; then
         success "Generated $MANIFEST (last_published: $(echo $last_published | tr -d '"'), $post_count posts, $comment_count comments)"
@@ -3723,6 +3765,12 @@ cmd_about() {
     # Get site URL
     local site_url="${POLIS_BASE_URL:-not configured}"
 
+    # Get site title from manifest (optional)
+    local site_title=""
+    if [ -f "$MANIFEST" ]; then
+        site_title=$(jq -r '.site_title // empty' "$MANIFEST" 2>/dev/null)
+    fi
+
     # Display branded output
     echo ""
     echo -e "${BOLD}${CYAN}Polis${NC} - Decentralized Social Network"
@@ -3734,10 +3782,11 @@ cmd_about() {
     echo -e "  ${CYAN}Following version:${NC}  $following_version"
     echo -e "  ${CYAN}Blessings version:${NC}  $blessings_version"
     echo ""
-    echo -e "  ${CYAN}Your site:${NC}          $site_url"
+    [ -n "$site_title" ] && echo -e "  ${CYAN}Site title:${NC}         $site_title"
+    echo -e "  ${CYAN}Site URL:${NC}           $site_url"
     echo "────────────────────────────────────────"
-    echo -e "  ${CYAN}Project:${NC}  https://github.com/vdibart/polis"
-    echo -e "  ${CYAN}License:${NC}  AGPL v3"
+    echo -e "  ${CYAN}Project:${NC}            https://github.com/vdibart/polis"
+    echo -e "  ${CYAN}License:${NC}            AGPL v3"
     echo ""
 }
 
@@ -3772,8 +3821,10 @@ cmd_config() {
     fi
 
     local manifest_version="not initialized"
+    local site_title=""
     if [ -f "$MANIFEST" ]; then
         manifest_version=$(jq -r '.version // "unknown"' "$MANIFEST" 2>/dev/null || echo "unknown")
+        site_title=$(jq -r '.site_title // empty' "$MANIFEST" 2>/dev/null)
     fi
 
     # Mask sensitive values
@@ -3788,6 +3839,7 @@ cmd_config() {
             --arg base_url "${POLIS_BASE_URL:-}" \
             --arg endpoint_base "$POLIS_ENDPOINT_BASE" \
             --arg discovery_key "$discovery_key_status" \
+            --arg site_title "$site_title" \
             --arg keys_dir "$KEYS_DIR" \
             --arg posts_dir "$POSTS_DIR" \
             --arg comments_dir "$COMMENTS_DIR" \
@@ -3813,6 +3865,10 @@ cmd_config() {
                         following: $following_version,
                         blessed_comments: $blessings_version,
                         manifest: $manifest_version
+                    },
+                    site: {
+                        url: $base_url,
+                        title: (if $site_title == "" then null else $site_title end)
                     },
                     environment: {
                         POLIS_BASE_URL: $base_url,
@@ -3849,6 +3905,10 @@ cmd_config() {
         echo "  following.json:        $following_version"
         echo "  blessed-comments.json: $blessings_version"
         echo "  manifest.json:         $manifest_version"
+        echo ""
+        echo -e "${CYAN}Site${NC}"
+        echo "  URL:                   ${POLIS_BASE_URL:-[not set]}"
+        echo "  Title:                 ${site_title:-[not set]}"
         echo ""
         echo -e "${CYAN}Environment${NC}"
         echo "  POLIS_BASE_URL:        ${POLIS_BASE_URL:-[not set]}"
@@ -6477,9 +6537,26 @@ render_blessed_comments() {
 
             # Get author info from URL
             local author_domain=$(echo "$comment_url" | sed 's|https\?://||' | cut -d'/' -f1)
+            local author_name="$author_domain"
+
+            # Try to get site_title from author's manifest.json
+            if [[ "$comment_url" == "${base_url}"* ]]; then
+                # Local comment - use our manifest
+                if [ -f "$MANIFEST" ]; then
+                    local local_title=$(jq -r '.site_title // empty' "$MANIFEST" 2>/dev/null)
+                    [ -n "$local_title" ] && author_name="$local_title"
+                fi
+            else
+                # Remote comment - try to fetch their manifest.json
+                local remote_manifest=$(curl -sL "https://$author_domain/metadata/manifest.json" 2>/dev/null)
+                if [ -n "$remote_manifest" ]; then
+                    local remote_title=$(echo "$remote_manifest" | jq -r '.site_title // empty' 2>/dev/null)
+                    [ -n "$remote_title" ] && author_name="$remote_title"
+                fi
+            fi
 
             declare -A comment_vars=(
-                [author_name]="$author_domain"
+                [author_name]="$author_name"
                 [author_url]="https://$author_domain"
                 [published]="$c_published"
                 [published_human]="$(format_date_human "$c_published")"
@@ -6545,9 +6622,15 @@ render_file() {
     local url="${base_url}/${input_file}"
     info_human "  [url] Canonical URL: $url"
 
-    # Get site info
-    local site_title="${POLIS_BASE_URL#https://}"
-    site_title="${site_title#http://}"
+    # Get site info - prefer manifest.json, fallback to domain
+    local site_title=""
+    if [ -f "$MANIFEST" ]; then
+        site_title=$(jq -r '.site_title // empty' "$MANIFEST" 2>/dev/null)
+    fi
+    if [ -z "$site_title" ]; then
+        site_title="${POLIS_BASE_URL#https://}"
+        site_title="${site_title#http://}"
+    fi
 
     # Get author info from .well-known/polis
     local author_name="$site_title"
@@ -6643,9 +6726,15 @@ render_index() {
         done
     fi
 
-    # Get site info
-    local site_title="${POLIS_BASE_URL#https://}"
-    site_title="${site_title#http://}"
+    # Get site info - prefer manifest.json, fallback to domain
+    local site_title=""
+    if [ -f "$MANIFEST" ]; then
+        site_title=$(jq -r '.site_title // empty' "$MANIFEST" 2>/dev/null)
+    fi
+    if [ -z "$site_title" ]; then
+        site_title="${POLIS_BASE_URL#https://}"
+        site_title="${site_title#http://}"
+    fi
 
     # Substitute template
     local result="${TEMPLATES[index]}"

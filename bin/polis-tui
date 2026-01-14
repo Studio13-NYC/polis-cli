@@ -20,7 +20,7 @@ set -e
 # VERSION
 # =============================================================================
 
-TUI_VERSION="0.4.0"
+TUI_VERSION="0.5.0"
 
 # =============================================================================
 # LOGGING
@@ -1561,11 +1561,14 @@ do_about() {
     config_json=$("$POLIS_CLI" --json config 2>/dev/null || echo '{}')
 
     local cli_version
-    cli_version=$(echo "$config_json" | jq -r '.data.cli.version // "unknown"' 2>/dev/null || echo "unknown")
+    cli_version=$(echo "$config_json" | jq -r '.data.versions.cli // "unknown"' 2>/dev/null || echo "unknown")
 
     local site_url
-    site_url=$(echo "$config_json" | jq -r '.data.environment.POLIS_BASE_URL // ""' 2>/dev/null || echo "")
+    site_url=$(echo "$config_json" | jq -r '.data.site.url // ""' 2>/dev/null || echo "")
     [ -z "$site_url" ] && site_url="not configured"
+
+    local site_title
+    site_title=$(echo "$config_json" | jq -r '.data.site.title // empty' 2>/dev/null || echo "")
 
     echo ""
     echo -e "${BOLD}Polis${NC} - Decentralized Social Network"
@@ -1576,12 +1579,13 @@ do_about() {
     echo -e "  ${CYAN}polis-tui version:${NC}  $TUI_VERSION"
     echo -e "  ${CYAN}polis CLI version:${NC}  $cli_version"
     echo ""
-    echo -e "  ${CYAN}Your site:${NC}          $site_url"
+    [ -n "$site_title" ] && echo -e "  ${CYAN}Site title:${NC}         $site_title"
+    echo -e "  ${CYAN}Site URL:${NC}           $site_url"
     echo ""
     divider
     echo ""
-    echo -e "  ${CYAN}Project:${NC}  https://github.com/vdibart/polis"
-    echo -e "  ${CYAN}License:${NC}  AGPL v3"
+    echo -e "  ${CYAN}Project:${NC}            https://github.com/vdibart/polis"
+    echo -e "  ${CYAN}License:${NC}            AGPL v3"
     echo ""
 
     wait_for_key

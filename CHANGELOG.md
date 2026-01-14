@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.25.0] - 2026-01-14
+
+### Added
+- **Site title support** - Optional branding with `--site-title` flag during initialization
+  - Set during init: `polis init --site-title "My Blog"`
+  - Stored in `manifest.json` and preserved across rebuilds
+  - Used in rendered HTML templates via `{{site_title}}` variable
+  - Displayed in `polis about`, `polis config`, and TUI About screen
+  - Falls back to domain name if not configured
+- **Comment author names from manifest** - Blessed comments now display author's site title
+  - Fetches remote `manifest.json` to get commenter's site title
+  - Falls back to domain name if title not available
+  - Local comments use local manifest for author name
+
+### Changed
+- **`polis config`** - Added new "Site" section displaying URL and title
+  - JSON output includes `data.site.url` and `data.site.title` fields
+- **Documentation** - Updated USAGE.md and TEMPLATING.md with site title configuration details
+
+### Fixed
+- **TUI About screen** - Corrected JSON path to properly display CLI version
+  - Changed from `data.cli.version` to `data.versions.cli`
+
 ## [0.24.0] - 2026-01-13
 
 ### Fixed

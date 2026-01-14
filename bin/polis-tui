@@ -403,6 +403,10 @@ ui_menu() {
     local title="$1"
     local text="$2"
     shift 2
+    # Display text before menu if provided
+    if [[ -n "$text" ]]; then
+        echo -e "\n${DIM}$text${NC}\n" >&3
+    fi
     inline_select "$title" "$@" || true
 }
 
@@ -816,9 +820,10 @@ fetch_stats() {
     local blessings_count=0
     local following_count=0
 
-    # Count posts from index
+    # Count posts and comments from index
     if [[ -f "metadata/public.jsonl" ]]; then
-        posts_count=$(wc -l < "metadata/public.jsonl" 2>/dev/null | tr -d ' ')
+        posts_count=$(jq -s '[.[] | select(.type == "post")] | length' "metadata/public.jsonl" 2>/dev/null || echo 0)
+        comments_count=$(jq -s '[.[] | select(.type == "comment")] | length' "metadata/public.jsonl" 2>/dev/null || echo 0)
     fi
 
     # Count following
@@ -836,7 +841,7 @@ fetch_stats() {
         fi
     fi
 
-    echo "$posts_count $following_count $blessings_count"
+    echo "$posts_count $comments_count $following_count $blessings_count"
 }
 
 # Cache file paths for background stats
@@ -848,7 +853,7 @@ get_cached_stats() {
     if [[ -f "$STATS_CACHE_FILE" ]]; then
         cat "$STATS_CACHE_FILE"
     else
-        echo "... ... ..."  # Placeholder while loading
+        echo "... ... ... ..."  # Placeholder while loading (posts comments following blessings)
     fi
 }
 
@@ -881,10 +886,11 @@ has_refresh_signal() {
 # Accepts optional pre-fetched stats to avoid duplicate API calls
 build_stats_text() {
     local posts_count="${1:-0}"
-    local following_count="${2:-0}"
-    local blessings_count="${3:-0}"
+    local comments_count="${2:-0}"
+    local following_count="${3:-0}"
+    local blessings_count="${4:-0}"
 
-    local stats_text="Posts: $posts_count | Following: $following_count | Blessings: $blessings_count"
+    local stats_text="Posts: $posts_count | Following: $following_count | Blessing Requests: $blessings_count"
 
     # Add git status if in repo
     if [[ "$IS_GIT_REPO" == true ]]; then
@@ -905,11 +911,11 @@ build_stats_text() {
 _main_menu_refresh_callback() {
     local stats
     stats=$(get_cached_stats)
-    local posts_count following_count blessings_count
-    read -r posts_count following_count blessings_count <<< "$stats"
+    local posts_count comments_count following_count blessings_count
+    read -r posts_count comments_count following_count blessings_count <<< "$stats"
 
     local stats_text
-    stats_text=$(build_stats_text "$posts_count" "$following_count" "$blessings_count")
+    stats_text=$(build_stats_text "$posts_count" "$comments_count" "$following_count" "$blessings_count")
 
     local blessing_desc="Review blessings"
     if [[ "$blessings_count" != "..." && "$blessings_count" -gt 0 ]]; then
@@ -945,12 +951,12 @@ show_main_menu() {
     # Use cached stats for instant display
     local stats
     stats=$(get_cached_stats)
-    local posts_count following_count blessings_count
-    read -r posts_count following_count blessings_count <<< "$stats"
+    local posts_count comments_count following_count blessings_count
+    read -r posts_count comments_count following_count blessings_count <<< "$stats"
 
     # Build stats text using cached values
     local stats_text
-    stats_text=$(build_stats_text "$posts_count" "$following_count" "$blessings_count")
+    stats_text=$(build_stats_text "$posts_count" "$comments_count" "$following_count" "$blessings_count")
 
     local blessing_desc="Review blessings"
     if [[ "$blessings_count" != "..." && "$blessings_count" -gt 0 ]]; then

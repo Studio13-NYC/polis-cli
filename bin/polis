@@ -28,7 +28,7 @@ set -e
 #   4. Hardcoded defaults
 
 # Fixed constants (never configurable - required for discovery)
-VERSION="0.23.0"
+VERSION="0.24.0"
 WELL_KNOWN_DIR=".well-known"
 WELL_KNOWN_FILE="polis"
 
@@ -6471,6 +6471,8 @@ render_blessed_comments() {
             local c_title=$(echo "$comment_content" | grep '^title:' | head -1 | sed 's/^title: *//')
             local c_published=$(echo "$comment_content" | grep '^published:' | head -1 | sed 's/^published: *//')
             local c_body=$(extract_body_from_content "$comment_content")
+            # Strip leading heading if present (title is shown separately or not needed inline)
+            c_body=$(echo "$c_body" | sed '/./,$!d' | sed '1{/^#/d}')
             local c_html=$(echo "$c_body" | pandoc -f markdown -t html 2>/dev/null || echo "$c_body")
 
             # Get author info from URL
@@ -6534,6 +6536,8 @@ render_file() {
 
     # Extract body and convert to HTML
     local body=$(extract_body_from_content "$content")
+    # Strip leading blank lines, then remove first heading if present (title shown from frontmatter)
+    body=$(echo "$body" | sed '/./,$!d' | sed '1{/^#/d}')
     local html_content=$(echo "$body" | pandoc -f markdown -t html 2>/dev/null || echo "$body")
 
     # Build canonical URL (normalize to avoid double slashes)

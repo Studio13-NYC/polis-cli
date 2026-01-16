@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.26.0] - 2026-01-15
+
+### Changed
+- **Command rename** - `polis get-version` renamed to `polis extract` for clarity
+  - More intuitive name for extracting specific versions from version history
+  - Updated help text and usage messages to reflect new command name
+- **Template title handling** - Removed `<h1>{{title}}</h1>` from default templates
+  - Markdown's first `# Heading` now becomes the `<h1>` in rendered HTML
+  - Frontmatter `title` field only used for `<title>` tag (browser tab/SEO)
+  - Allows different display heading vs document title if desired
+  - Reverses the "duplicate title fix" from v0.24.0
+
+### Fixed
+- **Version reconstruction reliability** - Improved `polis extract` command robustness
+  - Now tries efficient backward reconstruction first, falls back to forward reconstruction
+  - Handles edge cases where canonical file has been modified during republish
+  - Better error messages when version chain is broken
+- **Hash verification compatibility** - Fixed verification for content published with different hashing methods
+  - Tries canonical hashing first (matches current publish behavior)
+  - Falls back to non-canonical hashing for backwards compatibility
+  - Ensures old content can still be verified correctly
+- **Republish detection** - `polis republish` now detects when content is unchanged
+  - Compares canonical hashes to determine if update is needed
+  - Skips version history update when content hash is identical
+  - Prevents unnecessary version entries for no-op edits
+- **Blank line handling** - Fixed double blank lines between frontmatter and content
+  - `extract_content_without_frontmatter` already includes separator blank line
+  - Removed redundant blank line insertions in publish and republish
+  - Ensures consistent spacing in generated files
+
 ## [0.25.0] - 2026-01-14
 
 ### Added

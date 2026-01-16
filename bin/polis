@@ -28,7 +28,7 @@ set -e
 #   4. Hardcoded defaults
 
 # Fixed constants (never configurable - required for discovery)
-VERSION="0.25.0"
+VERSION="0.26.0"
 WELL_KNOWN_DIR=".well-known"
 WELL_KNOWN_FILE="polis"
 
@@ -499,7 +499,8 @@ canonicalize_content() {
     local trimmed
     # Remove trailing whitespace from each line, then remove trailing empty lines
     # Finally add exactly one newline at the end
-    trimmed=$(printf '%s' "$content" | sed 's/[[:space:]]*$//' | sed -e :a -e '/^\n*$/{$d;N;ba;}')
+    # Note: /^$/ matches empty lines, the pattern accumulates trailing empties and deletes at EOF
+    trimmed=$(printf '%s' "$content" | sed -e 's/[[:space:]]*$//' -e ':a' -e '/^$/{ $d; N; ba; }')
     printf '%s\n' "$trimmed"
 }
 
@@ -706,13 +707,20 @@ verify_version_integrity() {
     local content_file="$1"
     local expected_hash="$2"
 
-    local actual_hash=$(hash_content "$content_file")
-
-    if [ "sha256:$actual_hash" = "$expected_hash" ]; then
+    # Try canonical hashing first (matches new publish behavior)
+    local canonical_hash=$(hash_content_canonical "$content_file")
+    if [ "sha256:$canonical_hash" = "$expected_hash" ]; then
         return 0
-    else
-        return 1
     fi
+
+    # Fall back to non-canonical hashing for backwards compatibility
+    # (content published before canonicalization was introduced)
+    local direct_hash=$(hash_content "$content_file")
+    if [ "sha256:$direct_hash" = "$expected_hash" ]; then
+        return 0
+    fi
+
+    return 1
 }
 
 # Reconstruct specific version from canonical file and diffs
@@ -728,9 +736,6 @@ reconstruct_version() {
         error "No version history found for $filename"
     fi
 
-    # Get current version hash from versions file
-    local current_hash=$(grep "^# CURRENT_HASH=" "$versions_file" | sed 's/^# CURRENT_HASH=//')
-
     # Check if target is the base version (has full content stored)
     local target_parent=$(extract_parent_hash "$versions_file" "$target_hash")
     if [ "$target_parent" = "none" ]; then
@@ -742,6 +747,26 @@ reconstruct_version() {
         fi
         return 0
     fi
+
+    # Try backward reconstruction first (efficient when canonical file is unchanged)
+    if _reconstruct_version_backward "$canonical_file" "$target_hash" "$output_file" "$versions_file" 2>/dev/null; then
+        return 0
+    fi
+
+    # Fallback: forward reconstruction from base version
+    # This handles the case where the canonical file has been modified (e.g., during republish)
+    _reconstruct_version_forward "$target_hash" "$output_file" "$versions_file"
+}
+
+# Internal: Reconstruct version by working backward from current canonical content
+_reconstruct_version_backward() {
+    local canonical_file="$1"
+    local target_hash="$2"
+    local output_file="$3"
+    local versions_file="$4"
+
+    # Get current version hash from versions file
+    local current_hash=$(grep "^# CURRENT_HASH=" "$versions_file" | sed 's/^# CURRENT_HASH=//')
 
     # Extract current content (without frontmatter)
     local temp_current=$(mktemp)
@@ -759,7 +784,7 @@ reconstruct_version() {
         # If parent is "none", we've reached the base but haven't found target
         if [ "$parent_version" = "none" ]; then
             rm -f "$temp_current" "$temp_work"
-            error "Version $target_hash not found in history"
+            return 1
         fi
 
         # Extract diff for current version
@@ -767,7 +792,7 @@ reconstruct_version() {
 
         if [ -z "$diff_content" ]; then
             rm -f "$temp_current" "$temp_work"
-            error "Version $target_hash not found in history"
+            return 1
         fi
 
         # Apply reverse patch (go backward in time)
@@ -780,16 +805,11 @@ reconstruct_version() {
             rm -f "$temp_patched" "$temp_diff"
         else
             rm -f "$temp_current" "$temp_work" "$temp_patched" "$temp_diff"
-            error "Failed to apply patch for version ${current_version:0:13}..."
+            return 1
         fi
 
         # Move to parent version
         current_version="$parent_version"
-
-        if [ -z "$current_version" ]; then
-            rm -f "$temp_current" "$temp_work"
-            error "Version chain broken while looking for $target_hash"
-        fi
     done
 
     # Copy reconstructed content to output
@@ -797,6 +817,68 @@ reconstruct_version() {
 
     # Cleanup
     rm -f "$temp_current" "$temp_work"
+
+    # Verify integrity
+    if ! verify_version_integrity "$output_file" "$target_hash"; then
+        return 1
+    fi
+    return 0
+}
+
+# Internal: Reconstruct version by applying diffs forward from base version
+_reconstruct_version_forward() {
+    local target_hash="$1"
+    local output_file="$2"
+    local versions_file="$3"
+
+    # Build chain from base to target by walking backward and collecting versions
+    local -a version_chain=()
+    local current="$target_hash"
+
+    while true; do
+        version_chain=("$current" "${version_chain[@]}")
+        local parent=$(extract_parent_hash "$versions_file" "$current")
+        if [ "$parent" = "none" ]; then
+            break
+        fi
+        if [ -z "$parent" ]; then
+            error "Version $target_hash not found in history (broken chain)"
+        fi
+        current="$parent"
+    done
+
+    # First version in chain is base - extract its full content
+    local base_hash="${version_chain[0]}"
+    local temp_work=$(mktemp)
+    extract_full_content_for_version "$versions_file" "$base_hash" > "$temp_work"
+
+    # Apply diffs forward through the chain
+    local i
+    for (( i=1; i<${#version_chain[@]}; i++ )); do
+        local version_hash="${version_chain[$i]}"
+        local diff_content=$(extract_diff_for_version "$versions_file" "$version_hash")
+
+        if [ -z "$diff_content" ]; then
+            rm -f "$temp_work"
+            error "Missing diff for version $version_hash"
+        fi
+
+        local temp_diff=$(mktemp)
+        echo "$diff_content" > "$temp_diff"
+
+        local temp_patched=$(mktemp)
+        if patch -s -o "$temp_patched" "$temp_work" "$temp_diff" 2>/dev/null; then
+            cp "$temp_patched" "$temp_work"
+            rm -f "$temp_patched" "$temp_diff"
+        else
+            rm -f "$temp_work" "$temp_patched" "$temp_diff"
+            error "Failed to apply forward patch for version ${version_hash:0:13}..."
+        fi
+    done
+
+    # Copy result to output
+    cp "$temp_work" "$output_file"
+    rm -f "$temp_work"
 
     # Verify integrity
     if ! verify_version_integrity "$output_file" "$target_hash"; then
@@ -2191,9 +2273,9 @@ $version_history
     fi
 
     # Create temporary file with frontmatter + content (for signing)
+    # Note: content_only already includes the blank line separator after frontmatter
     local temp_file=$(mktemp)
     echo "$frontmatter_template" > "$temp_file"
-    echo "" >> "$temp_file"
     cat "$content_only" >> "$temp_file"
 
     # Sign the file
@@ -2228,8 +2310,8 @@ signature: $signature
     fi
 
     # Write back to file
+    # Note: content_only already includes the blank line separator
     echo "$frontmatter" > "$input_file"
-    echo "" >> "$input_file"
     cat "$content_only" >> "$input_file"
 
     # Clean up temp files
@@ -3277,12 +3359,23 @@ cmd_republish() {
     # Create temp file for old content (will be filled from .versions file)
     local old_content=$(mktemp)
 
-    # Hash the new content
-    local new_hash=$(hash_content "$content_only")
+    # Hash the new content (canonical for consistent verification)
+    local new_hash=$(hash_content_canonical "$content_only")
     local hash_short="${new_hash:0:6}-${new_hash: -6}"
 
     info_human "New content hash: sha256:$new_hash"
     info_human "Short hash: $hash_short"
+
+    # Check if content actually changed (comparing canonical hashes)
+    if [ "$new_hash" = "$old_hash" ]; then
+        rm -f "$content_only" "$old_content"
+        if [ "$JSON_MODE" = true ]; then
+            json_success "republish" '{"unchanged": true, "message": "No changes detected - content hash unchanged"}'
+        else
+            info "No changes detected. Content hash is unchanged."
+        fi
+        return 0
+    fi
 
     # Extract existing version history
     local version_history=$(extract_version_history "$input_file")
@@ -3336,9 +3429,9 @@ $version_history_new
     fi
 
     # Create temporary file with frontmatter + content (for signing)
+    # Note: content_only already includes the blank line separator after frontmatter
     local temp_file=$(mktemp)
     echo "$frontmatter_template" > "$temp_file"
-    echo "" >> "$temp_file"
     cat "$content_only" >> "$temp_file"
 
     # Sign the file
@@ -3390,8 +3483,9 @@ signature: $signature
     fi
 
     # Write updated canonical file
+    # Note: content_only already includes the blank line separator after frontmatter
+    # (from extract_content_without_frontmatter), so we don't add another one here
     echo "$frontmatter" > "$input_file"
-    echo "" >> "$input_file"
     cat "$content_only" >> "$input_file"
     success_human "Updated canonical file: $input_file"
 
@@ -4084,13 +4178,13 @@ cmd_rotate_key() {
     fi
 }
 
-# Command: polis get-version <file> <hash>
+# Command: polis extract <file> <hash>
 cmd_get_version() {
     local file="$1"
     local target_hash="$2"
 
     if [ -z "$file" ] || [ -z "$target_hash" ]; then
-        error "Usage: polis get-version <file> <hash>"
+        error "Usage: polis extract <file> <hash>"
     fi
 
     if [ ! -f "$file" ]; then
@@ -6231,7 +6325,6 @@ DEFAULT_TEMPLATE_POST='<!DOCTYPE html>
         <a href="{{site_url}}">{{site_title}}</a>
     </header>
     <article>
-        <h1>{{title}}</h1>
         <time datetime="{{published}}">{{published_human}}</time>
         <div class="content">{{content}}</div>
         <footer class="signature">
@@ -6268,7 +6361,6 @@ DEFAULT_TEMPLATE_COMMENT='<!DOCTYPE html>
         <a href="{{site_url}}">{{site_title}}</a>
     </header>
     <article>
-        <h1>{{title}}</h1>
         <time datetime="{{published}}">{{published_human}}</time>
         <p class="reply-to">In reply to: <a href="{{in_reply_to_url}}">{{in_reply_to_url}}</a></p>
         <div class="content">{{content}}</div>
@@ -6531,8 +6623,8 @@ render_blessed_comments() {
             local c_title=$(echo "$comment_content" | grep '^title:' | head -1 | sed 's/^title: *//')
             local c_published=$(echo "$comment_content" | grep '^published:' | head -1 | sed 's/^published: *//')
             local c_body=$(extract_body_from_content "$comment_content")
-            # Strip leading heading if present (title is shown separately or not needed inline)
-            c_body=$(echo "$c_body" | sed '/./,$!d' | sed '1{/^#/d}')
+            # Strip leading blank lines
+            c_body=$(echo "$c_body" | sed '/./,$!d')
             local c_html=$(echo "$c_body" | pandoc -f markdown -t html 2>/dev/null || echo "$c_body")
 
             # Get author info from URL
@@ -6613,8 +6705,8 @@ render_file() {
 
     # Extract body and convert to HTML
     local body=$(extract_body_from_content "$content")
-    # Strip leading blank lines, then remove first heading if present (title shown from frontmatter)
-    body=$(echo "$body" | sed '/./,$!d' | sed '1{/^#/d}')
+    # Strip leading blank lines
+    body=$(echo "$body" | sed '/./,$!d')
     local html_content=$(echo "$body" | pandoc -f markdown -t html 2>/dev/null || echo "$body")
 
     # Build canonical URL (normalize to avoid double slashes)
@@ -6955,7 +7047,7 @@ main() {
         rotate-key)
             cmd_rotate_key "$@"
             ;;
-        get-version)
+        extract)
             cmd_get_version "$@"
             ;;
         blessing)
@@ -7050,7 +7142,7 @@ main() {
             echo "  polis config                    Show all configuration settings (supports --json)"
             echo "  polis rotate-key [--delete-old-key]"
             echo "                                  Generate new keypair and re-sign all content"
-            echo "  polis get-version <file> <hash> Reconstruct a specific version of a file"
+            echo "  polis extract <file> <hash> Reconstruct a specific version of a file"
             echo ""
             echo "Polis includes support for stdin:"
             echo "  Pipe content directly without creating temporary files:"

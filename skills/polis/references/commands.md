@@ -205,7 +205,13 @@ Initialize a new polis directory.
 
 ```bash
 ./cli/bin/polis --json init
+./cli/bin/polis --json init --site-title "My Blog"
 ```
+
+**Options:**
+- `--site-title <title>` - Set custom site title for branding
+- `--posts-dir <dir>` - Custom posts directory
+- `--comments-dir <dir>` - Custom comments directory
 
 ### `polis version`
 Print CLI version.
@@ -259,9 +265,9 @@ For each migration:
 - Prompts for confirmation
 - Updates following.json, blessed-comments.json, and comment frontmatter
 
-### `polis get-version <file> <hash>`
+### `polis extract <file> <hash>`
 Reconstruct a specific version from history.
 
 ```bash
-./cli/bin/polis get-version posts/20260106/my-post.md sha256:abc123...
+./cli/bin/polis extract posts/20260106/my-post.md sha256:abc123...
 ```

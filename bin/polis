@@ -28,7 +28,7 @@ set -e
 #   4. Hardcoded defaults
 
 # Fixed constants (never configurable - required for discovery)
-VERSION="0.26.0"
+VERSION="0.27.0"
 WELL_KNOWN_DIR=".well-known"
 WELL_KNOWN_FILE="polis"
 
@@ -81,12 +81,15 @@ load_wellknown_config() {
     [ -z "${KEYS_DIR+x}" ] && KEYS_DIR=$(echo "$config_json" | jq -r '.directories.keys // empty')
     [ -z "${POSTS_DIR+x}" ] && POSTS_DIR=$(echo "$config_json" | jq -r '.directories.posts // empty')
     [ -z "${COMMENTS_DIR+x}" ] && COMMENTS_DIR=$(echo "$config_json" | jq -r '.directories.comments // empty')
+    [ -z "${SNIPPETS_DIR+x}" ] && SNIPPETS_DIR=$(echo "$config_json" | jq -r '.directories.snippets // empty')
+    [ -z "${THEMES_DIR+x}" ] && THEMES_DIR=$(echo "$config_json" | jq -r '.directories.themes // empty')
     [ -z "${VERSIONS_DIR_NAME+x}" ] && VERSIONS_DIR_NAME=$(echo "$config_json" | jq -r '.directories.versions // empty')
 
     # File config
     [ -z "${PUBLIC_INDEX+x}" ] && PUBLIC_INDEX=$(echo "$config_json" | jq -r '.files.public_index // empty')
     [ -z "${BLESSED_COMMENTS+x}" ] && BLESSED_COMMENTS=$(echo "$config_json" | jq -r '.files.blessed_comments // empty')
     [ -z "${FOLLOWING_INDEX+x}" ] && FOLLOWING_INDEX=$(echo "$config_json" | jq -r '.files.following_index // empty')
+    [ -z "${SNIPPETS_INDEX+x}" ] && SNIPPETS_INDEX=$(echo "$config_json" | jq -r '.files.snippets_index // empty')
 }
 
 # Apply hardcoded defaults for any unset variables
@@ -107,12 +110,15 @@ apply_defaults() {
     : "${KEYS_DIR:=.polis/keys}"
     : "${POSTS_DIR:=posts}"
     : "${COMMENTS_DIR:=comments}"
+    : "${SNIPPETS_DIR:=snippets}"
+    : "${THEMES_DIR:=.polis/themes}"
     : "${VERSIONS_DIR_NAME:=.versions}"
 
     # User file defaults
     : "${PUBLIC_INDEX:=metadata/public.jsonl}"
     : "${BLESSED_COMMENTS:=metadata/blessed-comments.json}"
     : "${FOLLOWING_INDEX:=metadata/following.json}"
+    : "${SNIPPETS_INDEX:=metadata/snippets.jsonl}"
     : "${MANIFEST:=metadata/manifest.json}"
 }
 
@@ -219,9 +225,12 @@ cmd_init() {
     local custom_keys_dir=""
     local custom_posts_dir=""
     local custom_comments_dir=""
+    local custom_snippets_dir=""
+    local custom_themes_dir=""
     local custom_public_index=""
     local custom_blessed_comments=""
     local custom_following_index=""
+    local custom_snippets_index=""
     local custom_versions_dir=""
     local custom_site_title=""
 
@@ -239,6 +248,14 @@ cmd_init() {
                 custom_comments_dir="$2"
                 shift 2
                 ;;
+            --snippets-dir)
+                custom_snippets_dir="$2"
+                shift 2
+                ;;
+            --themes-dir)
+                custom_themes_dir="$2"
+                shift 2
+                ;;
             --public-index)
                 custom_public_index="$2"
                 shift 2
@@ -249,6 +266,10 @@ cmd_init() {
                 ;;
             --following-index)
                 custom_following_index="$2"
+                shift 2
+                ;;
+            --snippets-index)
+                custom_snippets_index="$2"
                 shift 2
                 ;;
             --versions-dir)
@@ -269,9 +290,12 @@ cmd_init() {
     local keys_dir="${custom_keys_dir:-$KEYS_DIR}"
     local posts_dir="${custom_posts_dir:-$POSTS_DIR}"
     local comments_dir="${custom_comments_dir:-$COMMENTS_DIR}"
+    local snippets_dir="${custom_snippets_dir:-$SNIPPETS_DIR}"
+    local themes_dir="${custom_themes_dir:-$THEMES_DIR}"
     local public_index="${custom_public_index:-$PUBLIC_INDEX}"
     local blessed_comments="${custom_blessed_comments:-$BLESSED_COMMENTS}"
     local following_index="${custom_following_index:-$FOLLOWING_INDEX}"
+    local snippets_index="${custom_snippets_index:-$SNIPPETS_INDEX}"
     local versions_dir="${custom_versions_dir:-$VERSIONS_DIR_NAME}"
 
     # Derive metadata directory from file paths
@@ -287,10 +311,12 @@ cmd_init() {
     mkdir -p "$keys_dir"
     mkdir -p "$posts_dir"
     mkdir -p "$comments_dir"
+    mkdir -p "$snippets_dir"
+    mkdir -p "$themes_dir"
     mkdir -p "$metadata_dir"
     mkdir -p "$WELL_KNOWN_DIR"
 
-    dirs_created=("$keys_dir" "$posts_dir" "$comments_dir" "$metadata_dir" "$WELL_KNOWN_DIR")
+    dirs_created=("$keys_dir" "$posts_dir" "$comments_dir" "$snippets_dir" "$themes_dir" "$metadata_dir" "$WELL_KNOWN_DIR")
     success_human "Created directory structure"
 
     # Generate Ed25519 keypair
@@ -318,12 +344,15 @@ cmd_init() {
       "keys": "$keys_dir",
       "posts": "$posts_dir",
       "comments": "$comments_dir",
+      "snippets": "$snippets_dir",
+      "themes": "$themes_dir",
       "versions": "$versions_dir"
     },
     "files": {
       "public_index": "$public_index",
       "blessed_comments": "$blessed_comments",
-      "following_index": "$following_index"
+      "following_index": "$following_index",
+      "snippets_index": "$snippets_index"
     }
   }
 }
@@ -355,6 +384,11 @@ EOF
 EOF
     files_created+=("$following_index")
     success_human "Created $following_index"
+
+    # Create empty snippets.jsonl index
+    > "$snippets_index"
+    files_created+=("$snippets_index")
+    success_human "Created $snippets_index index"
 
     # Create initial manifest.json
     local manifest_path="$metadata_dir/manifest.json"
@@ -413,17 +447,55 @@ EOF
         fi
     fi
 
+    # Copy default themes from same directory as polis script
+    local themes_copied=()
+
+    # Resolve the actual script location (follow symlinks)
+    local script_path="${BASH_SOURCE[0]}"
+    while [ -L "$script_path" ]; do
+        local link_dir="$(cd "$(dirname "$script_path")" && pwd)"
+        script_path="$(readlink "$script_path")"
+        [[ "$script_path" != /* ]] && script_path="$link_dir/$script_path"
+    done
+    local script_dir="$(cd "$(dirname "$script_path")" && pwd)"
+    local source_themes_dir="$script_dir/themes"
+
+    if [ -d "$source_themes_dir" ]; then
+        for theme_path in "$source_themes_dir"/*; do
+            if [ -d "$theme_path" ]; then
+                local theme_name=$(basename "$theme_path")
+                local dest_theme="$themes_dir/$theme_name"
+                if [ ! -d "$dest_theme" ]; then
+                    cp -r "$theme_path" "$dest_theme"
+                    themes_copied+=("$theme_name")
+                fi
+            fi
+        done
+        if [ ${#themes_copied[@]} -gt 0 ]; then
+            success_human "Installed themes: ${themes_copied[*]}"
+        fi
+    else
+        warn "Theme files not found at $source_themes_dir"
+        info_human "Themes must be manually copied to $themes_dir"
+    fi
+
     # Output results
     if [ "$JSON_MODE" = true ]; then
+        local themes_json="[]"
+        if [ ${#themes_copied[@]} -gt 0 ]; then
+            themes_json=$(printf '%s\n' "${themes_copied[@]}" | jq -R . | jq -s .)
+        fi
         local result=$(jq -n \
             --argjson dirs "$(printf '%s\n' "${dirs_created[@]}" | jq -R . | jq -s .)" \
             --argjson files "$(printf '%s\n' "${files_created[@]}" | jq -R . | jq -s .)" \
+            --argjson themes "$themes_json" \
             --arg private_key "$keys_dir/id_ed25519" \
             --arg public_key "$keys_dir/id_ed25519.pub" \
             --argjson env_created "$env_created" \
             '{
                 directories_created: $dirs,
                 files_created: $files,
+                themes_installed: $themes,
                 key_paths: {
                     private: $private_key,
                     public: $public_key
@@ -435,6 +507,9 @@ EOF
         success "Polis initialization complete!"
         info "Your public key has been added to $WELL_KNOWN_DIR/polis"
         info "Private key stored at $keys_dir/id_ed25519 (not committed to git)"
+        if [ ${#themes_copied[@]} -gt 0 ]; then
+            info "Themes installed: ${themes_copied[*]}"
+        fi
         if [ "$env_created" = true ]; then
             echo ""
             warn "ACTION REQUIRED: Update .env with your configuration values:"
@@ -2072,6 +2147,68 @@ rebuild_index() {
     success "Rebuilt public.jsonl ($total_count entries: $post_count posts, $comment_count comments)"
 }
 
+# Rebuild snippets.jsonl index from all snippet files
+rebuild_snippets_index() {
+    info "Rebuilding snippets.jsonl index..."
+
+    # Check if jq is available
+    if ! command -v jq > /dev/null 2>&1; then
+        error "jq not found. Please install jq: sudo apt-get install jq (or brew install jq on macOS)"
+    fi
+
+    # Truncate the index file
+    > "$SNIPPETS_INDEX"
+
+    # Counter
+    local snippet_count=0
+
+    # Helper function to process a snippet file and append JSONL entry
+    process_snippet() {
+        local file="$1"
+        local filename=$(basename "$file")
+
+        # Skip hash snapshot files and files in versions directory
+        if [[ "$filename" =~ ^[a-f0-9]{6}-[a-f0-9]{6}\.(md|html)$ ]] || [[ "$file" =~ /$VERSIONS_DIR_NAME/ ]]; then
+            return
+        fi
+
+        # Extract frontmatter fields
+        local title=$(grep -m 1 '^title:' "$file" | sed 's/^title: *//')
+        local published=$(grep -m 1 '^published:' "$file" | sed 's/^published: *//')
+        local version=$(grep -m 1 '^current-version:' "$file" | sed 's/^current-version: *//')
+
+        # Skip if missing required fields
+        if [ -z "$title" ] || [ -z "$published" ] || [ -z "$version" ]; then
+            return
+        fi
+
+        jq -nc \
+            --arg type "snippet" \
+            --arg path "$file" \
+            --arg title "$title" \
+            --arg published "$published" \
+            --arg current_version "$version" \
+            '{
+                type: $type,
+                path: $path,
+                title: $title,
+                published: $published,
+                current_version: $current_version
+            }' >> "$SNIPPETS_INDEX"
+
+        snippet_count=$((snippet_count + 1))
+    }
+
+    # Process all markdown and html files in snippets/
+    if [ -d "$SNIPPETS_DIR" ]; then
+        while IFS= read -r -d '' file; do
+            process_snippet "$file"
+        done < <(find "$SNIPPETS_DIR" \( -name "*.md" -o -name "*.html" \) -type f -print0 | sort -z)
+    fi
+
+    success "Rebuilt snippets.jsonl ($snippet_count snippets)"
+}
+
 # Generate manifest.json from public.jsonl
 # Contains summary metadata for efficient discovery polling
 generate_manifest() {
@@ -2097,43 +2234,41 @@ generate_manifest() {
         last_published="\"$(date -u +"%Y-%m-%dT%H:%M:%SZ")\""
     fi
 
-    # Preserve existing site_title if set
+    # Preserve existing site_title and active_theme if set
     local site_title=""
+    local active_theme=""
     if [ -f "$MANIFEST" ]; then
         site_title=$(jq -r '.site_title // empty' "$MANIFEST" 2>/dev/null)
+        active_theme=$(jq -r '.active_theme // empty' "$MANIFEST" 2>/dev/null)
     fi
 
     # Generate manifest.json
     local metadata_dir=$(dirname "$MANIFEST")
     mkdir -p "$metadata_dir"
 
+    # Build base manifest
+    local manifest_json
+    manifest_json=$(jq -n \
+        --arg version "$VERSION" \
+        --argjson last_published "$last_published" \
+        --argjson post_count "$post_count" \
+        --argjson comment_count "$comment_count" \
+        '{
+            version: $version,
+            last_published: $last_published,
+            post_count: $post_count,
+            comment_count: $comment_count
+        }')
+
+    # Add optional fields if they exist
     if [ -n "$site_title" ]; then
-        jq -n \
-            --arg version "$VERSION" \
-            --argjson last_published "$last_published" \
-            --argjson post_count "$post_count" \
-            --argjson comment_count "$comment_count" \
-            --arg site_title "$site_title" \
-            '{
-                version: $version,
-                last_published: $last_published,
-                post_count: $post_count,
-                comment_count: $comment_count,
-                site_title: $site_title
-            }' > "$MANIFEST"
-    else
-        jq -n \
-            --arg version "$VERSION" \
-            --argjson last_published "$last_published" \
-            --argjson post_count "$post_count" \
-            --argjson comment_count "$comment_count" \
-            '{
-                version: $version,
-                last_published: $last_published,
-                post_count: $post_count,
-                comment_count: $comment_count
-            }' > "$MANIFEST"
+        manifest_json=$(echo "$manifest_json" | jq --arg site_title "$site_title" '. + {site_title: $site_title}')
     fi
+    if [ -n "$active_theme" ]; then
+        manifest_json=$(echo "$manifest_json" | jq --arg active_theme "$active_theme" '. + {active_theme: $active_theme}')
+    fi
+
+    echo "$manifest_json" > "$MANIFEST"
 
     if [ "$silent" != "true" ]; then
         success "Generated $MANIFEST (last_published: $(echo $last_published | tr -d '"'), $post_count posts, $comment_count comments)"
@@ -2144,7 +2279,7 @@ generate_manifest() {
 # Used by publish/comment for incremental updates
 append_to_index() {
     local file_path="$1"
-    local entry_type="$2"  # "post" or "comment"
+    local entry_type="$2"  # "post", "comment", or "snippet"
 
     # Extract frontmatter fields
     local title=$(grep -m 1 '^title:' "$file_path" | sed 's/^title: *//')
@@ -2175,6 +2310,20 @@ append_to_index() {
                     version: ($reply_version // null)
                 }
             }' >> "$PUBLIC_INDEX"
+    elif [ "$entry_type" = "snippet" ]; then
+        jq -nc \
+            --arg type "snippet" \
+            --arg path "$file_path" \
+            --arg title "$title" \
+            --arg published "$published" \
+            --arg current_version "$current_version" \
+            '{
+                type: $type,
+                path: $path,
+                title: $title,
+                published: $published,
+                current_version: $current_version
+            }' >> "$SNIPPETS_INDEX"
     else
         jq -nc \
             --arg type "post" \
@@ -3337,9 +3486,24 @@ cmd_republish() {
     # Extract existing metadata
     local title=$(extract_frontmatter_field "$input_file" "title")
     local original_published=$(extract_frontmatter_field "$input_file" "published")
-    local content_type=$(extract_frontmatter_field "$input_file" "type")
 
-    if [ "$content_type" = "comment" ]; then
+    # Auto-detect content type from path, fall back to frontmatter
+    local content_type=""
+    if [[ "$input_file" == "$SNIPPETS_DIR/"* ]] || [[ "$input_file" == snippets/* ]]; then
+        content_type="snippet"
+    elif [[ "$input_file" == "$COMMENTS_DIR/"* ]] || [[ "$input_file" == comments/* ]]; then
+        content_type="comment"
+    elif [[ "$input_file" == "$POSTS_DIR/"* ]] || [[ "$input_file" == posts/* ]]; then
+        content_type="post"
+    else
+        # Fall back to frontmatter type field
+        content_type=$(extract_frontmatter_field "$input_file" "type")
+        [ -z "$content_type" ] && content_type="post"
+    fi
+
+    if [ "$content_type" = "snippet" ]; then
+        info_human "Republishing snippet: $title"
+    elif [ "$content_type" = "comment" ]; then
         info_human "Republishing comment: $title"
     else
         info_human "Republishing post: $title"
@@ -3498,8 +3662,12 @@ signature: $signature
     # Clean up temp files
     rm -f "$temp_file" "$content_only" "$old_content"
 
-    # Rebuild public.json index
-    rebuild_index
+    # Rebuild appropriate index based on content type
+    if [ "$content_type" = "snippet" ]; then
+        rebuild_snippets_index
+    else
+        rebuild_index
+    fi
 
     # Request blessing from discovery service if this is a comment
     if [ "$content_type" = "comment" ]; then
@@ -5206,6 +5374,239 @@ signature: $signature
 }
 
 # ============================================================================
+# SNIPPET COMMAND
+# ============================================================================
+
+# Command: polis snippet <file>
+# Publishes a snippet (signed composable content fragment)
+cmd_snippet() {
+    # Parse command-specific flags first
+    local explicit_filename=""
+    local explicit_title=""
+    local positional_args=()
+
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --filename)
+                explicit_filename="$2"
+                shift 2
+                ;;
+            --title)
+                explicit_title="$2"
+                shift 2
+                ;;
+            *)
+                positional_args+=("$1")
+                shift
+                ;;
+        esac
+    done
+
+    # Restore positional arguments
+    set -- "${positional_args[@]}"
+
+    local input_file="$1"
+
+    if [ -z "$input_file" ]; then
+        json_error "snippet" "INVALID_INPUT" "Usage: polis snippet <filename>\n       polis snippet - [--filename <name>] [--title <title>]"
+    fi
+
+    if [ ! -f "$KEYS_DIR/id_ed25519" ]; then
+        json_error "snippet" "INVALID_STATE" "Polis not initialized. Run 'polis init' first."
+    fi
+
+    # Check for stdin mode
+    local stdin_mode=false
+    local temp_stdin=""
+
+    if [ "$input_file" = "-" ]; then
+        stdin_mode=true
+
+        # Verify stdin is not a terminal (has actual content)
+        if [ -t 0 ]; then
+            json_error "snippet" "INVALID_INPUT" "No stdin content. Use: echo 'content' | polis snippet -"
+        fi
+
+        # Create temp file and read stdin
+        temp_stdin=$(mktemp)
+        cat > "$temp_stdin"
+
+        # Verify content
+        if [ ! -s "$temp_stdin" ]; then
+            rm -f "$temp_stdin"
+            json_error "snippet" "INVALID_INPUT" "Stdin content is empty"
+        fi
+
+        # Point input_file to temp file
+        input_file="$temp_stdin"
+
+        info_human "Reading content from stdin..."
+    else
+        # Regular file mode - check file exists
+        if [ ! -f "$input_file" ]; then
+            json_error "snippet" "FILE_NOT_FOUND" "File not found: $input_file"
+        fi
+    fi
+
+    # Ensure temp file cleanup on exit or error
+    cleanup_stdin() {
+        if [ -n "$temp_stdin" ] && [ -f "$temp_stdin" ]; then
+            rm -f "$temp_stdin"
+        fi
+    }
+    trap cleanup_stdin EXIT ERR
+
+    # Check if file already has frontmatter (already published)
+    if [ "$stdin_mode" = false ] && has_frontmatter "$input_file"; then
+        json_error "snippet" "INVALID_STATE" "File already published (has frontmatter). Use 'polis republish' to update it."
+    fi
+
+    # Store original file path for cleanup later
+    local original_file="$input_file"
+
+    # Determine target path within snippets directory
+    local target_path
+    if [ -n "$explicit_filename" ]; then
+        # Explicit filename takes precedence
+        target_path="$SNIPPETS_DIR/$explicit_filename"
+        # Ensure .md or .html extension
+        if [[ ! "$target_path" =~ \.(md|html)$ ]]; then
+            target_path="${target_path}.md"
+        fi
+    elif [ "$stdin_mode" = true ]; then
+        # Generate synthetic filename for stdin
+        local timestamp_filename=$(date +%Y%m%d-%H%M%S)
+        target_path="$SNIPPETS_DIR/stdin-${timestamp_filename}.md"
+    else
+        # Check if input is already under snippets directory
+        if [[ "$input_file" == "$SNIPPETS_DIR/"* ]]; then
+            target_path="$input_file"
+        else
+            # Use basename under snippets/
+            target_path="$SNIPPETS_DIR/$(basename "$input_file")"
+        fi
+    fi
+
+    # Create parent directories if needed
+    mkdir -p "$(dirname "$target_path")"
+
+    if [ "$stdin_mode" = true ]; then
+        info_human "Publishing snippet from stdin as $target_path..."
+    else
+        info_human "Publishing snippet $original_file..."
+    fi
+
+    # Extract or use explicit title
+    local title
+    if [ -n "$explicit_title" ]; then
+        title="$explicit_title"
+    else
+        title=$(extract_title "$input_file")
+        # If stdin and title is temp filename fallback, use target_path instead
+        if [ "$stdin_mode" = true ] && [[ "$title" =~ ^tmp\. ]]; then
+            title=$(basename "$target_path" | sed 's/\.[^.]*$//' | sed 's/-/ /g' | \
+                    awk '{for(i=1;i<=NF;i++)sub(/./,toupper(substr($i,1,1)),$i)}1')
+        fi
+    fi
+    info_human "Extracted title: $title"
+
+    # Get current timestamp
+    local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+    # Read original content
+    local content=$(cat "$input_file")
+
+    # Hash the canonicalized content for consistent verification
+    local content_hash=$(hash_content_canonical "$input_file")
+    local hash_short="${content_hash:0:6}-${content_hash: -6}"
+
+    info_human "Content hash: sha256:$content_hash"
+    info_human "Short hash: $hash_short"
+
+    # Create frontmatter (without signature first)
+    local frontmatter_template="---
+title: $title
+published: $timestamp
+generator: polis-cli/$VERSION
+current-version: sha256:$content_hash
+version-history:
+  - sha256:$content_hash ($timestamp)
+---"
+
+    # Create temporary file with frontmatter + content (for signing)
+    local temp_file=$(mktemp)
+    echo "$frontmatter_template" > "$temp_file"
+    echo "" >> "$temp_file"
+    cat "$input_file" >> "$temp_file"
+
+    # Sign the file
+    info_human "Signing file..."
+    local signature=$(sign_file "$temp_file")
+
+    # Create final frontmatter with signature
+    local frontmatter="---
+title: $title
+published: $timestamp
+generator: polis-cli/$VERSION
+current-version: sha256:$content_hash
+version-history:
+  - sha256:$content_hash ($timestamp)
+signature: $signature
+---"
+
+    # Write canonical file
+    echo "$frontmatter" > "$target_path"
+    echo "" >> "$target_path"
+    cat "$input_file" >> "$target_path"
+    success_human "Created snippet: $target_path"
+
+    # Initialize version history with full content
+    initialize_version_history "$target_path" "$content_hash" "$timestamp" "$content"
+    local versions_file=$(get_versions_file_path "$target_path")
+    success_human "Created versions file: $versions_file"
+
+    # Clean up temp file
+    rm -f "$temp_file"
+
+    # Handle cleanup based on mode
+    if [ "$stdin_mode" = true ]; then
+        success_human "Published snippet from stdin to $target_path"
+    else
+        # Remove original file if it's not already in the snippets directory
+        local target_abs=$(realpath "$target_path" 2>/dev/null || readlink -f "$target_path" 2>/dev/null || echo "$target_path")
+        local input_abs=$(realpath "$input_file" 2>/dev/null || readlink -f "$input_file" 2>/dev/null || echo "$input_file")
+        if [ "$input_abs" != "$target_abs" ]; then
+            rm -f "$original_file"
+            success_human "Moved original file into snippets/"
+        fi
+    fi
+
+    # Append to snippets.jsonl index
+    append_to_index "$target_path" "snippet"
+
+    # Output results
+    if [ "$JSON_MODE" = true ]; then
+        local result=$(jq -n \
+            --arg path "$target_path" \
+            --arg hash "sha256:$content_hash" \
+            --arg timestamp "$timestamp" \
+            --arg sig "$signature" \
+            '{
+                file_path: $path,
+                content_hash: $hash,
+                timestamp: $timestamp,
+                signature: $sig
+            }')
+        json_success "snippet" "$result"
+    else
+        success "Snippet published!"
+        echo ""
+        info "Canonical: $target_path"
+        info "Versions:  $versions_file"
+    fi
+}
+
+# ============================================================================
 # DOMAIN MIGRATION COMMAND
 # ============================================================================
 
@@ -6294,229 +6695,128 @@ cmd_migrations_apply() {
 }
 
 # ============================================================================
-# RENDER COMMAND - HTML TEMPLATING
+# RENDER COMMAND - HTML THEMING
 # ============================================================================
 
-# Default templates (used if .polis/templates/ doesn't exist)
-DEFAULT_TEMPLATE_POST='<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{title}} - {{site_title}}</title>
-    <style>
-        body { font-family: Georgia, serif; max-width: 720px; margin: 0 auto; padding: 2rem; line-height: 1.7; color: #2d2844; background: #f8f7fc; }
-        header { margin-bottom: 2rem; }
-        header a { color: #6b4db3; text-decoration: none; }
-        h1 { font-size: 2rem; margin-bottom: 0.5rem; }
-        time { color: #5c5677; font-style: italic; }
-        .content { margin: 2rem 0; }
-        .signature { font-size: 0.85rem; color: #5c5677; padding-top: 1rem; border-top: 1px solid #e8e4f4; }
-        .signature code { background: #e8e4f4; padding: 0.2em 0.4em; border-radius: 3px; font-size: 0.85em; }
-        .comments { margin-top: 3rem; padding-top: 2rem; border-top: 2px solid #e8e4f4; }
-        .comments h2 { font-size: 1.25rem; }
-        .comment { margin: 1.5rem 0; padding: 1rem; background: #fff; border-radius: 6px; border: 1px solid #e8e4f4; }
-        .comment header { margin-bottom: 0.5rem; font-size: 0.9rem; }
-        .comment-content { font-size: 0.95rem; }
-    </style>
-</head>
-<body>
-    <header>
-        <a href="{{site_url}}">{{site_title}}</a>
-    </header>
-    <article>
-        <time datetime="{{published}}">{{published_human}}</time>
-        <div class="content">{{content}}</div>
-        <footer class="signature">
-            Signed: <code>{{signature_short}}</code> &middot; <a href="{{url}}">Permalink</a>
-        </footer>
-    </article>
-    <section class="comments">
-        <h2>Comments ({{blessed_count}})</h2>
-        {{blessed_comments}}
-    </section>
-</body>
-</html>'
-
-DEFAULT_TEMPLATE_COMMENT='<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{title}} - {{site_title}}</title>
-    <style>
-        body { font-family: Georgia, serif; max-width: 720px; margin: 0 auto; padding: 2rem; line-height: 1.7; color: #2d2844; background: #f8f7fc; }
-        header { margin-bottom: 2rem; }
-        header a { color: #6b4db3; text-decoration: none; }
-        h1 { font-size: 1.75rem; margin-bottom: 0.5rem; }
-        time { color: #5c5677; font-style: italic; }
-        .reply-to { font-size: 0.9rem; color: #5c5677; margin-bottom: 1rem; }
-        .content { margin: 2rem 0; }
-        .signature { font-size: 0.85rem; color: #5c5677; padding-top: 1rem; border-top: 1px solid #e8e4f4; }
-        .signature code { background: #e8e4f4; padding: 0.2em 0.4em; border-radius: 3px; font-size: 0.85em; }
-    </style>
-</head>
-<body>
-    <header>
-        <a href="{{site_url}}">{{site_title}}</a>
-    </header>
-    <article>
-        <time datetime="{{published}}">{{published_human}}</time>
-        <p class="reply-to">In reply to: <a href="{{in_reply_to_url}}">{{in_reply_to_url}}</a></p>
-        <div class="content">{{content}}</div>
-        <footer class="signature">
-            Signed: <code>{{signature_short}}</code> &middot; <a href="{{url}}">Permalink</a>
-        </footer>
-    </article>
-</body>
-</html>'
-
-DEFAULT_TEMPLATE_COMMENT_INLINE='<article class="comment">
-    <header>
-        <a href="{{author_url}}">{{author_name}}</a> &middot;
-        <time datetime="{{published}}">{{published_human}}</time>
-    </header>
-    <div class="comment-content">{{content}}</div>
-    <footer>
-        <a href="{{url}}">Permalink</a>
-    </footer>
-</article>'
-
-DEFAULT_TEMPLATE_INDEX='<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{site_title}}</title>
-    <style>
-        body { font-family: Georgia, serif; max-width: 720px; margin: 0 auto; padding: 2rem; line-height: 1.7; color: #2d2844; background: #f8f7fc; }
-        h1 { font-size: 2rem; margin-bottom: 2rem; }
-        h2 { font-size: 1.5rem; margin-top: 2rem; color: #5a3d96; }
-        ul { list-style: none; padding: 0; }
-        li { margin: 1rem 0; padding-bottom: 1rem; border-bottom: 1px solid #e8e4f4; }
-        li:last-child { border-bottom: none; }
-        a { color: #6b4db3; }
-        time { color: #5c5677; font-size: 0.9rem; }
-        .count { color: #5c5677; font-size: 0.9rem; }
-        footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #e8e4f4; font-size: 0.85rem; color: #5c5677; }
-    </style>
-</head>
-<body>
-    <h1>{{site_title}}</h1>
-    <p class="count">{{post_count}} posts</p>
-    <section>
-        <h2>Posts</h2>
-        <ul>
-{{posts_list}}
-        </ul>
-    </section>
-    <footer>
-        Powered by <a href="https://github.com/vdibart/polis-cli">Polis</a> &middot; &copy; {{year}}
-    </footer>
-</body>
-</html>'
+# Active theme name (set by load_theme or select_theme)
+ACTIVE_THEME=""
 
 # Template storage (associative array)
 declare -A TEMPLATES
 
-# Load templates from .polis/templates/ or use defaults
-load_templates() {
-    local template_dir=".polis/templates"
+# Get list of available themes
+get_available_themes() {
+    local themes=()
+    if [ -d "$THEMES_DIR" ]; then
+        for theme_path in "$THEMES_DIR"/*; do
+            if [ -d "$theme_path" ] && [ -f "$theme_path/index.html" ]; then
+                themes+=("$(basename "$theme_path")")
+            fi
+        done
+    fi
+    printf '%s\n' "${themes[@]}"
+}
 
-    if [ -f "$template_dir/post.html" ]; then
-        TEMPLATES[post]=$(cat "$template_dir/post.html")
-    else
-        TEMPLATES[post]="$DEFAULT_TEMPLATE_POST"
+# Select and save active theme (if not already set)
+select_theme() {
+    local available_themes
+    available_themes=($(get_available_themes))
+
+    if [ ${#available_themes[@]} -eq 0 ]; then
+        json_error "render" "INVALID_STATE" "No themes found in $THEMES_DIR. Run 'polis init' to install default themes."
     fi
 
-    if [ -f "$template_dir/comment.html" ]; then
-        TEMPLATES[comment]=$(cat "$template_dir/comment.html")
-    else
-        TEMPLATES[comment]="$DEFAULT_TEMPLATE_COMMENT"
+    # Check if active_theme is already set in manifest
+    if [ -f "$MANIFEST" ]; then
+        local saved_theme
+        saved_theme=$(jq -r '.active_theme // empty' "$MANIFEST" 2>/dev/null)
+        if [ -n "$saved_theme" ] && [ "$saved_theme" != "null" ]; then
+            # Verify theme exists
+            if [ -d "$THEMES_DIR/$saved_theme" ]; then
+                ACTIVE_THEME="$saved_theme"
+                return 0
+            else
+                json_error "render" "INVALID_STATE" "Active theme '$saved_theme' not found in $THEMES_DIR"
+            fi
+        fi
     fi
 
-    if [ -f "$template_dir/comment-inline.html" ]; then
-        TEMPLATES[comment_inline]=$(cat "$template_dir/comment-inline.html")
-    else
-        TEMPLATES[comment_inline]="$DEFAULT_TEMPLATE_COMMENT_INLINE"
-    fi
+    # Randomly select a theme
+    local random_index=$((RANDOM % ${#available_themes[@]}))
+    ACTIVE_THEME="${available_themes[$random_index]}"
 
-    if [ -f "$template_dir/index.html" ]; then
-        TEMPLATES[index]=$(cat "$template_dir/index.html")
+    # Save to manifest
+    if [ -f "$MANIFEST" ]; then
+        local tmp_manifest
+        tmp_manifest=$(mktemp)
+        if jq --arg theme "$ACTIVE_THEME" '. + {active_theme: $theme}' "$MANIFEST" > "$tmp_manifest" 2>/dev/null; then
+            mv "$tmp_manifest" "$MANIFEST"
+            info_human "Selected theme: $ACTIVE_THEME (saved to manifest)"
+        else
+            rm -f "$tmp_manifest"
+            warn "Failed to save theme to manifest"
+            info_human "Selected theme: $ACTIVE_THEME (not saved)"
+        fi
     else
-        TEMPLATES[index]="$DEFAULT_TEMPLATE_INDEX"
+        warn "No manifest file found at $MANIFEST"
+        info_human "Selected theme: $ACTIVE_THEME (not saved)"
     fi
 }
 
-# Initialize templates directory with defaults
-init_templates() {
-    local template_dir=".polis/templates"
-    local created=()
-    local skipped=()
+# Load theme templates from .polis/themes/<name>/
+load_theme() {
+    local theme_name="$1"
 
-    mkdir -p "$template_dir"
-
-    # Only create files that don't already exist
-    if [ ! -f "$template_dir/post.html" ]; then
-        echo "$DEFAULT_TEMPLATE_POST" > "$template_dir/post.html"
-        created+=("post.html")
-    else
-        skipped+=("post.html")
+    if [ -z "$theme_name" ]; then
+        # Try to get from manifest
+        if [ -f "$MANIFEST" ]; then
+            theme_name=$(jq -r '.active_theme // empty' "$MANIFEST" 2>/dev/null)
+        fi
     fi
 
-    if [ ! -f "$template_dir/comment.html" ]; then
-        echo "$DEFAULT_TEMPLATE_COMMENT" > "$template_dir/comment.html"
-        created+=("comment.html")
-    else
-        skipped+=("comment.html")
+    if [ -z "$theme_name" ] || [ "$theme_name" = "null" ]; then
+        json_error "render" "INVALID_STATE" "No active theme set. This should not happen on first render."
     fi
 
-    if [ ! -f "$template_dir/comment-inline.html" ]; then
-        echo "$DEFAULT_TEMPLATE_COMMENT_INLINE" > "$template_dir/comment-inline.html"
-        created+=("comment-inline.html")
-    else
-        skipped+=("comment-inline.html")
+    local theme_dir="$THEMES_DIR/$theme_name"
+
+    if [ ! -d "$theme_dir" ]; then
+        json_error "render" "INVALID_STATE" "Theme '$theme_name' not found in $THEMES_DIR"
     fi
 
-    if [ ! -f "$template_dir/index.html" ]; then
-        echo "$DEFAULT_TEMPLATE_INDEX" > "$template_dir/index.html"
-        created+=("index.html")
+    # Load required templates
+    if [ -f "$theme_dir/post.html" ]; then
+        TEMPLATES[post]=$(cat "$theme_dir/post.html")
     else
-        skipped+=("index.html")
+        json_error "render" "INVALID_STATE" "Theme '$theme_name' missing post.html"
     fi
 
-    if [ "$JSON_MODE" = true ]; then
-        local created_json="[]"
-        local skipped_json="[]"
-        if [ ${#created[@]} -gt 0 ]; then
-            created_json=$(printf '%s\n' "${created[@]}" | jq -R . | jq -s .)
-        fi
-        if [ ${#skipped[@]} -gt 0 ]; then
-            skipped_json=$(printf '%s\n' "${skipped[@]}" | jq -R . | jq -s .)
-        fi
-        json_success "render" "$(jq -n \
-            --argjson created "$created_json" \
-            --argjson skipped "$skipped_json" \
-            --arg path "$template_dir/" \
-            '{templates_created: ($created | length), templates_skipped: ($skipped | length), created: $created, skipped: $skipped, path: $path}')"
+    if [ -f "$theme_dir/comment.html" ]; then
+        TEMPLATES[comment]=$(cat "$theme_dir/comment.html")
     else
-        if [ ${#created[@]} -gt 0 ]; then
-            success "Created template files in $template_dir/"
-            for f in "${created[@]}"; do
-                info "  - $f"
-            done
-        fi
-        if [ ${#skipped[@]} -gt 0 ]; then
-            info "Skipped existing templates (not overwritten):"
-            for f in "${skipped[@]}"; do
-                info "  - $f"
-            done
-        fi
-        if [ ${#created[@]} -gt 0 ]; then
-            info "Edit these files to customize your HTML output."
-        elif [ ${#skipped[@]} -eq 4 ]; then
-            info "All templates already exist. No changes made."
-        fi
+        json_error "render" "INVALID_STATE" "Theme '$theme_name' missing comment.html"
+    fi
+
+    if [ -f "$theme_dir/comment-inline.html" ]; then
+        TEMPLATES[comment_inline]=$(cat "$theme_dir/comment-inline.html")
+    else
+        # Fall back to blessed-comment snippet if comment-inline doesn't exist
+        TEMPLATES[comment_inline]=""
+    fi
+
+    if [ -f "$theme_dir/index.html" ]; then
+        TEMPLATES[index]=$(cat "$theme_dir/index.html")
+    else
+        json_error "render" "INVALID_STATE" "Theme '$theme_name' missing index.html"
+    fi
+
+    ACTIVE_THEME="$theme_name"
+
+    # Copy theme CSS to styles.css
+    local css_file="$theme_dir/$theme_name.css"
+    if [ -f "$css_file" ]; then
+        cp "$css_file" "styles.css"
+        info_human "Copied $theme_name.css to styles.css"
     fi
 }
 
@@ -6670,6 +6970,308 @@ render_blessed_comments() {
     echo "$blessed_html"
 }
 
+# Load a snippet by path and render it
+# Returns rendered HTML content
+# Lookup order: theme snippets -> global snippets
+load_snippet() {
+    local snippet_path="$1"
+    local context="$2"  # Optional JSON context for variable substitution
+
+    # Try to find the snippet file
+    # 1. First check theme snippets
+    # 2. Then check global snippets
+    local snippet_file=""
+    local theme_snippets_dir="$THEMES_DIR/$ACTIVE_THEME/snippets"
+
+    # Check theme snippets first
+    if [ -n "$ACTIVE_THEME" ] && [ -d "$theme_snippets_dir" ]; then
+        if [ -f "$theme_snippets_dir/$snippet_path.md" ]; then
+            snippet_file="$theme_snippets_dir/$snippet_path.md"
+        elif [ -f "$theme_snippets_dir/$snippet_path.html" ]; then
+            snippet_file="$theme_snippets_dir/$snippet_path.html"
+        elif [ -f "$theme_snippets_dir/$snippet_path" ]; then
+            snippet_file="$theme_snippets_dir/$snippet_path"
+        fi
+    fi
+
+    # Fall back to global snippets
+    if [ -z "$snippet_file" ]; then
+        if [ -f "$SNIPPETS_DIR/$snippet_path.md" ]; then
+            snippet_file="$SNIPPETS_DIR/$snippet_path.md"
+        elif [ -f "$SNIPPETS_DIR/$snippet_path.html" ]; then
+            snippet_file="$SNIPPETS_DIR/$snippet_path.html"
+        elif [ -f "$SNIPPETS_DIR/$snippet_path" ]; then
+            snippet_file="$SNIPPETS_DIR/$snippet_path"
+        fi
+    fi
+
+    local content=""
+
+    if [ -n "$snippet_file" ] && [ -f "$snippet_file" ]; then
+        # Extract content without frontmatter
+        if has_frontmatter "$snippet_file"; then
+            content=$(extract_content_without_frontmatter "$snippet_file")
+        else
+            content=$(cat "$snippet_file")
+        fi
+
+        # Process based on file extension
+        if [[ "$snippet_file" == *.md ]]; then
+            # Remove leading blank lines, render markdown to HTML
+            content=$(echo "$content" | sed '/./,$!d')
+            content=$(echo "$content" | pandoc -f markdown -t html 2>/dev/null)
+        fi
+        # .html files are used as-is
+    fi
+    # If no snippet found, content is empty
+
+    echo "$content"
+}
+
+# Render all {{> path}} partial includes in content
+# Recursively processes snippets that include other snippets
+# Arguments:
+#   $1 - Content containing {{> path}} patterns
+#   $2 - Optional context JSON for variable substitution
+#   $3 - Depth counter (for recursion limit)
+render_partials() {
+    local content="$1"
+    local context="${2:-}"
+    local depth="${3:-0}"
+
+    # Prevent infinite recursion
+    if [ "$depth" -gt 10 ]; then
+        warn "Maximum snippet nesting depth (10) exceeded"
+        echo "$content"
+        return
+    fi
+
+    # Find all {{> path}} patterns and replace them
+    # Pattern: {{> some/path}} or {{> some/path.html}}
+    local result="$content"
+    local pattern='\{\{>\s*([^}]+)\s*\}\}'
+
+    # Use grep to find all matches, process each one
+    while [[ "$result" =~ $pattern ]]; do
+        local full_match="${BASH_REMATCH[0]}"
+        local snippet_path="${BASH_REMATCH[1]}"
+
+        # Trim whitespace from path
+        snippet_path=$(echo "$snippet_path" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+        # Load and render the snippet
+        local snippet_content
+        snippet_content=$(load_snippet "$snippet_path" "$context")
+
+        # Recursively render any partials in the loaded snippet
+        if [ -n "$snippet_content" ]; then
+            snippet_content=$(render_partials "$snippet_content" "$context" $((depth + 1)))
+        fi
+
+        # Escape the snippet content for bash replacement
+        local escaped_snippet
+        escaped_snippet=$(escape_for_replacement "$snippet_content")
+
+        # Replace the first occurrence of this partial
+        result="${result//"$full_match"/$escaped_snippet}"
+    done
+
+    echo "$result"
+}
+
+# Render {{#section}}...{{/section}} loop blocks
+# Supports: {{#posts}}, {{#comments}}, {{#blessed_comments}}
+# Arguments:
+#   $1 - Content containing section blocks
+#   $2 - Optional context (e.g., post URL for blessed_comments)
+render_sections() {
+    local content="$1"
+    local context="${2:-}"
+    local result="$content"
+
+    # Process {{#posts}}...{{/posts}} blocks
+    if echo "$result" | grep -q '{{#posts}}'; then
+        # Extract inner template using perl (handles multiline)
+        local inner_template
+        inner_template=$(echo "$result" | perl -0777 -ne 'print $1 if /\{\{#posts\}\}(.*?)\{\{\/posts\}\}/s')
+        local posts_html=""
+
+        if [ -f "$PUBLIC_INDEX" ]; then
+            local sorted_posts
+            sorted_posts=$(jq -s '[.[] | select(.type == "post" or .type == null)] | sort_by(.published) | reverse' "$PUBLIC_INDEX" 2>/dev/null)
+
+            local num_posts
+            num_posts=$(echo "$sorted_posts" | jq 'length')
+
+            for ((i=0; i<num_posts; i++)); do
+                local path=$(echo "$sorted_posts" | jq -r ".[$i].path // empty")
+                local title=$(echo "$sorted_posts" | jq -r ".[$i].title // \"Untitled\"")
+                local published=$(echo "$sorted_posts" | jq -r ".[$i].published // empty")
+
+                [ -z "$path" ] && continue
+
+                local url="${path%.md}.html"
+                local published_human=$(format_date_human "$published")
+
+                # Count blessed comments for this post
+                local comment_count=0
+                if [ -f "$BLESSED_COMMENTS" ]; then
+                    local post_url_full="$POLIS_BASE_URL/$url"
+                    comment_count=$(jq --arg url "$post_url_full" '[.[] | select(.post_url == $url)] | length' "$BLESSED_COMMENTS" 2>/dev/null || echo 0)
+                fi
+
+                # Render inner template with item variables
+                local item_html="$inner_template"
+
+                # Process any partials in the inner template
+                item_html=$(render_partials "$item_html")
+
+                # Substitute item-level variables
+                item_html="${item_html//\{\{url\}\}/$(escape_for_replacement "$url")}"
+                item_html="${item_html//\{\{title\}\}/$(escape_for_replacement "$title")}"
+                item_html="${item_html//\{\{published\}\}/$(escape_for_replacement "$published")}"
+                item_html="${item_html//\{\{published_human\}\}/$(escape_for_replacement "$published_human")}"
+                item_html="${item_html//\{\{comment_count\}\}/$(escape_for_replacement "$comment_count")}"
+
+                posts_html+="$item_html"
+            done
+        fi
+
+        # Replace the entire section with rendered posts (use temp file to avoid escaping issues)
+        local tmp_replacement=$(mktemp)
+        echo -n "$posts_html" > "$tmp_replacement"
+        result=$(echo "$result" | perl -0777 -pe '
+            BEGIN { local $/; open my $fh, "<", "'"$tmp_replacement"'"; $repl = <$fh>; close $fh; }
+            s/\{\{#posts\}\}.*?\{\{\/posts\}\}/$repl/s;
+        ')
+        rm -f "$tmp_replacement"
+    fi
+
+    # Process {{#comments}}...{{/comments}} blocks (outgoing comments)
+    if echo "$result" | grep -q '{{#comments}}'; then
+        # Extract inner template using perl (handles multiline)
+        local inner_template
+        inner_template=$(echo "$result" | perl -0777 -ne 'print $1 if /\{\{#comments\}\}(.*?)\{\{\/comments\}\}/s')
+        local comments_html=""
+
+        if [ -f "$PUBLIC_INDEX" ]; then
+            local sorted_comments
+            sorted_comments=$(jq -s '[.[] | select(.type == "comment")] | sort_by(.published) | reverse' "$PUBLIC_INDEX" 2>/dev/null)
+
+            local num_comments
+            num_comments=$(echo "$sorted_comments" | jq 'length')
+
+            for ((i=0; i<num_comments; i++)); do
+                local path=$(echo "$sorted_comments" | jq -r ".[$i].path // empty")
+                local published=$(echo "$sorted_comments" | jq -r ".[$i].published // empty")
+                local in_reply_to=$(echo "$sorted_comments" | jq -r ".[$i].in_reply_to // empty")
+
+                [ -z "$path" ] && continue
+
+                local url="${path%.md}.html"
+                local published_human=$(format_date_human "$published")
+
+                # Extract target author from in_reply_to URL
+                local target_author=""
+                if [ -n "$in_reply_to" ]; then
+                    target_author=$(echo "$in_reply_to" | sed -E 's|https?://([^/]+).*|\1|')
+                fi
+
+                # Get preview from file body
+                local preview=""
+                if [ -f "$path" ]; then
+                    preview=$(extract_body_from_file "$path" | head -c 100 | tr '\n' ' ')
+                    [ ${#preview} -ge 100 ] && preview="${preview}..."
+                fi
+
+                # Render inner template with item variables
+                local item_html="$inner_template"
+
+                # Process any partials in the inner template
+                item_html=$(render_partials "$item_html")
+
+                # Substitute item-level variables
+                item_html="${item_html//\{\{url\}\}/$(escape_for_replacement "$url")}"
+                item_html="${item_html//\{\{published\}\}/$(escape_for_replacement "$published")}"
+                item_html="${item_html//\{\{published_human\}\}/$(escape_for_replacement "$published_human")}"
+                item_html="${item_html//\{\{target_author\}\}/$(escape_for_replacement "$target_author")}"
+                item_html="${item_html//\{\{preview\}\}/$(escape_for_replacement "$preview")}"
+
+                comments_html+="$item_html"
+            done
+        fi
+
+        # Replace the entire section with rendered comments (use temp file to avoid escaping issues)
+        local tmp_replacement=$(mktemp)
+        echo -n "$comments_html" > "$tmp_replacement"
+        result=$(echo "$result" | perl -0777 -pe '
+            BEGIN { local $/; open my $fh, "<", "'"$tmp_replacement"'"; $repl = <$fh>; close $fh; }
+            s/\{\{#comments\}\}.*?\{\{\/comments\}\}/$repl/s;
+        ')
+        rm -f "$tmp_replacement"
+    fi
+
+    # Process {{#blessed_comments}}...{{/blessed_comments}} blocks
+    if echo "$result" | grep -q '{{#blessed_comments}}'; then
+        # Extract inner template using perl (handles multiline)
+        local inner_template
+        inner_template=$(echo "$result" | perl -0777 -ne 'print $1 if /\{\{#blessed_comments\}\}(.*?)\{\{\/blessed_comments\}\}/s')
+        local blessed_html=""
+        local post_url="$context"  # The post URL we're rendering blessed comments for
+
+        if [ -f "$BLESSED_COMMENTS" ] && [ -n "$post_url" ]; then
+            local post_url_md="${post_url%.html}.md"
+            local comments_json
+            comments_json=$(jq -c --arg url "$post_url" --arg url_md "$post_url_md" \
+                '.[] | select(.post_url == $url or .post_url == $url_md)' "$BLESSED_COMMENTS" 2>/dev/null)
+
+            while IFS= read -r comment_entry; do
+                [ -z "$comment_entry" ] && continue
+
+                local comment_url=$(echo "$comment_entry" | jq -r '.comment_url // empty')
+                local author_name=$(echo "$comment_entry" | jq -r '.author // "Anonymous"')
+                local published=$(echo "$comment_entry" | jq -r '.published // empty')
+
+                [ -z "$comment_url" ] && continue
+
+                local published_human=$(format_date_human "$published")
+
+                # Fetch comment content from the comment URL
+                local comment_content=""
+                # Try to extract body from local cache or fetch remotely
+                # For now, use the body field if available, otherwise empty
+                comment_content=$(echo "$comment_entry" | jq -r '.body // empty')
+
+                # Render inner template with item variables
+                local item_html="$inner_template"
+
+                # Process any partials in the inner template
+                item_html=$(render_partials "$item_html")
+
+                # Substitute item-level variables
+                item_html="${item_html//\{\{url\}\}/$(escape_for_replacement "$comment_url")}"
+                item_html="${item_html//\{\{author_name\}\}/$(escape_for_replacement "$author_name")}"
+                item_html="${item_html//\{\{published\}\}/$(escape_for_replacement "$published")}"
+                item_html="${item_html//\{\{published_human\}\}/$(escape_for_replacement "$published_human")}"
+                item_html="${item_html//\{\{content\}\}/$(escape_for_replacement "$comment_content")}"
+
+                blessed_html+="$item_html"
+            done <<< "$comments_json"
+        fi
+
+        # Replace the entire section with rendered blessed comments (use temp file to avoid escaping issues)
+        local tmp_replacement=$(mktemp)
+        echo -n "$blessed_html" > "$tmp_replacement"
+        result=$(echo "$result" | perl -0777 -pe '
+            BEGIN { local $/; open my $fh, "<", "'"$tmp_replacement"'"; $repl = <$fh>; close $fh; }
+            s/\{\{#blessed_comments\}\}.*?\{\{\/blessed_comments\}\}/$repl/s;
+        ')
+        rm -f "$tmp_replacement"
+    fi
+
+    echo "$result"
+}
+
 # Render a single file to HTML
 render_file() {
     local input_file="$1"
@@ -6731,6 +7333,26 @@ render_file() {
         [ -n "$wk_name" ] && author_name="$wk_name"
     fi
 
+    # Calculate relative path to root and CSS (count directory depth)
+    local dir_path=$(dirname "$input_file")
+    local root_path=""
+    local css_path=""
+    local home_path=""
+    if [ "$dir_path" = "." ]; then
+        root_path="./"
+        css_path="styles.css"
+        home_path="index.html"
+    else
+        # Count slashes to determine depth
+        local depth=$(echo "$dir_path" | tr -cd '/' | wc -c)
+        depth=$((depth + 1))  # Add 1 for the directory itself
+        for ((i=0; i<depth; i++)); do
+            root_path+="../"
+        done
+        css_path="${root_path}styles.css"
+        home_path="${root_path}index.html"
+    fi
+
     # Choose template
     local template="${TEMPLATES[$type]}"
     [ -z "$template" ] && template="${TEMPLATES[post]}"
@@ -6756,6 +7378,14 @@ render_file() {
     # Substitute all variables
     # Note: Values containing HTML must be escaped for bash pattern replacement
     local result="$template"
+
+    # Process {{> partial}} includes first
+    result=$(render_partials "$result")
+
+    # Process {{#section}}...{{/section}} loops
+    # Pass full post URL as context for blessed_comments lookup
+    result=$(render_sections "$result" "$POLIS_BASE_URL/$url")
+
     result="${result//\{\{title\}\}/$(escape_for_replacement "$title")}"
     result="${result//\{\{content\}\}/$(escape_for_replacement "$html_content")}"
     result="${result//\{\{published\}\}/$(escape_for_replacement "$(format_date_human "$published")")}"
@@ -6765,6 +7395,8 @@ render_file() {
     result="${result//\{\{signature_short\}\}/$(escape_for_replacement "$signature_short")}"
     result="${result//\{\{site_url\}\}/$(escape_for_replacement "$POLIS_BASE_URL")}"
     result="${result//\{\{site_title\}\}/$(escape_for_replacement "$site_title")}"
+    result="${result//\{\{css_path\}\}/$(escape_for_replacement "$css_path")}"
+    result="${result//\{\{home_path\}\}/$(escape_for_replacement "$home_path")}"
     result="${result//\{\{author_name\}\}/$(escape_for_replacement "$author_name")}"
     result="${result//\{\{author_url\}\}/$(escape_for_replacement "$POLIS_BASE_URL")}"
     result="${result//\{\{year\}\}/$(escape_for_replacement "$(date +%Y)")}"
@@ -6831,8 +7463,15 @@ render_index() {
     # Substitute template
     local result="${TEMPLATES[index]}"
     if [ -z "$result" ]; then
-        error "Index template is empty. Run 'polis render --init-templates' or check .polis/templates/index.html"
+        error "Index template is empty. Check $THEMES_DIR/$ACTIVE_THEME/index.html or set active_theme in manifest.json"
     fi
+
+    # Process {{> partial}} includes first
+    result=$(render_partials "$result")
+
+    # Process {{#section}}...{{/section}} loops (posts, comments)
+    result=$(render_sections "$result")
+
     result="${result//\{\{site_title\}\}/$(escape_for_replacement "$site_title")}"
     result="${result//\{\{site_url\}\}/$(escape_for_replacement "$POLIS_BASE_URL")}"
     result="${result//\{\{posts_list\}\}/$(escape_for_replacement "$posts_list")}"
@@ -6854,12 +7493,8 @@ cmd_render() {
                 force=true
                 shift
                 ;;
-            --init-templates)
-                init_templates
-                return
-                ;;
             *)
-                json_error "render" "INVALID_INPUT" "Unknown option: $1. Use: polis render [--force] or polis render --init-templates"
+                json_error "render" "INVALID_INPUT" "Unknown option: $1. Use: polis render [--force]"
                 ;;
         esac
     done
@@ -6874,8 +7509,21 @@ cmd_render() {
         json_error "render" "MISSING_DEPENDENCY" "pandoc is required for rendering. Install with: apt install pandoc (Linux) or brew install pandoc (macOS)"
     fi
 
-    # Load templates
-    load_templates
+    # Ensure active theme is set (select one if not)
+    if [ -f "$MANIFEST" ]; then
+        local saved_theme
+        saved_theme=$(jq -r '.active_theme // empty' "$MANIFEST" 2>/dev/null)
+        if [ -z "$saved_theme" ] || [ "$saved_theme" = "null" ]; then
+            info_human "No active theme set - selecting theme..."
+            select_theme
+        fi
+    else
+        info_human "No manifest found - selecting theme..."
+        select_theme
+    fi
+
+    # Load theme templates
+    load_theme
 
     info_human "=== Render Configuration ==="
     info_human "Working directory: $(pwd)"
@@ -6883,6 +7531,7 @@ cmd_render() {
     info_human "Posts dir: $POSTS_DIR"
     info_human "Comments dir: $COMMENTS_DIR"
     info_human "Blessed comments file: $BLESSED_COMMENTS"
+    info_human "Active theme: $ACTIVE_THEME"
 
     # Show blessed-comments.json summary
     if [ -f "$BLESSED_COMMENTS" ]; then
@@ -6898,7 +7547,7 @@ cmd_render() {
         info_human "Blessed comments: file not found"
     fi
 
-    info_human "Templates loaded"
+    info_human "Theme loaded: $ACTIVE_THEME"
 
     local posts_rendered=0
     local posts_skipped=0
@@ -7017,6 +7666,9 @@ main() {
         comment)
             cmd_comment "$@"
             ;;
+        snippet)
+            cmd_snippet "$@"
+            ;;
         preview)
             cmd_preview "$@"
             ;;
@@ -7096,8 +7748,11 @@ main() {
             echo "  polis publish -                 Publish from stdin (use --filename, --title for options)"
             echo "  polis comment <file> [url]      Create a comment on a post"
             echo "  polis comment - <url>           Comment from stdin (use --filename, --title for options)"
-            echo "  polis republish <file>          Update an already-published file"
+            echo "  polis snippet <file>            Publish a reusable template snippet"
+            echo "  polis snippet -                 Snippet from stdin (use --filename, --title for options)"
+            echo "  polis republish <file>          Update an already-published file (auto-detects type)"
             echo "  polis preview <url>             Preview a post or comment at a URL with signature verification"
+            echo "  polis extract <file> <hash>     Reconstruct a specific version of a file"
             echo ""
             echo "Commands related to requesting, reviewing, or granting blessings on comments:"
             echo "  polis blessing requests         List pending blessing requests; use 'polis preview' to see details"
@@ -7118,7 +7773,6 @@ main() {
             echo ""
             echo "Commands related to site administration:"
             echo "  polis render [--force]          Render markdown posts and comments to HTML"
-            echo "  polis render --init-templates   Create .polis/templates/ with default templates for customization"
             echo "  polis notifications             Show pending actions (blessing requests, domain migrations)"
             echo "  polis migrate <new-domain>      Migrate all content to a new domain (re-signs files, updates DB)"
             echo "  polis migrations apply          Apply discovered domain migrations to local files"
@@ -7133,6 +7787,7 @@ main() {
             echo "    --keys-dir <path>             Custom keys directory (default: .polis/keys)"
             echo "    --posts-dir <path>            Custom posts directory (default: posts)"
             echo "    --comments-dir <path>         Custom comments directory (default: comments)"
+            echo "    --snippets-dir <path>         Custom snippets directory (default: snippets)"
             echo "    --versions-dir <path>         Custom versions directory (default: .versions)"
             echo "  polis rebuild --content|--comments|--all"
             echo "                                  Rebuild local indexes (flags are combinable)"
@@ -7142,7 +7797,6 @@ main() {
             echo "  polis config                    Show all configuration settings (supports --json)"
             echo "  polis rotate-key [--delete-old-key]"
             echo "                                  Generate new keypair and re-sign all content"
-            echo "  polis extract <file> <hash> Reconstruct a specific version of a file"
             echo ""
             echo "Polis includes support for stdin:"
             echo "  Pipe content directly without creating temporary files:"

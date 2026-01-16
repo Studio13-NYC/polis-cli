@@ -5,6 +5,80 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.27.0] - 2026-01-16
+
+### Added
+- **Theme system** - Self-contained styling packages with templates, CSS, and snippets
+  - Ships with 3 built-in themes: turbo (retro computing), zane (neutral dark), sols (violet/peach)
+  - Themes stored at `themes/` in the distribution, copied to `.polis/themes/` on init
+  - Each theme contains: index.html, post.html, comment.html, comment-inline.html, theme CSS, snippets/
+  - THEMES_DIR configurable via environment, .env, or .well-known/polis config
+
+- **First-render theme selection** - Automatic theme setup on first render
+  - Randomly selects from available themes if `active_theme` not set in manifest
+  - Copies theme CSS to `styles.css` at site root
+  - Theme selection stored in `manifest.json` for persistence
+
+- **Snippets** - New signed content type for reusable template fragments
+  - `polis snippet <file>` - Sign and publish snippets to `snippets/` directory
+  - `polis snippet -` - Create snippets from stdin (supports `--filename`, `--title` flags)
+  - Snippets tracked in `metadata/snippets.jsonl` (parallel to `public.jsonl`)
+  - Both `.md` (pandoc processed) and `.html` (as-is) formats supported
+  - Two-level lookup: theme snippets first, then global snippets directory
+
+- **Mustache templating syntax** - Standard partial and loop syntax for composable templates
+  - `{{> path/to/snippet}}` - Include snippets in templates (recursive up to 10 levels)
+  - `{{#posts}}...{{/posts}}` - Loop over posts with item variables
+  - `{{#comments}}...{{/comments}}` - Loop over outgoing comments
+  - `{{#blessed_comments}}...{{/blessed_comments}}` - Loop over blessed comments on posts
+
+- **Post navigation bar** - Home link and date display on post pages
+  - `{{home_path}}` variable provides relative links back to homepage
+  - Navigation bar styled with theme accent colors
+  - Displays "← Home" link and post publication date
+
+### Changed
+- **`polis init`** - Now installs theme files alongside initialization
+  - Looks for `themes/` directory alongside polis script (follows symlinks)
+  - Copies themes to `.polis/themes/` (or custom location via `--themes-dir` flag)
+  - Warns if themes directory not found but continues initialization
+  - Adds `directories.themes` to `.well-known/polis` config
+
+- **`polis render`** - Enhanced with theme system support
+  - On first render, auto-selects theme and saves to manifest
+  - Loads templates from active theme directory
+  - Copies theme CSS to styles.css on each render
+
+- **`polis republish`** - Now auto-detects content type by path
+  - `posts/**` paths republish as posts
+  - `comments/**` paths republish as comments
+  - `snippets/**` paths republish as snippets
+  - Falls back to frontmatter `type` field if path doesn't match
+
+### Fixed
+- **Theme persistence** - `active_theme` now preserved when manifest regenerates after render
+- **Multiline template sections** - `{{#section}}...{{/section}}` blocks now handle multiline content correctly
+- **Nested content CSS paths** - Posts/comments use relative `{{css_path}}` (e.g., `../../styles.css`) for correct styling
+- **Post template duplicate h1** - Removed duplicate title from hero section; markdown `#` heading is now the only h1
+- **Navigation bar layout** - Navigation items now grouped together instead of spread across full width
+
+### Removed
+- **`polis render --init-templates`** - Replaced by theme system
+  - Templates now come from themes, not a separate init command
+  - Custom templates should be created as a custom theme
+
+- **`.polis/templates/` directory** - Replaced by `.polis/themes/`
+  - Migration guide available in TEMPLATING.md for existing customizations
+
+### Documentation
+- **TEMPLATING.md** - Complete rewrite as comprehensive theme system guide
+  - Theme structure and file organization
+  - Snippet lookup order and override mechanism
+  - Theme developer's guide with CSS conventions
+  - Migration guide from old template system
+- **USAGE.md** - Updated directory structure and `polis init` options
+- **JSON-MODE.md** - Removed `--init-templates` response format documentation
+
 ## [0.26.0] - 2026-01-15
 
 ### Changed

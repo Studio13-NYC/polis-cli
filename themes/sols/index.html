@@ -1,0 +1,61 @@
+<!--
+    Polis Theme: Sols - Homepage Template
+
+    Snippets loaded by this template:
+    - about          - About section (theme: snippets/about.html, global: snippets/about.md)
+    - post-item      - Post list item (theme: snippets/post-item.html)
+    - comment-item   - Comment list item (theme: snippets/comment-item.html)
+
+    Snippet lookup order: theme snippets then global snippets
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{site_title}}</title>
+    <meta name="description" content="{{site_title}} - A polis site">
+    <link rel="stylesheet" href="styles.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <!-- Hero -->
+    <section class="hero">
+        <h1 class="hero-title">{{site_title}}</h1>
+    </section>
+
+    <!-- About -->
+    {{> about}}
+
+    <!-- Recent Posts -->
+    <section class="recent-posts">
+        <div class="container">
+            <h2 class="section-title">Recent Posts</h2>
+            <div class="post-list">
+{{#posts}}
+                {{> post-item}}
+{{/posts}}
+            </div>
+        </div>
+    </section>
+
+    <!-- Recent Comments -->
+    <section class="recent-comments">
+        <div class="container">
+            <h2 class="section-title">Recent Comments</h2>
+            <div class="comment-list">
+{{#comments}}
+                {{> comment-item}}
+{{/comments}}
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="site-footer">
+        <a href="https://polis.pub" class="footer-logo">POLIS<span class="footer-tagline">Your content, free from platform control</span></a>
+    </footer>
+</body>
+</html>

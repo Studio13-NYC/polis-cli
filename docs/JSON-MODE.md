@@ -409,19 +409,18 @@ Similar structure to `follow`, with `removed_from_following` and `comments_denie
 }
 ```
 
-### `polis render --init-templates`
+### `polis snippet <file>`
 
 ```json
 {
   "status": "success",
-  "command": "render",
+  "command": "snippet",
   "data": {
-    "templates_created": [
-      ".polis/templates/post.html",
-      ".polis/templates/comment.html",
-      ".polis/templates/comment-inline.html",
-      ".polis/templates/index.html"
-    ]
+    "path": "snippets/homepage/about.md",
+    "title": "About Section",
+    "version": "sha256:abc123...",
+    "timestamp": "2026-01-15T12:00:00Z",
+    "signature": "-----BEGIN SSH SIGNATURE-----..."
   }
 }
 ```

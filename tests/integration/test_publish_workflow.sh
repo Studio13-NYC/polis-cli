@@ -3,7 +3,7 @@
 #
 # Tests covered:
 #   - Full publish -> republish cycle
-#   - Version reconstruction with get-version
+#   - Version reconstruction with extract
 #   - Stdin publish mode
 #   - Rebuild index command
 
@@ -153,7 +153,7 @@ test_rebuild_index() {
     return 0
 }
 
-# Test: Version reconstruction with get-version
+# Test: Version reconstruction with extract
 test_version_reconstruction() {
     setup_test_env "version_reconstruction"
     trap teardown_test_env EXIT
@@ -195,11 +195,11 @@ Even more content for version 3."
     # Try to reconstruct version 1
     log "  Attempting to reconstruct version 1..."
     local reconstructed
-    reconstructed=$("$POLIS_BIN" get-version "$canonical_path" "$v1_hash" 2>&1)
+    reconstructed=$("$POLIS_BIN" extract "$canonical_path" "$v1_hash" 2>&1)
     local exit_code=$?
 
     if [[ $exit_code -ne 0 ]]; then
-        log_error "get-version command failed"
+        log_error "extract command failed"
         log "  Output: $reconstructed"
         return 1
     fi

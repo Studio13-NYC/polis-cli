@@ -150,9 +150,13 @@ body {
     color: var(--color-teal-soft);
 }
 
-.post-meta {
+.post-content .post-meta {
     text-align: right;
     margin-top: 0.5rem;
+}
+
+.site-footer .post-meta {
+    text-align: center;
 }
 
 .post-meta .post-date {

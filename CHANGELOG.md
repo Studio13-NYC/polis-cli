@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.30.0] - 2026-01-18
+
+### Added
+- **Glossary documentation** - New `docs/GLOSSARY.md` with definitions for 20 polis-specific terms including post, comment, blessing, snippet, theme, signature, beseech, discovery service, render, manifest, frontmatter, and more. Quick reference for understanding polis terminology.
+
+### Fixed
+- **Theme CSS specificity** - Fixed `.post-meta` styling conflicts across all three built-in themes
+  - Scoped `.post-meta` styles to `.post-content` context to prevent nav bar conflicts
+  - Added separate `.site-footer .post-meta` styling for footer placement
+  - Affects turbo, zane, and sols themes
+
+- **Turbo theme post layout** - Moved post date from navigation bar to content area
+  - Date now appears in bottom right of post content (`.post-meta` section)
+  - Simplified navigation bar to only show "← Home" link
+  - Cleaned up unused flexbox styles from navigation
+
+### Changed
+- **Documentation reorganization** - Removed duplicate theme customization content from USAGE.md
+  - Theme customization, template variables, and mustache syntax now consolidated in TEMPLATING.md
+  - USAGE.md now links to TEMPLATING.md for detailed theming information
+  - Reduces confusion from maintaining same content in multiple locations
+
+- **Template documentation syntax** - Updated HTML comment examples in TEMPLATING.md
+  - Removed mustache `{{> }}` syntax from comments (was being expanded by template engine)
+  - Comments now use plain snippet names (e.g., `about` instead of `{{> about}}`)
+
+- **Polis branding guidance** - Softened branding language in TEMPLATING.md
+  - Changed from requirement to friendly suggestion for keeping cyan logo color
+  - "Keep the cyan color..." → "We'd appreciate it if you keep the cyan color..."
+
 ## [0.29.0] - 2026-01-18
 
 ### Added

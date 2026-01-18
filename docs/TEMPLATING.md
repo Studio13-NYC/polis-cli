@@ -325,9 +325,9 @@ Each theme template includes a comment header documenting which snippets it load
     Polis Theme: Turbo - Homepage Template
 
     Snippets loaded by this template:
-    - {{> about}}          - About section (theme: snippets/about.html, global: snippets/about.md)
-    - {{> post-item}}      - Post list item (theme: snippets/post-item.html)
-    - {{> comment-item}}   - Comment list item (theme: snippets/comment-item.html)
+    - about          - About section (theme: snippets/about.html, global: snippets/about.md)
+    - post-item      - Post list item (theme: snippets/post-item.html)
+    - comment-item   - Comment list item (theme: snippets/comment-item.html)
 
     Snippet lookup order: theme snippets -> global snippets
 -->
@@ -559,7 +559,7 @@ Templates should follow this general structure:
     Polis Theme: [Name] - [Template Type]
 
     Snippets loaded by this template:
-    - {{> snippet-name}}  - Description
+    - snippet-name  - Description
 
     Snippet lookup order: theme snippets -> global snippets
 -->
@@ -631,7 +631,7 @@ python -m http.server 8000  # Preview at localhost:8000
 
 ### Polis Branding
 
-Keep the cyan color (`#00d4ff`) for the footer POLIS logo across all themes. This provides consistent branding while allowing theme-specific accent colors elsewhere.
+We'd appreciate it if you keep the cyan color (`#00d4ff`) for the footer POLIS logo across custom themes. This helps with consistent branding while you're free to use theme-specific accent colors elsewhere.
 
 ## Migration from Templates
 

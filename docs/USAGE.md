@@ -814,7 +814,7 @@ Generated: index.html
 [i]   Index: index.html
 ```
 
-#### Theme Selection
+#### Themes
 
 Polis ships with three themes (turbo, zane, sols). On first render, a theme is randomly selected. To change themes:
 
@@ -827,71 +827,7 @@ Polis ships with three themes (turbo, zane, sols). On first render, a theme is r
 
 2. Re-render with `polis render --force`
 
-#### Theme Customization
-
-Create a custom theme by copying an existing one:
-
-```bash
-cp -r .polis/themes/turbo .polis/themes/custom
-mv .polis/themes/custom/turbo.css .polis/themes/custom/custom.css
-```
-
-Each theme contains:
-
-**Templates** in `.polis/themes/{name}/`:
-- `index.html` - Site index template
-- `post.html` - Post page template
-- `comment.html` - Comment page template
-- `comment-inline.html` - Blessed comment template
-
-**Snippets** in `.polis/themes/{name}/snippets/`:
-- `about.html` - About section
-- `post-item.html` - Post list item (used in `{{#posts}}` loops)
-- `comment-item.html` - Comment list item (used in `{{#comments}}` loops)
-- `blessed-comment.html` - Blessed comment (used in `{{#blessed_comments}}` loops)
-
-**Global snippets** in `snippets/` override theme snippets.
-
-**Template variables:**
-
-| Variable | Description |
-|----------|-------------|
-| `{{title}}` | Post/comment title |
-| `{{content}}` | HTML-rendered body content |
-| `{{published}}` | Publication date (ISO format) |
-| `{{published_human}}` | Publication date (human-readable) |
-| `{{url}}` | Canonical URL |
-| `{{version}}` | Content hash |
-| `{{signature_short}}` | Truncated signature |
-| `{{site_title}}` | Site domain name |
-| `{{site_url}}` | Full site URL |
-| `{{author_name}}` | Author name from .well-known/polis |
-| `{{author_url}}` | Author's base URL |
-| `{{blessed_count}}` | Number of blessed comments (posts only) |
-| `{{in_reply_to_url}}` | Parent URL (comments only) |
-| `{{root_post_url}}` | Original post URL (comments only) |
-| `{{post_count}}` | Number of posts (index only) |
-| `{{year}}` | Current year |
-
-**Mustache syntax:**
-
-| Syntax | Description |
-|--------|-------------|
-| `{{> path/to/snippet}}` | Include a snippet |
-| `{{#posts}}...{{/posts}}` | Loop over posts |
-| `{{#comments}}...{{/comments}}` | Loop over comments |
-| `{{#blessed_comments}}...{{/blessed_comments}}` | Loop over blessed comments |
-
-**Example template with loops:**
-```html
-<section class="posts">
-{{#posts}}
-    {{> partials/post-item}}
-{{/posts}}
-</section>
-```
-
-Edit these templates and snippets to customize the HTML output, then run `polis render` to apply your changes.
+For theme customization, creating custom themes, template variables, and mustache syntax, see [TEMPLATING.md](TEMPLATING.md).
 
 #### Embedded Source
 

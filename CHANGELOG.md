@@ -5,6 +5,47 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.0] - 2026-01-18
+
+### Added
+- **Site registration** - List your site in the public directory to make your content discoverable
+  - `polis register` - Register your site in the discovery service directory (idempotent)
+  - `polis unregister [--force]` - Remove your site from the directory (requires confirmation)
+  - Registration status now displayed in `polis about` output
+  - TUI: Register/Unregister options added to Admin menu for easy access
+
+- **Attestation verification** - Client-side verification of discovery service signatures
+  - When already registered, `polis register` verifies the server's attestation signature
+  - Uses discovery service's public key to validate that registration was properly signed
+  - Displays verification status: Valid, Failed, or Not checked
+  - Ensures server-side attestations are cryptographically verifiable by clients
+
+### Changed
+- **BREAKING: `POLIS_ENDPOINT_BASE` renamed to `DISCOVERY_SERVICE_URL`**
+  - Update your environment variables and `.env` files to use the new name
+  - No backward compatibility - the old variable name is no longer recognized
+  - Improves naming clarity and consistency across the codebase
+
+- **BREAKING: Network participation now requires site registration**
+  - Both comment author AND target site must be listed in the public directory
+  - Unlisted sites cannot participate in cross-site conversations
+  - Error codes: `AUTHOR_NOT_REGISTERED`, `TARGET_NOT_REGISTERED`
+  - Register your site with `polis register` to participate in the network
+
+- **Registration messaging** - Updated terminology to emphasize discoverability and community
+  - "Enable blessing flow" → "Make your site publicly discoverable"
+  - "Beseech blessings" → "Discover content and engage with posts"
+  - Focus on joining the public directory for networking, not just technical feature enablement
+
+### Discovery Service
+- New Edge Functions for site registration:
+  - `sites-register` - Register a site with Ed25519 signature verification
+  - `sites-unregister` - Unregister a site (hard delete for privacy)
+  - `sites-check` - Check if a domain is registered
+  - `sites-public-key` - Get discovery service's public key for attestation verification
+- New `registered_sites` database table with dual-signature scheme
+- Added `isRegistered()` helper for registration checks in blessing flow
+
 ## [0.28.0] - 2026-01-18
 
 ### Changed

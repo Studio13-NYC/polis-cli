@@ -787,12 +787,20 @@ do_admin() {
     while true; do
         local choice
         choice=$(inline_select "Admin" \
-            "manifest" "Regenerate manifest.json" \
-            "render"   "Rebuild site (polis render)" \
+            "register"     "List site in public directory" \
+            "unregister"   "Unregister site" \
+            "manifest"     "Regenerate manifest.json" \
+            "render"       "Rebuild site (polis render)" \
             "render_force" "Rebuild site (force re-render all)" \
             || true)
 
         case "$choice" in
+            register)
+                do_register
+                ;;
+            unregister)
+                do_unregister
+                ;;
             manifest)
                 do_manifest
                 ;;
@@ -807,6 +815,107 @@ do_admin() {
                 ;;
         esac
     done
+}
+
+# List site in public directory
+do_register() {
+    header "REGISTER SITE"
+
+    info "Registering your site with the discovery service..."
+    echo ""
+
+    # Run polis register command
+    local result
+    result=$("$POLIS_CLI" --json register 2>&1) || true
+
+    if is_polis_success "$result"; then
+        local already_registered
+        already_registered=$(echo "$result" | jq -r '.data.already_registered // false')
+
+        if [[ "$already_registered" == "true" ]]; then
+            local domain registry_url registered_at attestation_verified
+            domain=$(echo "$result" | jq -r '.data.domain // "unknown"')
+            registry_url=$(echo "$result" | jq -r '.data.registry_url // "unknown"')
+            registered_at=$(echo "$result" | jq -r '.data.registered_at // "unknown"')
+            attestation_verified=$(echo "$result" | jq -r '.data.attestation_verified // "unknown"')
+
+            local info_text="Site already registered.
+
+Domain: $domain
+Registry: $registry_url
+Registered: $registered_at
+Attestation: $attestation_verified"
+
+            ui_menu "Already Registered" "$info_text" "ok" "OK"
+        else
+            local domain registry_url registered_at
+            domain=$(echo "$result" | jq -r '.data.domain // "unknown"')
+            registry_url=$(echo "$result" | jq -r '.data.registry_url // "unknown"')
+            registered_at=$(echo "$result" | jq -r '.data.registered_at // "now"')
+
+            local info_text="Site registered successfully!
+
+Domain: $domain
+Registry: $registry_url
+Registered: $registered_at
+
+Your site is now listed in the public directory.
+Other authors can now discover your content and engage with your posts."
+
+            ui_menu "Registration Complete" "$info_text" "ok" "OK"
+        fi
+    else
+        local error_msg
+        error_msg=$(echo "$result" | jq -r '.error.message // "Unknown error"' 2>/dev/null || echo "Registration failed")
+        ui_menu "Registration Failed" "Error: $error_msg" "ok" "OK"
+    fi
+}
+
+# Unregister site from discovery service
+do_unregister() {
+    header "UNREGISTER SITE"
+
+    # Show warning and get confirmation
+    local warning_text="WARNING: Unregistering will remove your site from the public directory.
+
+This means:
+- Your site will no longer be publicly listed or discoverable
+- Other authors cannot find or interact with your content through the network
+- You can re-register anytime to rejoin the community"
+
+    local confirm
+    confirm=$(ui_menu "Unregister Site" "$warning_text" \
+        "cancel" "Cancel (keep registered)" \
+        "confirm" "Yes, unregister my site")
+
+    if [[ "$confirm" != "confirm" ]]; then
+        info "Unregistration cancelled."
+        wait_for_key
+        return 0
+    fi
+
+    info "Unregistering your site..."
+    echo ""
+
+    # Run polis unregister command with --force (already confirmed)
+    local result
+    result=$("$POLIS_CLI" --json unregister --force 2>&1) || true
+
+    if is_polis_success "$result"; then
+        local domain
+        domain=$(echo "$result" | jq -r '.data.domain // "unknown"')
+
+        local info_text="Site unregistered successfully.
+
+Your site $domain has been removed from the discovery service.
+You can re-register at any time with 'polis register'."
+
+        ui_menu "Unregistration Complete" "$info_text" "ok" "OK"
+    else
+        local error_msg
+        error_msg=$(echo "$result" | jq -r '.error.message // "Unknown error"' 2>/dev/null || echo "Unregistration failed")
+        ui_menu "Unregistration Failed" "Error: $error_msg" "ok" "OK"
+    fi
 }
 
 # =============================================================================
@@ -1657,7 +1766,7 @@ OPTIONS:
 DESCRIPTION:
     A menu-based interface for common polis operations.
     Provides a dashboard with status and quick access to:
-    - Publish new posts
+    - Create new posts
     - Comment on posts
     - Review blessing requests
     - Discover content from followed authors

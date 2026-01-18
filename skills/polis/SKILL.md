@@ -40,7 +40,7 @@ All commands should use the `--json` flag for machine-readable output:
 
 The following environment variables should be configured:
 - `POLIS_BASE_URL` - Your polis site URL (e.g., https://yourdomain.com)
-- `POLIS_ENDPOINT_BASE` - Discovery service URL
+- `DISCOVERY_SERVICE_URL` - Discovery service URL
 - `DISCOVERY_SERVICE_KEY` - API authentication key
 
 ---
@@ -251,7 +251,7 @@ The following environment variables should be configured:
    git status --porcelain 2>/dev/null || true
 
    # Discovery service health
-   curl -s -o /dev/null -w "%{http_code}" "${POLIS_ENDPOINT_BASE}/health" 2>/dev/null || echo "unreachable"
+   curl -s -o /dev/null -w "%{http_code}" "${DISCOVERY_SERVICE_URL}/health" 2>/dev/null || echo "unreachable"
 
    # Following count
    cat metadata/following.json | jq 'length' 2>/dev/null || echo "0"

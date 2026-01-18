@@ -157,7 +157,7 @@ Returns current configuration including CLI version, environment variables, dire
     },
     "environment": {
       "POLIS_BASE_URL": "https://example.com",
-      "POLIS_ENDPOINT_BASE": "https://xxx.supabase.co/functions/v1",
+      "DISCOVERY_SERVICE_URL": "https://xxx.supabase.co/functions/v1",
       "DISCOVERY_SERVICE_KEY": "[set]"
     },
     "directories": {

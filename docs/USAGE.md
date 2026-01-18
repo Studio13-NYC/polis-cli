@@ -584,7 +584,7 @@ polis --json migrate newdomain.com | jq
 **Important notes:**
 - Domain should not include protocol (use `example.com`, not `https://example.com`)
 - Comments you made on others' posts will have their `in_reply_to`/`root_post` preserved (pointing to the other author's domain)
-- The discovery service database update requires `POLIS_ENDPOINT_BASE` and `DISCOVERY_SERVICE_KEY` to be configured
+- The discovery service database update requires `DISCOVERY_SERVICE_URL` and `DISCOVERY_SERVICE_KEY` to be configured
 - If database update fails, local migration still succeeds - you can re-beseech comments later
 
 ### `polis version`
@@ -614,18 +614,29 @@ Polis - Decentralized Social Networking
 Your content, free from platform control
 
 ────────────────────────────────────────
-  CLI version:          0.22.0
-  Site version:         0.22.0
+  CLI version:          0.29.0
+  Site version:         0.29.0
   Following version:    0.1.0
   Blessings version:    0.1.0
 
-  Your site:            https://example.com
+  Site title:           My Polis Site
+  Site URL:             https://example.com
+
+  Registration:         Registered
+  Registry:             https://xxx.supabase.co/functions/v1
+  Registered at:        2026-01-15T10:30:00Z
 ────────────────────────────────────────
   Project:  https://github.com/anthropics/polis
   License:  AGPL v3
 ```
 
-**Note:** This command is human-readable only. For scripted access to configuration, use `polis config --json`.
+**Registration status values:**
+- **Registered** - Site is registered with the discovery service
+- **Not registered** - Site is not publicly listed (run `polis register` to join the directory)
+- **Discovery service not configured** - `DISCOVERY_SERVICE_URL` or `DISCOVERY_SERVICE_KEY` not set
+- **Check failed** - Could not reach the discovery service
+
+**JSON mode:** Returns structured data including registration status. Use `polis --json about` for scripted access.
 
 ### `polis config`
 
@@ -650,7 +661,7 @@ CLI
 
 Environment
   POLIS_BASE_URL:       https://example.com
-  POLIS_ENDPOINT_BASE:  https://xxx.supabase.co/functions/v1
+  DISCOVERY_SERVICE_URL:  https://xxx.supabase.co/functions/v1
   DISCOVERY_SERVICE_KEY: [set]
 
 Directories
@@ -670,6 +681,84 @@ Keys
 ```
 
 **JSON mode:** See [JSON-MODE.md](JSON-MODE.md) for the full JSON response format.
+
+### `polis register`
+
+List your site in the public directory. Registration makes your site discoverable to other authors and allows you to participate in conversations across the polis network.
+
+```bash
+polis register
+```
+
+**Features:**
+- **Idempotent** - Running on an already-registered site shows current status
+- **Attestation verification** - Verifies the discovery service's signature on your registration
+- **Automatic metadata** - Pulls email and author name from `.well-known/polis` if available
+
+**Example output (new registration):**
+```
+[✓] Site registered successfully!
+
+Registration Details:
+  Domain: example.com
+  Registry: https://xxx.supabase.co/functions/v1
+  Registered: 2026-01-18T12:00:00Z
+
+Your site is now listed in the public directory.
+Other authors can now discover your content and engage with your posts.
+```
+
+**Example output (already registered):**
+```
+[✓] Site already registered.
+
+Registration Details:
+  Domain: example.com
+  Registry: https://xxx.supabase.co/functions/v1
+  Registered: 2026-01-15T10:30:00Z
+
+[✓] Attestation Verification: Valid
+  (Server signature verified against locally reconstructed payload)
+```
+
+**Requirements:**
+- `DISCOVERY_SERVICE_URL` and `DISCOVERY_SERVICE_KEY` must be set
+- `POLIS_BASE_URL` must be set (domain is extracted from this)
+- Your `.well-known/polis` must be accessible via HTTPS
+
+**JSON mode:** Returns registration details including `service_attestation` for verification.
+
+### `polis unregister [--force]`
+
+Unregister your site from the discovery service. This performs a **hard delete** (privacy promise) - all registration data is permanently removed.
+
+```bash
+# Interactive confirmation required
+polis unregister
+
+# Skip confirmation (for scripting)
+polis unregister --force
+```
+
+**Warning displayed:**
+```
+WARNING: Unregistering will remove your site from the public directory.
+
+This means:
+  - Your site will no longer be publicly listed or discoverable
+  - Other authors cannot find or interact with your content through the network
+  - You can re-register anytime to rejoin the community
+
+Are you sure you want to unregister example.com? (type 'yes' to confirm)
+```
+
+**Effects of unregistering:**
+- Your site is removed from the public directory
+- Your content is no longer discoverable through the network
+- Other authors cannot interact with your posts via the discovery service
+- You can rejoin anytime with `polis register`
+
+**JSON mode:** Skips interactive confirmation automatically.
 
 ### `polis render [--force]`
 
@@ -1047,7 +1136,7 @@ Polis CLI uses a layered configuration system with the following precedence (hig
 export POLIS_BASE_URL="https://yourdomain.com"
 
 # Discovery service (optional - has default)
-export POLIS_ENDPOINT_BASE="https://xxx.supabase.co/functions/v1"
+export DISCOVERY_SERVICE_URL="https://xxx.supabase.co/functions/v1"
 
 # API authentication (required for blessing operations)
 export DISCOVERY_SERVICE_KEY="your-api-key"

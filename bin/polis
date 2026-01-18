@@ -28,7 +28,7 @@ set -e
 #   4. Hardcoded defaults
 
 # Fixed constants (never configurable - required for discovery)
-VERSION="0.28.0"
+VERSION="0.29.0"
 WELL_KNOWN_DIR=".well-known"
 WELL_KNOWN_FILE="polis"
 
@@ -96,15 +96,15 @@ load_wellknown_config() {
 apply_defaults() {
     # Developer config defaults
     : "${POLIS_BASE_URL:=}"
-    : "${POLIS_ENDPOINT_BASE:=https://ltfpezriiaqvjupxbttw.supabase.co/functions/v1}"
+    : "${DISCOVERY_SERVICE_URL:=https://ltfpezriiaqvjupxbttw.supabase.co/functions/v1}"
     : "${DISCOVERY_SERVICE_KEY:=}"
 
     # Derived endpoints (always computed from base)
-    POLIS_BESEECH_ENDPOINT="${POLIS_ENDPOINT_BASE}/comments-blessing-beseech"
-    POLIS_BLESSING_REQUESTS_ENDPOINT="${POLIS_ENDPOINT_BASE}/comments-blessing-requests"
-    POLIS_BLESS_ENDPOINT="${POLIS_ENDPOINT_BASE}/comments-blessing-grant"
-    POLIS_DENY_ENDPOINT="${POLIS_ENDPOINT_BASE}/comments-blessing-deny"
-    POLIS_COMMENTS_ENDPOINT="${POLIS_ENDPOINT_BASE}/comments"
+    POLIS_BESEECH_ENDPOINT="${DISCOVERY_SERVICE_URL}/comments-blessing-beseech"
+    POLIS_BLESSING_REQUESTS_ENDPOINT="${DISCOVERY_SERVICE_URL}/comments-blessing-requests"
+    POLIS_BLESS_ENDPOINT="${DISCOVERY_SERVICE_URL}/comments-blessing-grant"
+    POLIS_DENY_ENDPOINT="${DISCOVERY_SERVICE_URL}/comments-blessing-deny"
+    POLIS_COMMENTS_ENDPOINT="${DISCOVERY_SERVICE_URL}/comments"
 
     # User directory defaults
     : "${KEYS_DIR:=.polis/keys}"
@@ -1109,12 +1109,12 @@ collect_relevant_domains() {
 query_domain_migrations() {
     local domains="$1"
 
-    if [ -z "$POLIS_ENDPOINT_BASE" ] || [ -z "$DISCOVERY_SERVICE_KEY" ]; then
+    if [ -z "$DISCOVERY_SERVICE_URL" ] || [ -z "$DISCOVERY_SERVICE_KEY" ]; then
         echo '{"migrations":[],"count":0,"checked_domains":0}'
         return 1
     fi
 
-    local endpoint="${POLIS_ENDPOINT_BASE}/migrations"
+    local endpoint="${DISCOVERY_SERVICE_URL}/migrations"
     local response=$(curl -s --max-time 30 \
         --header "Authorization: Bearer $DISCOVERY_SERVICE_KEY" \
         "${endpoint}?domains=${domains}" 2>/dev/null)
@@ -4033,23 +4033,94 @@ cmd_about() {
         site_title=$(jq -r '.site_title // empty' "$MANIFEST" 2>/dev/null)
     fi
 
-    # Display branded output
-    echo ""
-    echo -e "${BOLD}${CYAN}Polis${NC} - Decentralized Social Network"
-    echo -e "${DIM}Your content, free from platform control${NC}"
-    echo ""
-    echo "────────────────────────────────────────"
-    echo -e "  ${CYAN}CLI version:${NC}        $VERSION"
-    echo -e "  ${CYAN}Site version:${NC}       $site_version"
-    echo -e "  ${CYAN}Following version:${NC}  $following_version"
-    echo -e "  ${CYAN}Blessings version:${NC}  $blessings_version"
-    echo ""
-    [ -n "$site_title" ] && echo -e "  ${CYAN}Site title:${NC}         $site_title"
-    echo -e "  ${CYAN}Site URL:${NC}           $site_url"
-    echo "────────────────────────────────────────"
-    echo -e "  ${CYAN}Project:${NC}            https://github.com/vdibart/polis"
-    echo -e "  ${CYAN}License:${NC}            AGPL v3"
-    echo ""
+    # Check registration status (if discovery service is configured)
+    local registration_status="not configured"
+    local registry_url=""
+    local registered_at=""
+    if [ -n "$DISCOVERY_SERVICE_URL" ] && [ -n "$DISCOVERY_SERVICE_KEY" ] && [ -n "$POLIS_BASE_URL" ]; then
+        local domain=$(extract_domain_from_url "$POLIS_BASE_URL")
+        if [ -n "$domain" ]; then
+            local check_endpoint="${DISCOVERY_SERVICE_URL}/sites-check?domain=$domain"
+            local check_response=$(curl -s -w "\n%{http_code}" \
+                --location --request GET "$check_endpoint" \
+                --header "Authorization: Bearer $DISCOVERY_SERVICE_KEY" \
+                --header 'Content-Type: application/json' 2>&1)
+
+            local check_http_code=$(echo "$check_response" | tail -n 1)
+            local check_body=$(echo "$check_response" | sed '$d')
+
+            if [ "$check_http_code" = "200" ]; then
+                local is_registered=$(echo "$check_body" | jq -r '.is_registered // false' 2>/dev/null)
+                if [ "$is_registered" = "true" ]; then
+                    registration_status="registered"
+                    registry_url=$(echo "$check_body" | jq -r '.registry_url // ""')
+                    registered_at=$(echo "$check_body" | jq -r '.registered_at // ""')
+                else
+                    registration_status="not registered"
+                fi
+            else
+                registration_status="check failed"
+            fi
+        fi
+    fi
+
+    if [ "$JSON_MODE" = true ]; then
+        local result=$(jq -n \
+            --arg cli_version "$VERSION" \
+            --arg site_version "$site_version" \
+            --arg following_version "$following_version" \
+            --arg blessings_version "$blessings_version" \
+            --arg site_title "$site_title" \
+            --arg site_url "$site_url" \
+            --arg registration_status "$registration_status" \
+            --arg registry_url "$registry_url" \
+            --arg registered_at "$registered_at" \
+            '{
+                cli_version: $cli_version,
+                site_version: $site_version,
+                following_version: $following_version,
+                blessings_version: $blessings_version,
+                site_url: $site_url,
+                registration: {
+                    status: $registration_status,
+                    registry_url: (if $registry_url != "" then $registry_url else null end),
+                    registered_at: (if $registered_at != "" then $registered_at else null end)
+                }
+            } + (if $site_title != "" then {site_title: $site_title} else {} end)')
+        json_success "about" "$result"
+    else
+        # Display branded output
+        echo ""
+        echo -e "${BOLD}${CYAN}Polis${NC} - Decentralized Social Network"
+        echo -e "${DIM}Your content, free from platform control${NC}"
+        echo ""
+        echo "────────────────────────────────────────"
+        echo -e "  ${CYAN}CLI version:${NC}        $VERSION"
+        echo -e "  ${CYAN}Site version:${NC}       $site_version"
+        echo -e "  ${CYAN}Following version:${NC}  $following_version"
+        echo -e "  ${CYAN}Blessings version:${NC}  $blessings_version"
+        echo ""
+        [ -n "$site_title" ] && echo -e "  ${CYAN}Site title:${NC}         $site_title"
+        echo -e "  ${CYAN}Site URL:${NC}           $site_url"
+        echo ""
+        # Registration status
+        if [ "$registration_status" = "registered" ]; then
+            echo -e "  ${CYAN}Registration:${NC}       ${GREEN}Registered${NC}"
+            [ -n "$registry_url" ] && echo -e "  ${CYAN}Registry:${NC}           $registry_url"
+            [ -n "$registered_at" ] && echo -e "  ${CYAN}Registered at:${NC}      $registered_at"
+        elif [ "$registration_status" = "not registered" ]; then
+            echo -e "  ${CYAN}Registration:${NC}       ${YELLOW}Not registered${NC}"
+            echo -e "  ${DIM}Run 'polis register' to make your site publicly discoverable${NC}"
+        elif [ "$registration_status" = "not configured" ]; then
+            echo -e "  ${CYAN}Registration:${NC}       ${DIM}Discovery service not configured${NC}"
+        else
+            echo -e "  ${CYAN}Registration:${NC}       ${RED}Check failed${NC}"
+        fi
+        echo "────────────────────────────────────────"
+        echo -e "  ${CYAN}Project:${NC}            https://github.com/vdibart/polis"
+        echo -e "  ${CYAN}License:${NC}            AGPL v3"
+        echo ""
+    fi
 }
 
 # Command: polis config
@@ -4099,7 +4170,7 @@ cmd_config() {
         jq -n \
             --arg cli_version "$VERSION" \
             --arg base_url "${POLIS_BASE_URL:-}" \
-            --arg endpoint_base "$POLIS_ENDPOINT_BASE" \
+            --arg endpoint_base "$DISCOVERY_SERVICE_URL" \
             --arg discovery_key "$discovery_key_status" \
             --arg site_title "$site_title" \
             --arg keys_dir "$KEYS_DIR" \
@@ -4134,7 +4205,7 @@ cmd_config() {
                     },
                     environment: {
                         POLIS_BASE_URL: $base_url,
-                        POLIS_ENDPOINT_BASE: $endpoint_base,
+                        DISCOVERY_SERVICE_URL: $endpoint_base,
                         DISCOVERY_SERVICE_KEY: $discovery_key
                     },
                     directories: {
@@ -4174,7 +4245,7 @@ cmd_config() {
         echo ""
         echo -e "${CYAN}Environment${NC}"
         echo "  POLIS_BASE_URL:        ${POLIS_BASE_URL:-[not set]}"
-        echo "  POLIS_ENDPOINT_BASE:   $POLIS_ENDPOINT_BASE"
+        echo "  DISCOVERY_SERVICE_URL: $DISCOVERY_SERVICE_URL"
         echo "  DISCOVERY_SERVICE_KEY: $discovery_key_status"
         echo ""
         echo -e "${CYAN}Directories${NC}"
@@ -5928,7 +5999,7 @@ cmd_migrate() {
     # Update discovery service database (if endpoint is configured)
     local db_updated=false
     local db_rows=0
-    if [ -n "$POLIS_ENDPOINT_BASE" ] && [ -n "$DISCOVERY_SERVICE_KEY" ]; then
+    if [ -n "$DISCOVERY_SERVICE_URL" ] && [ -n "$DISCOVERY_SERVICE_KEY" ]; then
         info_human "Updating discovery service database..."
 
         # Create payload
@@ -5953,7 +6024,7 @@ cmd_migrate() {
             '{old_domain: $old, new_domain: $new, signature: $sig}')
 
         # Call edge function
-        local migrate_endpoint="${POLIS_ENDPOINT_BASE}/migrations"
+        local migrate_endpoint="${DISCOVERY_SERVICE_URL}/migrations"
         local response=$(curl -s -w "\n%{http_code}" \
             --location --request POST "$migrate_endpoint" \
             --header "Authorization: Bearer $DISCOVERY_SERVICE_KEY" \
@@ -6012,6 +6083,432 @@ cmd_migrate() {
 }
 
 # ============================================================================
+# SITE REGISTRATION COMMANDS
+# ============================================================================
+
+cmd_register() {
+    # Check initialization
+    if [ ! -f "$WELL_KNOWN_DIR/polis" ]; then
+        if [ "$JSON_MODE" = true ]; then
+            json_error "register" "INVALID_STATE" "Polis not initialized. Run 'polis init' first."
+        else
+            error "Polis not initialized. Run 'polis init' first."
+        fi
+    fi
+
+    # Check POLIS_BASE_URL is set
+    if [ -z "$POLIS_BASE_URL" ]; then
+        if [ "$JSON_MODE" = true ]; then
+            json_error "register" "INVALID_INPUT" "POLIS_BASE_URL not set. Export it first."
+        else
+            error "POLIS_BASE_URL not set. Set it with: export POLIS_BASE_URL=https://yourdomain.com"
+        fi
+    fi
+
+    # Check discovery service is configured
+    if [ -z "$DISCOVERY_SERVICE_URL" ] || [ -z "$DISCOVERY_SERVICE_KEY" ]; then
+        if [ "$JSON_MODE" = true ]; then
+            json_error "register" "INVALID_STATE" "Discovery service not configured. Set DISCOVERY_SERVICE_URL and DISCOVERY_SERVICE_KEY."
+        else
+            error "Discovery service not configured. Set DISCOVERY_SERVICE_URL and DISCOVERY_SERVICE_KEY."
+        fi
+    fi
+
+    # Extract domain from POLIS_BASE_URL
+    local domain=$(extract_domain_from_url "$POLIS_BASE_URL")
+    if [ -z "$domain" ]; then
+        if [ "$JSON_MODE" = true ]; then
+            json_error "register" "INVALID_INPUT" "Could not extract domain from POLIS_BASE_URL"
+        else
+            error "Could not extract domain from POLIS_BASE_URL"
+        fi
+    fi
+
+    info_human "Checking registration status for $domain..."
+
+    # Check if already registered via sites-check endpoint
+    local check_endpoint="${DISCOVERY_SERVICE_URL}/sites-check?domain=$domain"
+    local check_response=$(curl -s -w "\n%{http_code}" \
+        --location --request GET "$check_endpoint" \
+        --header "Authorization: Bearer $DISCOVERY_SERVICE_KEY" \
+        --header 'Content-Type: application/json' 2>&1)
+
+    local check_http_code=$(echo "$check_response" | tail -n 1)
+    local check_body=$(echo "$check_response" | sed '$d')
+
+    if [ "$check_http_code" != "200" ]; then
+        if [ "$JSON_MODE" = true ]; then
+            json_error "register" "SERVICE_ERROR" "Failed to check registration status: HTTP $check_http_code"
+        else
+            error "Failed to check registration status: HTTP $check_http_code"
+        fi
+    fi
+
+    local is_registered=$(echo "$check_body" | jq -r '.is_registered // false' 2>/dev/null)
+
+    if [ "$is_registered" = "true" ]; then
+        # Site is already registered - show status and verify attestation
+        local registry_url=$(echo "$check_body" | jq -r '.registry_url // "unknown"')
+        local registered_at=$(echo "$check_body" | jq -r '.registered_at // "unknown"')
+        local registration_version=$(echo "$check_body" | jq -r '.registration_version // 1')
+        local service_attestation=$(echo "$check_body" | jq -r '.service_attestation // ""')
+
+        # Verify attestation if available
+        local attestation_verified="unknown"
+        if [ -n "$service_attestation" ] && [ "$service_attestation" != "null" ]; then
+            # Fetch discovery service public key
+            local pubkey_endpoint="${DISCOVERY_SERVICE_URL}/sites-public-key"
+            local pubkey_response=$(curl -s -w "\n%{http_code}" \
+                --location --request GET "$pubkey_endpoint" \
+                --header "Authorization: Bearer $DISCOVERY_SERVICE_KEY" 2>&1)
+
+            local pubkey_http_code=$(echo "$pubkey_response" | tail -n 1)
+            local pubkey_body=$(echo "$pubkey_response" | sed '$d')
+
+            if [ "$pubkey_http_code" = "200" ]; then
+                local ds_public_key=$(echo "$pubkey_body" | jq -r '.public_key // ""')
+                if [ -n "$ds_public_key" ]; then
+                    # Reconstruct canonical payload
+                    local canonical_payload=$(jq -n \
+                        --argjson ver "$registration_version" \
+                        --arg act "register" \
+                        --arg dom "$domain" \
+                        '{version: $ver, action: $act, domain: $dom}')
+
+                    # Verify attestation signature
+                    local temp_payload=$(mktemp)
+                    local temp_sig=$(mktemp)
+                    local temp_pubkey=$(mktemp)
+                    echo -n "$canonical_payload" > "$temp_payload"
+                    echo "$service_attestation" > "$temp_sig"
+                    echo "$ds_public_key" > "$temp_pubkey"
+
+                    if ssh-keygen -Y verify -f "$temp_pubkey" -I discovery-service -n file -s "$temp_sig" < "$temp_payload" 2>/dev/null; then
+                        attestation_verified="valid"
+                    else
+                        attestation_verified="failed"
+                    fi
+                    rm -f "$temp_payload" "$temp_sig" "$temp_pubkey"
+                fi
+            fi
+        fi
+
+        if [ "$JSON_MODE" = true ]; then
+            local result=$(jq -n \
+                --arg domain "$domain" \
+                --arg registry_url "$registry_url" \
+                --arg registered_at "$registered_at" \
+                --argjson version "$registration_version" \
+                --arg attestation_verified "$attestation_verified" \
+                '{
+                    already_registered: true,
+                    domain: $domain,
+                    registry_url: $registry_url,
+                    registered_at: $registered_at,
+                    registration_version: $version,
+                    attestation_verified: $attestation_verified
+                }')
+            json_success "register" "$result"
+        else
+            echo ""
+            success "Site already registered."
+            echo ""
+            info "Registration Details:"
+            info "  Domain: $domain"
+            info "  Registry: $registry_url"
+            info "  Registered: $registered_at"
+            echo ""
+            if [ "$attestation_verified" = "valid" ]; then
+                success "Attestation Verification: Valid"
+                info "  (Server signature verified against locally reconstructed payload)"
+            elif [ "$attestation_verified" = "failed" ]; then
+                warn "Attestation Verification: FAILED"
+                warn "  Warning: Server attestation does not match expected payload."
+            else
+                info "Attestation Verification: Not checked"
+            fi
+        fi
+        exit 0
+    fi
+
+    # Not registered - proceed with registration
+    info_human "Registering $domain with discovery service..."
+
+    # Build canonical payload
+    local register_payload=$(jq -n \
+        --argjson ver 1 \
+        --arg act "register" \
+        --arg dom "$domain" \
+        '{version: $ver, action: $act, domain: $dom}')
+
+    # Sign the payload
+    local temp_file=$(mktemp)
+    echo -n "$register_payload" > "$temp_file"
+    local keyfile="$KEYS_DIR/id_ed25519"
+
+    if [ ! -f "$keyfile" ]; then
+        rm -f "$temp_file"
+        if [ "$JSON_MODE" = true ]; then
+            json_error "register" "INVALID_STATE" "Private key not found. Run 'polis init' first."
+        else
+            error "Private key not found. Run 'polis init' first."
+        fi
+    fi
+
+    ssh-keygen -Y sign -f "$keyfile" -n file "$temp_file" > /dev/null 2>&1
+    local signature=$(cat "$temp_file.sig")
+    rm -f "$temp_file" "$temp_file.sig"
+
+    # Get optional metadata from .well-known/polis
+    local email=$(jq -r '.email // empty' "$WELL_KNOWN_DIR/polis" 2>/dev/null || true)
+    local author_name=$(jq -r '.author_name // empty' "$WELL_KNOWN_DIR/polis" 2>/dev/null || true)
+
+    # Create final payload with signature and optional fields
+    local final_payload=$(jq -n \
+        --argjson ver 1 \
+        --arg act "register" \
+        --arg dom "$domain" \
+        --arg sig "$signature" \
+        --arg email "$email" \
+        --arg author "$author_name" \
+        '{version: $ver, action: $act, domain: $dom, owner_signature: $sig} +
+         (if $email != "" then {email: $email} else {} end) +
+         (if $author != "" then {author_name: $author} else {} end)')
+
+    # Call sites-register endpoint
+    local register_endpoint="${DISCOVERY_SERVICE_URL}/sites-register"
+    local response=$(curl -s -w "\n%{http_code}" \
+        --location --request POST "$register_endpoint" \
+        --header "Authorization: Bearer $DISCOVERY_SERVICE_KEY" \
+        --header 'Content-Type: application/json' \
+        --data "$final_payload" 2>&1)
+
+    local http_code=$(echo "$response" | tail -n 1)
+    local response_body=$(echo "$response" | sed '$d')
+
+    if [ "$http_code" = "201" ] || [ "$http_code" = "200" ]; then
+        # Success
+        local registry_url=$(echo "$response_body" | jq -r '.registry_url // "unknown"')
+        local registered_at=$(echo "$response_body" | jq -r '.registered_at // "now"')
+        local service_attestation=$(echo "$response_body" | jq -r '.service_attestation // ""')
+
+        if [ "$JSON_MODE" = true ]; then
+            local result=$(jq -n \
+                --arg domain "$domain" \
+                --arg registry_url "$registry_url" \
+                --arg registered_at "$registered_at" \
+                --arg service_attestation "$service_attestation" \
+                '{
+                    success: true,
+                    domain: $domain,
+                    registry_url: $registry_url,
+                    registered_at: $registered_at,
+                    service_attestation: $service_attestation
+                }')
+            json_success "register" "$result"
+        else
+            echo ""
+            success "Site registered successfully!"
+            echo ""
+            info "Registration Details:"
+            info "  Domain: $domain"
+            info "  Registry: $registry_url"
+            info "  Registered: $registered_at"
+            echo ""
+            info "Your site is now listed in the public directory."
+            info "Other authors can now discover your content and engage with your posts."
+        fi
+    else
+        # Error
+        local error_msg=$(echo "$response_body" | jq -r '.error // "Unknown error"' 2>/dev/null || echo "Unknown error")
+        local error_code=$(echo "$response_body" | jq -r '.code // "UNKNOWN"' 2>/dev/null || echo "UNKNOWN")
+
+        if [ "$JSON_MODE" = true ]; then
+            json_error "register" "$error_code" "$error_msg"
+        else
+            error "Registration failed: $error_msg (HTTP $http_code)"
+        fi
+    fi
+}
+
+cmd_unregister() {
+    # Check initialization
+    if [ ! -f "$WELL_KNOWN_DIR/polis" ]; then
+        if [ "$JSON_MODE" = true ]; then
+            json_error "unregister" "INVALID_STATE" "Polis not initialized. Run 'polis init' first."
+        else
+            error "Polis not initialized. Run 'polis init' first."
+        fi
+    fi
+
+    # Check POLIS_BASE_URL is set
+    if [ -z "$POLIS_BASE_URL" ]; then
+        if [ "$JSON_MODE" = true ]; then
+            json_error "unregister" "INVALID_INPUT" "POLIS_BASE_URL not set. Export it first."
+        else
+            error "POLIS_BASE_URL not set. Set it with: export POLIS_BASE_URL=https://yourdomain.com"
+        fi
+    fi
+
+    # Check discovery service is configured
+    if [ -z "$DISCOVERY_SERVICE_URL" ] || [ -z "$DISCOVERY_SERVICE_KEY" ]; then
+        if [ "$JSON_MODE" = true ]; then
+            json_error "unregister" "INVALID_STATE" "Discovery service not configured. Set DISCOVERY_SERVICE_URL and DISCOVERY_SERVICE_KEY."
+        else
+            error "Discovery service not configured. Set DISCOVERY_SERVICE_URL and DISCOVERY_SERVICE_KEY."
+        fi
+    fi
+
+    # Extract domain from POLIS_BASE_URL
+    local domain=$(extract_domain_from_url "$POLIS_BASE_URL")
+    if [ -z "$domain" ]; then
+        if [ "$JSON_MODE" = true ]; then
+            json_error "unregister" "INVALID_INPUT" "Could not extract domain from POLIS_BASE_URL"
+        else
+            error "Could not extract domain from POLIS_BASE_URL"
+        fi
+    fi
+
+    # Check --force flag
+    local force=false
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --force|-f)
+                force=true
+                shift
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+
+    # Check if registered
+    info_human "Checking registration status for $domain..."
+
+    local check_endpoint="${DISCOVERY_SERVICE_URL}/sites-check?domain=$domain"
+    local check_response=$(curl -s -w "\n%{http_code}" \
+        --location --request GET "$check_endpoint" \
+        --header "Authorization: Bearer $DISCOVERY_SERVICE_KEY" \
+        --header 'Content-Type: application/json' 2>&1)
+
+    local check_http_code=$(echo "$check_response" | tail -n 1)
+    local check_body=$(echo "$check_response" | sed '$d')
+
+    if [ "$check_http_code" != "200" ]; then
+        if [ "$JSON_MODE" = true ]; then
+            json_error "unregister" "SERVICE_ERROR" "Failed to check registration status: HTTP $check_http_code"
+        else
+            error "Failed to check registration status: HTTP $check_http_code"
+        fi
+    fi
+
+    local is_registered=$(echo "$check_body" | jq -r '.is_registered // false' 2>/dev/null)
+
+    if [ "$is_registered" != "true" ]; then
+        if [ "$JSON_MODE" = true ]; then
+            json_error "unregister" "NOT_REGISTERED" "Site $domain is not registered"
+        else
+            error "Site $domain is not registered"
+        fi
+    fi
+
+    # Show warning and confirm (unless --force or --json mode)
+    if [ "$JSON_MODE" = false ] && [ "$force" = false ]; then
+        echo ""
+        warn "WARNING: Unregistering will remove your site from the public directory."
+        echo ""
+        echo "This means:"
+        echo "  - Your site will no longer be publicly listed or discoverable"
+        echo "  - Other authors cannot find or interact with your content through the network"
+        echo "  - You can re-register anytime to rejoin the community"
+        echo ""
+        read -p "Are you sure you want to unregister $domain? (type 'yes' to confirm) " confirm
+        if [ "$confirm" != "yes" ]; then
+            echo ""
+            info "Unregistration cancelled."
+            exit 0
+        fi
+    fi
+
+    info_human "Unregistering $domain..."
+
+    # Build canonical payload
+    local unregister_payload=$(jq -n \
+        --argjson ver 1 \
+        --arg act "unregister" \
+        --arg dom "$domain" \
+        '{version: $ver, action: $act, domain: $dom}')
+
+    # Sign the payload
+    local temp_file=$(mktemp)
+    echo -n "$unregister_payload" > "$temp_file"
+    local keyfile="$KEYS_DIR/id_ed25519"
+
+    if [ ! -f "$keyfile" ]; then
+        rm -f "$temp_file"
+        if [ "$JSON_MODE" = true ]; then
+            json_error "unregister" "INVALID_STATE" "Private key not found. Run 'polis init' first."
+        else
+            error "Private key not found. Run 'polis init' first."
+        fi
+    fi
+
+    ssh-keygen -Y sign -f "$keyfile" -n file "$temp_file" > /dev/null 2>&1
+    local signature=$(cat "$temp_file.sig")
+    rm -f "$temp_file" "$temp_file.sig"
+
+    # Create final payload with signature
+    local final_payload=$(jq -n \
+        --argjson ver 1 \
+        --arg act "unregister" \
+        --arg dom "$domain" \
+        --arg sig "$signature" \
+        '{version: $ver, action: $act, domain: $dom, owner_signature: $sig}')
+
+    # Call sites-unregister endpoint
+    local unregister_endpoint="${DISCOVERY_SERVICE_URL}/sites-unregister"
+    local response=$(curl -s -w "\n%{http_code}" \
+        --location --request POST "$unregister_endpoint" \
+        --header "Authorization: Bearer $DISCOVERY_SERVICE_KEY" \
+        --header 'Content-Type: application/json' \
+        --data "$final_payload" 2>&1)
+
+    local http_code=$(echo "$response" | tail -n 1)
+    local response_body=$(echo "$response" | sed '$d')
+
+    if [ "$http_code" = "200" ]; then
+        # Success
+        if [ "$JSON_MODE" = true ]; then
+            local result=$(jq -n \
+                --arg domain "$domain" \
+                '{
+                    success: true,
+                    domain: $domain,
+                    message: "Site unregistered successfully"
+                }')
+            json_success "unregister" "$result"
+        else
+            echo ""
+            success "Site unregistered successfully."
+            echo ""
+            info "Your site $domain has been removed from the discovery service."
+            info "You can re-register at any time with: polis register"
+        fi
+    else
+        # Error
+        local error_msg=$(echo "$response_body" | jq -r '.error // "Unknown error"' 2>/dev/null || echo "Unknown error")
+        local error_code=$(echo "$response_body" | jq -r '.code // "UNKNOWN"' 2>/dev/null || echo "UNKNOWN")
+
+        if [ "$JSON_MODE" = true ]; then
+            json_error "unregister" "$error_code" "$error_msg"
+        else
+            error "Unregistration failed: $error_msg (HTTP $http_code)"
+        fi
+    fi
+}
+
+# ============================================================================
 # NOTIFICATIONS COMMAND
 # ============================================================================
 
@@ -6028,7 +6525,7 @@ cmd_notifications() {
     local migration_count=0
 
     # --- Pending Blessings ---
-    if [ -n "$POLIS_ENDPOINT_BASE" ] && [ -n "$DISCOVERY_SERVICE_KEY" ]; then
+    if [ -n "$DISCOVERY_SERVICE_URL" ] && [ -n "$DISCOVERY_SERVICE_KEY" ]; then
         local domain=$(extract_domain_from_url "$POLIS_BASE_URL")
         if [ -n "$domain" ]; then
             local blessing_response=$(curl -s --max-time 30 \
@@ -6048,7 +6545,7 @@ cmd_notifications() {
     # --- Domain Migrations ---
     local relevant_domains=$(collect_relevant_domains | paste -sd ',' -)
 
-    if [ -n "$relevant_domains" ] && [ -n "$POLIS_ENDPOINT_BASE" ]; then
+    if [ -n "$relevant_domains" ] && [ -n "$DISCOVERY_SERVICE_URL" ]; then
         local migration_response=$(query_domain_migrations "$relevant_domains")
         migration_count=$(echo "$migration_response" | jq -r '.count // 0' 2>/dev/null)
 
@@ -7718,6 +8215,12 @@ main() {
         migrate)
             cmd_migrate "$@"
             ;;
+        register)
+            cmd_register "$@"
+            ;;
+        unregister)
+            cmd_unregister "$@"
+            ;;
         notifications)
             cmd_notifications "$@"
             ;;
@@ -7776,6 +8279,8 @@ main() {
             echo "  polis manifest                  Regenerate manifest.json (auto-runs on publish)"
             echo ""
             echo "Commands related to site administration:"
+            echo "  polis register                  List your site in the public directory (makes content discoverable)"
+            echo "  polis unregister [--force]      Unregister site (hard delete, requires confirmation)"
             echo "  polis render [--force]          Render markdown posts and comments to HTML"
             echo "  polis notifications             Show pending actions (blessing requests, domain migrations)"
             echo "  polis migrate <new-domain>      Migrate all content to a new domain (re-signs files, updates DB)"

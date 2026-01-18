@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.28.0] - 2026-01-18
+
+### Changed
+- **BREAKING: `polis publish` renamed to `polis post`**
+  - Command syntax: `polis post <file>` (was `polis publish <file>`)
+  - JSON mode: `polis --json post` or `polis post --json`
+  - JSON responses now return `"command": "post"` instead of `"publish"`
+  - Scripts and workflows using `polis publish` must be updated to use `polis post`
+  - Test files renamed to reflect new command name
+
+- **Post template layout improvements**
+  - Post date moved to bottom right corner of content area
+  - Navigation bar simplified to display only "← Home" link
+  - Cleaner visual hierarchy and improved readability on post pages
+  - Applied to sols and zane themes
+
+### Fixed
+- **`--json` flag positioning** - Now works as first OR last argument
+  - `polis --json post file.md` (flag at start)
+  - `polis post file.md --json` (flag at end)
+  - Improves ergonomics for scripting and interactive use
+
 ## [0.27.0] - 2026-01-16
 
 ### Added

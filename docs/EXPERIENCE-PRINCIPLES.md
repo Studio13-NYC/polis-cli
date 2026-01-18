@@ -90,7 +90,7 @@ Moving "up" toward convenience or "down" toward control requires no data migrati
 | **Experience** | Desktop app with nice markdown editor, git/CLI invisible but happening |
 | **Key** | Local, managed by desktop app, stored in app data (exportable via settings) |
 | **Content** | Local markdown files—the app is just a fancy editor for them |
-| **Hosting** | "Publish" button in app handles deploy (wraps `polis publish` + git push) |
+| **Hosting** | "Publish" button in app handles deploy (wraps `polis post` + git push) |
 | **Discovery** | Invisible, handled by app |
 | **What Polis provides** | Desktop app (Tauri?) that wraps CLI, provides editing + publishing UI |
 

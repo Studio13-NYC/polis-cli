@@ -1,14 +1,14 @@
 #!/bin/bash
-# test_publish.sh - Unit tests for 'polis publish' command
+# test_post.sh - Unit tests for 'polis post' command
 #
 # Tests covered:
-#   - Basic publish creates canonical file with frontmatter
-#   - Publish missing file returns error
-#   - Publish updates index
+#   - Basic post creates canonical file with frontmatter
+#   - Post missing file returns error
+#   - Post updates index
 
-# Test: Basic publish works correctly
-test_publish_basic() {
-    setup_test_env "publish_basic"
+# Test: Basic post works correctly
+test_post_basic() {
+    setup_test_env "post_basic"
     trap teardown_test_env EXIT
 
     # Initialize first
@@ -18,12 +18,12 @@ test_publish_basic() {
     create_sample_post "my-post.md" "Test Post"
 
     local result
-    result=$("$POLIS_BIN" --json publish my-post.md 2>&1)
+    result=$("$POLIS_BIN" --json post my-post.md 2>&1)
     local exit_code=$?
 
     assert_exit_code 0 "$exit_code" || return 1
     assert_valid_json "$result" || return 1
-    assert_json_success "$result" "publish" || return 1
+    assert_json_success "$result" "post" || return 1
 
     # Verify data fields exist
     assert_json_has_field "$result" ".data.file_path" || return 1
@@ -58,16 +58,16 @@ test_publish_basic() {
     return 0
 }
 
-# Test: Publish missing file returns error
-test_publish_missing_file() {
-    setup_test_env "publish_missing_file"
+# Test: Post missing file returns error
+test_post_missing_file() {
+    setup_test_env "post_missing_file"
     trap teardown_test_env EXIT
 
     # Initialize first
     "$POLIS_BIN" --json init > /dev/null 2>&1 || return 1
 
     local result
-    result=$("$POLIS_BIN" --json publish nonexistent.md 2>&1)
+    result=$("$POLIS_BIN" --json post nonexistent.md 2>&1)
     local exit_code=$?
 
     assert_exit_code 1 "$exit_code" || return 1
@@ -85,16 +85,16 @@ test_publish_missing_file() {
     return 0
 }
 
-# Test: Publish without init returns error
-test_publish_without_init() {
-    setup_test_env "publish_without_init"
+# Test: Post without init returns error
+test_post_without_init() {
+    setup_test_env "post_without_init"
     trap teardown_test_env EXIT
 
-    # Do NOT initialize - try to publish directly
+    # Do NOT initialize - try to post directly
     create_sample_post "my-post.md" "Test Post"
 
     local result
-    result=$("$POLIS_BIN" --json publish my-post.md 2>&1)
+    result=$("$POLIS_BIN" --json post my-post.md 2>&1)
     local exit_code=$?
 
     assert_exit_code 1 "$exit_code" || return 1
@@ -104,9 +104,9 @@ test_publish_without_init() {
     return 0
 }
 
-# Test: Publish stages files in git
-test_publish_git_staging() {
-    setup_test_env "publish_git_staging"
+# Test: Post stages files in git
+test_post_git_staging() {
+    setup_test_env "post_git_staging"
     trap teardown_test_env EXIT
 
     # Initialize
@@ -115,11 +115,11 @@ test_publish_git_staging() {
     # Commit init files
     git add -A && git commit -m "init" --quiet
 
-    # Create and publish post
+    # Create and post
     create_sample_post "my-post.md" "Test Post"
 
     local result
-    result=$("$POLIS_BIN" --json publish my-post.md 2>&1)
+    result=$("$POLIS_BIN" --json post my-post.md 2>&1)
 
     # Get canonical path
     local canonical_path
@@ -129,18 +129,18 @@ test_publish_git_staging() {
     local staged_files
     staged_files=$(git diff --cached --name-only)
 
-    # Should have the published file staged
+    # Should have the posted file staged
     echo "$staged_files" | grep -q "$(basename "$canonical_path")" || {
-        log_error "Published file not staged"
+        log_error "Posted file not staged"
         return 1
     }
 
-    log "  [OK] Published file is staged in git"
+    log "  [OK] Posted file is staged in git"
     return 0
 }
 
 # Run tests
-run_test "Publish Basic" test_publish_basic
-run_test "Publish Missing File" test_publish_missing_file
-run_test "Publish Without Init" test_publish_without_init
-run_test "Publish Git Staging" test_publish_git_staging
+run_test "Post Basic" test_post_basic
+run_test "Post Missing File" test_post_missing_file
+run_test "Post Without Init" test_post_without_init
+run_test "Post Git Staging" test_post_git_staging

@@ -54,7 +54,7 @@ $ polis init
 [OK] Created .well-known/polis (public metadata)
 [OK] Ready to publish
 
-$ polis publish my-thoughts.md
+$ polis post my-thoughts.md
 [i] Content hash: sha256:a3b5c7d9e1f2...
 [i] Signing with Ed25519 key...
 [OK] Published: posts/20260106/my-thoughts.md
@@ -152,7 +152,7 @@ polis-tui  # Select "Publish", write in your editor
 **Command line:**
 ```bash
 echo "# Hello World" > hello.md
-polis publish hello.md
+polis post hello.md
 ```
 
 ### Deploy
@@ -307,10 +307,10 @@ All commands support `--json` for machine-readable output:
 
 ```bash
 # Get content hash after publishing
-hash=$(polis --json publish draft.md | jq -r '.data.content_hash')
+hash=$(polis --json post draft.md | jq -r '.data.content_hash')
 
 # Pipe content directly (no temp files)
-echo "# Quick thought" | polis publish - --filename thought.md
+echo "# Quick thought" | polis post - --filename thought.md
 
 # Auto-grant all pending blessings
 polis --json blessing requests | jq -r '.data.requests[].id' | \

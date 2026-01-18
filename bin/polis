@@ -28,7 +28,7 @@ set -e
 #   4. Hardcoded defaults
 
 # Fixed constants (never configurable - required for discovery)
-VERSION="0.27.0"
+VERSION="0.28.0"
 WELL_KNOWN_DIR=".well-known"
 WELL_KNOWN_FILE="polis"
 
@@ -3478,7 +3478,7 @@ cmd_republish() {
 
     # Check if file has frontmatter (already published)
     if ! has_frontmatter "$input_file"; then
-        json_error "republish" "INVALID_STATE" "File not published yet (no frontmatter). Use 'polis publish' for new files."
+        json_error "republish" "INVALID_STATE" "File not published yet (no frontmatter). Use 'polis post' for new files."
     fi
 
     info_human "Republishing $input_file..."
@@ -3643,7 +3643,7 @@ signature: $signature
             json_error "republish" "INVALID_STATE" "Failed to reconstruct version sha256:${old_hash:0:13}... from .versions file"
         fi
     else
-        error "No .versions file found. This file may have been published with an older version of polis. Please run 'polis publish' on the original file again."
+        error "No .versions file found. This file may have been published with an older version of polis. Please run 'polis post' on the original file again."
     fi
 
     # Write updated canonical file
@@ -5129,8 +5129,8 @@ Usage: polis blessing requests
     esac
 }
 
-# Command: polis publish <filename>
-cmd_publish() {
+# Command: polis post <filename>
+cmd_post() {
     # Parse command-specific flags first
     local explicit_filename=""
     local explicit_title=""
@@ -5159,11 +5159,11 @@ cmd_publish() {
     local input_file="$1"
 
     if [ -z "$input_file" ]; then
-        json_error "publish" "INVALID_INPUT" "Usage: polis publish <filename>\n       polis publish - [--filename <name>] [--title <title>]"
+        json_error "post" "INVALID_INPUT" "Usage: polis post <filename>\n       polis post - [--filename <name>] [--title <title>]"
     fi
 
     if [ ! -f "$KEYS_DIR/id_ed25519" ]; then
-        json_error "publish" "INVALID_STATE" "Polis not initialized. Run 'polis init' first."
+        json_error "post" "INVALID_STATE" "Polis not initialized. Run 'polis init' first."
     fi
 
     # Check for stdin mode
@@ -5175,7 +5175,7 @@ cmd_publish() {
 
         # Verify stdin is not a terminal (has actual content)
         if [ -t 0 ]; then
-            json_error "publish" "INVALID_INPUT" "No stdin content. Use: echo 'content' | polis publish -"
+            json_error "post" "INVALID_INPUT" "No stdin content. Use: echo 'content' | polis post -"
         fi
 
         # Create temp file and read stdin
@@ -5185,7 +5185,7 @@ cmd_publish() {
         # Verify content
         if [ ! -s "$temp_stdin" ]; then
             rm -f "$temp_stdin"
-            json_error "publish" "INVALID_INPUT" "Stdin content is empty"
+            json_error "post" "INVALID_INPUT" "Stdin content is empty"
         fi
 
         # Point input_file to temp file
@@ -5195,7 +5195,7 @@ cmd_publish() {
     else
         # Regular file mode - check file exists
         if [ ! -f "$input_file" ]; then
-            json_error "publish" "FILE_NOT_FOUND" "File not found: $input_file"
+            json_error "post" "FILE_NOT_FOUND" "File not found: $input_file"
         fi
     fi
 
@@ -5210,7 +5210,7 @@ cmd_publish() {
     # Check if file already has frontmatter (already published)
     # Skip this check for stdin mode as stdin content is always new
     if [ "$stdin_mode" = false ] && has_frontmatter "$input_file"; then
-        json_error "publish" "INVALID_STATE" "File already published (has frontmatter). Use 'polis republish' to update it."
+        json_error "post" "INVALID_STATE" "File already published (has frontmatter). Use 'polis republish' to update it."
     fi
 
     # Store original file path for cleanup later
@@ -5364,7 +5364,7 @@ signature: $signature
                 signature: $sig,
                 canonical_url: $url
             }')
-        json_success "publish" "$result"
+        json_success "post" "$result"
     else
         success "Publishing complete!"
         echo ""
@@ -7627,18 +7627,22 @@ main() {
     # Parse global --json flag from start OR end of arguments
     # This allows both: polis --json <cmd> AND polis <cmd> [args] --json
     local args=("$@")
-    local new_args=()
+    local arg_count=${#args[@]}
 
     # Check for --json at start
-    if [[ "${args[0]:-}" == "--json" ]]; then
+    if [[ $arg_count -gt 0 && "${args[0]}" == "--json" ]]; then
         JSON_MODE=true
         args=("${args[@]:1}")  # Remove first element
+        arg_count=${#args[@]}
     fi
 
-    # Check for --json at end (if not already found)
-    if [[ "$JSON_MODE" != true && "${args[-1]:-}" == "--json" ]]; then
-        JSON_MODE=true
-        unset 'args[-1]'  # Remove last element
+    # Check for --json at end (if not already found and array not empty)
+    if [[ "$JSON_MODE" != true && $arg_count -gt 0 ]]; then
+        local last_idx=$((arg_count - 1))
+        if [[ "${args[$last_idx]}" == "--json" ]]; then
+            JSON_MODE=true
+            unset 'args[last_idx]'  # Remove last element
+        fi
     fi
 
     # Apply JSON mode settings
@@ -7653,15 +7657,15 @@ main() {
     # Reconstruct positional parameters
     set -- "${args[@]}"
 
-    local command="$1"
-    shift
+    local command="${1:-}"
+    shift 2>/dev/null || true
 
     case "$command" in
         init)
             cmd_init "$@"
             ;;
-        publish)
-            cmd_publish "$@"
+        post)
+            cmd_post "$@"
             ;;
         comment)
             cmd_comment "$@"
@@ -7743,9 +7747,9 @@ main() {
             echo "Global Flags:"
             echo "  --json                          Output results in JSON format (for scripting).  Supported by most but not all commands below."
             echo ""
-            echo "Commands related to publishing or viewing files or comments:"
-            echo "  polis publish <file>            Publish a new post"
-            echo "  polis publish -                 Publish from stdin (use --filename, --title for options)"
+            echo "Commands related to creating or viewing content:"
+            echo "  polis post <file>               Create a new post"
+            echo "  polis post -                    Post from stdin (use --filename, --title for options)"
             echo "  polis comment <file> [url]      Create a comment on a post"
             echo "  polis comment - <url>           Comment from stdin (use --filename, --title for options)"
             echo "  polis snippet <file>            Publish a reusable template snippet"
@@ -7800,10 +7804,10 @@ main() {
             echo ""
             echo "Polis includes support for stdin:"
             echo "  Pipe content directly without creating temporary files:"
-            echo "    echo '# My Post' | polis publish -"
+            echo "    echo '# My Post' | polis post -"
             echo "    echo '# Reply' | polis comment - https://example.com/post.md"
-            echo "    curl -s https://example.com/draft.md | polis publish - --filename final.md"
-            echo "    polis publish - --title 'My Title' --filename custom.md < content.txt"
+            echo "    curl -s https://example.com/draft.md | polis post - --filename final.md"
+            echo "    polis post - --title 'My Title' --filename custom.md < content.txt"
             echo ""
             echo "Polis commands can output results as JSON for scripting and testing:"
             echo "  When --json is enabled:"
@@ -7813,9 +7817,9 @@ main() {
             echo "    - Exit codes: 0 (success) or 1 (error)"
             echo ""
             echo "  Example:"
-            echo "    polis --json publish my-post.md | jq -r '.data.content_hash'"
+            echo "    polis --json post my-post.md | jq -r '.data.content_hash'"
             echo "    polis --json comment my-comment.md https://example.com/post.md"
-            echo "    echo '# Test' | polis --json publish - | jq"
+            echo "    echo '# Test' | polis --json post - | jq"
             echo ""
             exit 1
             ;;

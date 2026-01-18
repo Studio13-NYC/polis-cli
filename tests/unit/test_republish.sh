@@ -14,15 +14,15 @@ test_republish_basic() {
     # Initialize
     "$POLIS_BIN" --json init > /dev/null 2>&1 || return 1
 
-    # Create and publish post
+    # Create and post
     create_sample_post "my-post.md" "Test Post"
-    local publish_result
-    publish_result=$("$POLIS_BIN" --json publish my-post.md 2>&1)
+    local post_result
+    post_result=$("$POLIS_BIN" --json post my-post.md 2>&1)
 
     # Get canonical path and initial hash
     local canonical_path initial_hash
-    canonical_path=$(echo "$publish_result" | jq -r '.data.file_path')
-    initial_hash=$(echo "$publish_result" | jq -r '.data.content_hash')
+    canonical_path=$(echo "$post_result" | jq -r '.data.file_path')
+    initial_hash=$(echo "$post_result" | jq -r '.data.content_hash')
 
     log "  Initial hash: $initial_hash"
 
@@ -77,7 +77,7 @@ test_republish_unpublished() {
     # Initialize
     "$POLIS_BIN" --json init > /dev/null 2>&1 || return 1
 
-    # Create a file but don't publish it
+    # Create a file but don't post it
     create_sample_post "unpublished.md" "Unpublished Post"
 
     local result
@@ -125,12 +125,12 @@ test_republish_multiple() {
     # Initialize
     "$POLIS_BIN" --json init > /dev/null 2>&1 || return 1
 
-    # Create and publish post
+    # Create and post
     create_long_post "my-post.md" "Long Post"
-    local publish_result
-    publish_result=$("$POLIS_BIN" --json publish my-post.md 2>&1)
+    local post_result
+    post_result=$("$POLIS_BIN" --json post my-post.md 2>&1)
     local canonical_path
-    canonical_path=$(echo "$publish_result" | jq -r '.data.file_path')
+    canonical_path=$(echo "$post_result" | jq -r '.data.file_path')
 
     # First republish
     append_to_file "$canonical_path" "## Version 2 content"

@@ -4,18 +4,18 @@ Quick reference for polis CLI commands with `--json` mode.
 
 ## Publishing Commands
 
-### `polis publish <file>`
+### `polis post <file>`
 Sign and publish a new post or comment.
 
 ```bash
-./cli/bin/polis --json publish posts/my-draft.md
+./cli/bin/polis --json post posts/my-draft.md
 ```
 
-### `polis publish -` (stdin)
+### `polis post -` (stdin)
 Publish content piped from stdin.
 
 ```bash
-echo "# My Post" | ./cli/bin/polis --json publish - --filename my-post.md --title "My Post"
+echo "# My Post" | ./cli/bin/polis --json post - --filename my-post.md --title "My Post"
 ```
 
 Options:

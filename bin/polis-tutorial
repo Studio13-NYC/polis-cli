@@ -272,7 +272,7 @@ simulate_json_publish() {
     cat << 'EOF'
 {
   "status": "success",
-  "command": "publish",
+  "command": "post",
   "data": {
     "file_path": "posts/20260105/my-first-post.md",
     "content_hash": "sha256:a3b5c7d9e1f2g3h4i5j6k7l8m9n0",
@@ -385,7 +385,7 @@ section_publishing() {
     echo -e "  Hello, world! This is my first post on Polis.${NC}"
     echo ""
 
-    prompt_command "polis publish my-first-post.md" "Publish the post"
+    prompt_command "polis post my-first-post.md" "Publish the post"
     simulate_publish
 
     echo ""
@@ -545,7 +545,7 @@ section_advanced() {
     echo -e "${BOLD}1. JSON Mode${NC} - Machine-readable output for scripting"
     echo ""
 
-    prompt_command "polis --json publish my-post.md" "Publish with JSON output"
+    prompt_command "polis --json post my-post.md" "Publish with JSON output"
     simulate_json_publish
 
     echo ""
@@ -565,9 +565,9 @@ section_advanced() {
     echo ""
     echo -e "${BOLD}3. Stdin Support${NC} - Pipe content directly"
     echo ""
-    echo -e "${DIM}  echo '# Quick Post' | polis publish -"
-    echo "  cat draft.md | polis publish - --filename final.md"
-    echo -e "  curl https://example.com/draft.md | polis publish -${NC}"
+    echo -e "${DIM}  echo '# Quick Post' | polis post -"
+    echo "  cat draft.md | polis post - --filename final.md"
+    echo -e "  curl https://example.com/draft.md | polis post -${NC}"
     echo ""
     divider
     echo ""
@@ -605,7 +605,7 @@ section_completion() {
     echo ""
     echo "    1. Run ${CYAN}polis init${NC} to create your real site"
     echo "    2. Set ${CYAN}POLIS_BASE_URL${NC} to your domain"
-    echo "    3. Write a post and run ${CYAN}polis publish${NC}"
+    echo "    3. Write a post and run ${CYAN}polis post${NC}"
     echo "    4. Deploy to GitHub Pages, Netlify, or any static host"
     echo ""
     echo -e "  ${BOLD}Documentation:${NC}"
@@ -633,7 +633,7 @@ show_menu() {
     echo "  ╠═══════════════════════════════════════════════════════════════╣"
     echo -e "  ║${NC}                                                               ${CYAN}║"
     echo -e "  ║${NC}   1. Getting Started      ${DIM}(polis init, polis version)${NC}         ${CYAN}║"
-    echo -e "  ║${NC}   2. Publishing Posts     ${DIM}(polis publish)${NC}                     ${CYAN}║"
+    echo -e "  ║${NC}   2. Publishing Posts     ${DIM}(polis post)${NC}                     ${CYAN}║"
     echo -e "  ║${NC}   3. Commenting           ${DIM}(polis comment)${NC}                     ${CYAN}║"
     echo -e "  ║${NC}   4. Managing Blessings   ${DIM}(polis blessing)${NC}                    ${CYAN}║"
     echo -e "  ║${NC}   5. Following Authors    ${DIM}(polis follow/unfollow)${NC}             ${CYAN}║"

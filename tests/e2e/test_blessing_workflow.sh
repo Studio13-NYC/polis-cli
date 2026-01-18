@@ -43,14 +43,14 @@ test_comment_with_beseech() {
     # Initialize
     "$POLIS_BIN" --json init > /dev/null 2>&1 || return 1
 
-    # First, publish a post to have something to comment on
+    # First, create a post to have something to comment on
     create_sample_post "my-post.md" "E2E Test Post"
-    local publish_result
-    publish_result=$("$POLIS_BIN" --json publish my-post.md 2>&1)
-    assert_json_success "$publish_result" "publish" || return 1
+    local post_result
+    post_result=$("$POLIS_BIN" --json post my-post.md 2>&1)
+    assert_json_success "$post_result" "post" || return 1
 
     local post_path post_url
-    post_path=$(echo "$publish_result" | jq -r '.data.file_path')
+    post_path=$(echo "$post_result" | jq -r '.data.file_path')
 
     # Construct the post URL (would need POLIS_BASE_URL in real scenario)
     post_url="${POLIS_BASE_URL}/${post_path}"

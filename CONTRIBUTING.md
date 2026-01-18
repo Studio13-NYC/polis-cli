@@ -130,8 +130,8 @@ mkdir /tmp/polis-test && cd /tmp/polis-test
 polis init
 
 # Test affected commands
-polis publish test-post.md
-polis --json publish test-post.md  # JSON mode
+polis post test-post.md
+polis --json post test-post.md  # JSON mode
 
 # Clean up
 rm -rf /tmp/polis-test

@@ -71,7 +71,7 @@ This is my first post on Polis!
 EOF
 
 # 4. Publish the post
-polis publish posts/hello.md
+polis post posts/hello.md
 
 # 5. Create a comment on the post
 cat > comments/reply.md << 'EOF'
@@ -185,13 +185,13 @@ polis init --site-title "My Awesome Blog"
 - `metadata/following.json` - Following list
 - `metadata/manifest.json` - Site metadata (includes `site_title` if provided)
 
-### `polis publish <file>`
+### `polis post <file>`
 
 Sign and publish a post or comment with frontmatter metadata.
 
 ```bash
-polis publish posts/my-post.md
-polis publish comments/my-comment.md
+polis post posts/my-post.md
+polis post comments/my-comment.md
 ```
 
 **What it does:**
@@ -283,35 +283,35 @@ how technology shapes human connection.
 
 ### Publishing from stdin
 
-You can pipe content directly to `polis publish` and `polis comment` without creating temporary files:
+You can pipe content directly to `polis post` and `polis comment` without creating temporary files:
 
 ```bash
 # Basic usage
-echo "# My Post" | polis publish -
+echo "# My Post" | polis post -
 
 # Specify filename
-echo "# My Post" | polis publish - --filename my-post.md
+echo "# My Post" | polis post - --filename my-post.md
 
 # Specify title
-echo "Content without heading" | polis publish - --title "My Title"
+echo "Content without heading" | polis post - --title "My Title"
 
 # Both options
-echo "Content" | polis publish - --filename post.md --title "My Title"
+echo "Content" | polis post - --filename post.md --title "My Title"
 
 # From file redirect
-polis publish - < draft.md
+polis post - < draft.md
 
 # From curl
-curl -s https://example.com/draft.md | polis publish -
+curl -s https://example.com/draft.md | polis post -
 
 # From heredoc
-polis publish - << 'EOF'
+polis post - << 'EOF'
 # My Post
 Content here
 EOF
 
 # Piping with preprocessing
-grep -v "^Draft:" draft.md | polis publish - --filename final.md
+grep -v "^Draft:" draft.md | polis post - --filename final.md
 ```
 
 **Options:**
@@ -332,7 +332,7 @@ echo "Content" | polis comment - https://bob.com/post.md --title "My Reply"
 
 **JSON mode:**
 ```bash
-echo "# Test" | polis --json publish - --filename test.md | jq
+echo "# Test" | polis --json post - --filename test.md | jq
 ```
 
 ### `polis comment <url> [file]`
@@ -1152,7 +1152,7 @@ When `--json` is enabled:
 polis --json init | jq -r '.data.key_paths.public'
 
 # Publish and get content hash
-hash=$(polis --json publish my-post.md | jq -r '.data.content_hash')
+hash=$(polis --json post my-post.md | jq -r '.data.content_hash')
 
 # Comment with reply-to URL (no interactive prompt)
 polis --json comment my-reply.md https://alice.com/posts/hello.md
@@ -1173,7 +1173,7 @@ echo "$requests" | jq -r '.data.requests[].id' | while read id; do
 done
 
 # Error handling
-if ! result=$(polis --json publish test.md 2>&1); then
+if ! result=$(polis --json post test.md 2>&1); then
   error_code=$(echo "$result" | jq -r '.error.code')
   echo "Failed with error: $error_code"
   exit 1
@@ -1186,7 +1186,7 @@ fi
 ```json
 {
   "status": "success",
-  "command": "publish",
+  "command": "post",
   "data": {
     "file_path": "posts/20260104/my-post.md",
     "content_hash": "sha256:abc123...",
@@ -1201,7 +1201,7 @@ fi
 ```json
 {
   "status": "error",
-  "command": "publish",
+  "command": "post",
   "error": {
     "code": "FILE_NOT_FOUND",
     "message": "File not found: test.md",
@@ -1228,7 +1228,7 @@ vim posts/my-thoughts.md
 
 ### 2. Publish Locally
 ```bash
-polis publish posts/my-thoughts.md
+polis post posts/my-thoughts.md
 ```
 
 ### 3. Commit to Git
@@ -1262,7 +1262,7 @@ cat > posts/why-decentralization-matters.md << 'EOF'
 Centralized platforms have too much control...
 EOF
 
-polis publish posts/why-decentralization-matters.md
+polis post posts/why-decentralization-matters.md
 git add . && git commit -m "New post: decentralization"
 git push
 ```
@@ -1386,7 +1386,7 @@ Run `polis init` to create keys and directory structure.
 Run `polis rebuild` to regenerate `public.jsonl` from published files.
 
 ### Version history missing
-`.versions` files are created on first `polis republish` - they don't exist for initial `polis publish`.
+`.versions` files are created on first `polis republish` - they don't exist for initial `polis post`.
 
 ## Next Steps
 

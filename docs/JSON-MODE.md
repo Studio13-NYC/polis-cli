@@ -5,8 +5,8 @@
 JSON Mode adds machine-readable output to all polis CLI commands via a global `--json` flag. The flag can be placed at the **start or end** of the command:
 
 ```bash
-polis --json publish article.md   # Flag at start
-polis publish article.md --json   # Flag at end (also works)
+polis --json post article.md   # Flag at start
+polis post article.md --json   # Flag at end (also works)
 ```
 
 This enables:
@@ -29,7 +29,7 @@ When `--json` is enabled:
 ```bash
 # Publish multiple posts and collect hashes
 for post in posts/*.md; do
-  result=$(polis --json publish "$post")
+  result=$(polis --json post "$post")
   hash=$(echo "$result" | jq -r '.data.content_hash')
   echo "$post: $hash"
 done
@@ -49,7 +49,7 @@ done
 
 ```bash
 # Publish and verify in CI pipeline
-if ! result=$(polis --json publish article.md 2>&1); then
+if ! result=$(polis --json post article.md 2>&1); then
   error_code=$(echo "$result" | jq -r '.error.code')
   echo "::error::Publication failed: $error_code"
   exit 1
@@ -187,12 +187,12 @@ Returns current configuration including CLI version, environment variables, dire
 
 Note: Sensitive values like `DISCOVERY_SERVICE_KEY` show `[set]` or `[not set]` instead of the actual value.
 
-### `polis publish <file>`
+### `polis post <file>`
 
 ```json
 {
   "status": "success",
-  "command": "publish",
+  "command": "post",
   "data": {
     "file_path": "posts/2026/01/my-post.md",
     "content_hash": "sha256:abc123...",
@@ -521,20 +521,20 @@ The `old_key` field is either `"archived"` or `"deleted"` depending on whether `
 
 | Code | Description | Common Causes | Example |
 |------|-------------|---------------|---------|
-| `FILE_NOT_FOUND` | Required file doesn't exist | Missing input file, file deleted | `polis --json publish missing.md` |
-| `INVALID_INPUT` | User input validation failed | Missing argument, invalid format | `polis --json publish` (no file) |
+| `FILE_NOT_FOUND` | Required file doesn't exist | Missing input file, file deleted | `polis --json post missing.md` |
+| `INVALID_INPUT` | User input validation failed | Missing argument, invalid format | `polis --json post` (no file) |
 | `API_ERROR` | Remote API call failed | Network issue, endpoint down, HTTP error | Discovery service unreachable |
 | `SIGNATURE_ERROR` | Signature verification failed | Invalid key, corrupted file, wrong algorithm | Signature mismatch in beseech |
 | `MISSING_DEPENDENCY` | Required tool not found | jq, ssh-keygen, git not installed | `command not found: jq` |
 | `PERMISSION_ERROR` | File/directory permission denied | Read-only filesystem, insufficient permissions | Cannot write to .polis/ |
-| `INVALID_STATE` | Operation not valid in current state | Polis not initialized, file already published | `polis publish` before `polis init` |
+| `INVALID_STATE` | Operation not valid in current state | Polis not initialized, file already published | `polis post` before `polis init` |
 
 ### Error Response Example
 
 ```json
 {
   "status": "error",
-  "command": "publish",
+  "command": "post",
   "error": {
     "code": "FILE_NOT_FOUND",
     "message": "File not found: article.md",
@@ -603,7 +603,7 @@ The `old_key` field is either `"archived"` or `"deleted"` depending on whether `
 
 ```bash
 # Publish a post and capture result
-result=$(polis --json publish my-post.md)
+result=$(polis --json post my-post.md)
 echo "$result" | jq -r '.data.content_hash'
 ```
 
@@ -611,7 +611,7 @@ echo "$result" | jq -r '.data.content_hash'
 
 ```bash
 # Publish and beseech in one script
-publish_result=$(polis --json publish comment.md)
+publish_result=$(polis --json post comment.md)
 comment_url=$(echo "$publish_result" | jq -r '.data.canonical_url')
 polis --json beseech "$comment_url"
 ```
@@ -629,7 +629,7 @@ polis --json blessing grant "$first_id"
 
 ```bash
 # Proper error handling with structured codes
-if ! result=$(polis --json publish test.md 2>&1); then
+if ! result=$(polis --json post test.md 2>&1); then
     error_code=$(echo "$result" | jq -r '.error.code')
     error_msg=$(echo "$result" | jq -r '.error.message')
 
@@ -657,7 +657,7 @@ echo "Success! Hash: $(echo "$result" | jq -r '.data.content_hash')"
 ```bash
 # Process all markdown files in a directory
 for file in posts/*.md; do
-    if result=$(polis --json publish "$file" 2>&1); then
+    if result=$(polis --json post "$file" 2>&1); then
         hash=$(echo "$result" | jq -r '.data.content_hash')
         echo "✓ $file → $hash"
     else
@@ -699,13 +699,13 @@ fi
 
 **Before (human-readable output):**
 ```bash
-polis publish article.md
+polis post article.md
 # Output: [✓] Published posts/2025/01/article.md
 ```
 
 **After (JSON mode):**
 ```bash
-polis --json publish article.md | jq -r '.data.file_path'
+polis --json post article.md | jq -r '.data.file_path'
 # Output: posts/2025/01/article.md
 ```
 
@@ -725,7 +725,7 @@ polis --json publish article.md | jq -r '.data.file_path'
 
 2. **Capture stderr separately for debugging**
    ```bash
-   result=$(polis --json publish test.md 2> error.log)
+   result=$(polis --json post test.md 2> error.log)
    ```
 
 3. **Use jq for robust parsing**
@@ -739,7 +739,7 @@ polis --json publish article.md | jq -r '.data.file_path'
 
 4. **Check exit codes before parsing**
    ```bash
-   if result=$(polis --json publish test.md 2>&1); then
+   if result=$(polis --json post test.md 2>&1); then
        # Parse success response
    else
        # Parse error response

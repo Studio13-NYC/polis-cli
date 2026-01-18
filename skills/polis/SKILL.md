@@ -60,18 +60,18 @@ The following environment variables should be configured:
 
 3. **Check for existing frontmatter**:
    - If file has polis frontmatter (already published): note to user, use `republish`
-   - If no frontmatter: use `publish`
+   - If no frontmatter: use `post`
 
 4. **Execute the command**:
    ```bash
    # For new posts
-   ./cli/bin/polis --json publish <file>
+   ./cli/bin/polis --json post <file>
 
    # For updates to existing posts
    ./cli/bin/polis --json republish <file>
 
    # For inline content (stdin)
-   echo "<content>" | ./cli/bin/polis --json publish - --filename <name.md> --title "<title>"
+   echo "<content>" | ./cli/bin/polis --json post - --filename <name.md> --title "<title>"
    ```
 
 5. **Parse and report results**:
@@ -87,7 +87,7 @@ The following environment variables should be configured:
 
 ### Notes
 - Accept drafts from any path (no restriction to specific folders)
-- Support stdin for inline content publishing
+- Support stdin for inline content creation
 
 ---
 

@@ -135,9 +135,6 @@ body {
    ============================================ */
 
 .site-nav {
-    display: flex;
-    align-items: center;
-    gap: 1.5rem;
     padding: 1rem 1.5rem;
 }
 
@@ -153,7 +150,12 @@ body {
     color: var(--color-teal-soft);
 }
 
-.site-nav .post-date {
+.post-meta {
+    text-align: right;
+    margin-top: 0.5rem;
+}
+
+.post-meta .post-date {
     font-size: 0.85rem;
     color: var(--color-text-muted);
 }

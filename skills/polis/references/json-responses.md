@@ -53,11 +53,11 @@ Reference for parsing JSON responses from polis CLI commands.
 }
 ```
 
-### `polis publish`
+### `polis post`
 ```json
 {
   "status": "success",
-  "command": "publish",
+  "command": "post",
   "data": {
     "file_path": "posts/20260106/my-post.md",
     "content_hash": "sha256:abc123...",
@@ -301,7 +301,7 @@ Returns grouped JSON with posts and comments:
 ```json
 {
   "status": "error",
-  "command": "publish",
+  "command": "post",
   "error": {
     "code": "FILE_NOT_FOUND",
     "message": "File not found: article.md",
@@ -317,7 +317,7 @@ Returns grouped JSON with posts and comments:
 ### Extract specific fields with jq
 ```bash
 # Get content hash from publish
-./cli/bin/polis --json publish post.md | jq -r '.data.content_hash'
+./cli/bin/polis --json post post.md | jq -r '.data.content_hash'
 
 # Get pending request count
 ./cli/bin/polis --json blessing requests | jq -r '.data.count'
@@ -326,7 +326,7 @@ Returns grouped JSON with posts and comments:
 ./cli/bin/polis --json blessing requests | jq -r '.data.requests[].id'
 
 # Check for error
-result=$(./cli/bin/polis --json publish test.md 2>&1)
+result=$(./cli/bin/polis --json post test.md 2>&1)
 if echo "$result" | jq -e '.status == "error"' > /dev/null; then
   echo "Error: $(echo "$result" | jq -r '.error.message')"
 fi

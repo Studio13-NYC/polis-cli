@@ -570,10 +570,10 @@ generate_commit_message() {
     date_str=$(date +%Y-%m-%d)
 
     case "$action" in
-        publish)
+        post)
             echo "Add post: $title
 
-Published new post '$title' on $date_str.
+Created new post '$title' on $date_str.
 Signed and added to public index."
             ;;
         comment)
@@ -924,7 +924,7 @@ _main_menu_refresh_callback() {
 
     # Output in expected format
     echo "$stats_text"
-    echo "publish|Publish new post"
+    echo "post|Create new post"
     echo "comment|Comment on a post"
     echo "blessings|$blessing_desc"
     echo "discover|Discover content"
@@ -964,7 +964,7 @@ show_main_menu() {
     fi
 
     inline_select "$stats_text" --refresh _main_menu_refresh_callback \
-        "publish"   "Publish new post" \
+        "post"      "Create new post" \
         "comment"   "Comment on a post" \
         "blessings" "$blessing_desc" \
         "discover"  "Discover content" \
@@ -977,11 +977,11 @@ show_main_menu() {
 }
 
 # =============================================================================
-# PUBLISH FLOW
+# POST FLOW
 # =============================================================================
 
-do_publish() {
-    header "PUBLISH NEW POST"
+do_post() {
+    header "CREATE NEW POST"
 
     # Create temp file
     local tmpfile
@@ -1037,7 +1037,7 @@ EOF
     info "Publishing..."
 
     local result
-    result=$(run_polis publish "$tmpfile" --filename "$filename")
+    result=$(run_polis post "$tmpfile" --filename "$filename")
 
     rm -f "$tmpfile"
 
@@ -1046,9 +1046,9 @@ EOF
         published_file=$(echo "$result" | jq -r '.data.file // empty' 2>/dev/null)
         success "Published: $published_file"
 
-        post_action_workflow "publish" "$title" "$published_file" "metadata/public.jsonl"
+        post_action_workflow "post" "$title" "$published_file" "metadata/public.jsonl"
     else
-        error "Failed to publish"
+        error "Failed to create post"
         # Show detailed error - either JSON error message or raw output
         local err_msg
         err_msg=$(get_polis_error "$result")
@@ -1143,7 +1143,7 @@ EOF
 
         post_action_workflow "comment" "$reply_url" "$published_file" "metadata/public.jsonl"
     else
-        error "Failed to publish comment"
+        error "Failed to create comment"
         local err_msg
         err_msg=$(get_polis_error "$result")
         if [[ "$err_msg" == "Unknown error" ]]; then
@@ -1778,7 +1778,7 @@ main() {
         choice=$(show_main_menu)
 
         case "$choice" in
-            publish) do_publish ;;
+            post) do_post ;;
             comment) do_comment ;;
             blessings) do_blessings ;;
             discover) do_discover ;;

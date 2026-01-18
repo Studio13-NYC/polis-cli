@@ -1,15 +1,15 @@
 #!/bin/bash
-# test_publish_workflow.sh - Integration tests for publish workflow
+# test_post_workflow.sh - Integration tests for post workflow
 #
 # Tests covered:
-#   - Full publish -> republish cycle
+#   - Full post -> republish cycle
 #   - Version reconstruction with extract
-#   - Stdin publish mode
+#   - Stdin post mode
 #   - Rebuild index command
 
-# Test: Full publish -> republish cycle
-test_full_publish_cycle() {
-    setup_test_env "full_publish_cycle"
+# Test: Full post -> republish cycle
+test_full_post_cycle() {
+    setup_test_env "full_post_cycle"
     trap teardown_test_env EXIT
 
     # Initialize
@@ -18,19 +18,19 @@ test_full_publish_cycle() {
     init_result=$("$POLIS_BIN" --json init 2>&1)
     assert_json_success "$init_result" "init" || return 1
 
-    # Create and publish post
-    log "Step 2: Create and publish post"
+    # Create and post
+    log "Step 2: Create and post"
     create_sample_post "my-post.md" "Integration Test Post"
 
-    local publish_result
-    publish_result=$("$POLIS_BIN" --json publish my-post.md 2>&1)
-    assert_json_success "$publish_result" "publish" || return 1
+    local post_result
+    post_result=$("$POLIS_BIN" --json post my-post.md 2>&1)
+    assert_json_success "$post_result" "post" || return 1
 
     local canonical_path initial_hash
-    canonical_path=$(echo "$publish_result" | jq -r '.data.file_path')
-    initial_hash=$(echo "$publish_result" | jq -r '.data.content_hash')
+    canonical_path=$(echo "$post_result" | jq -r '.data.file_path')
+    initial_hash=$(echo "$post_result" | jq -r '.data.content_hash')
 
-    log "  Published to: $canonical_path"
+    log "  Created at: $canonical_path"
     log "  Initial hash: $initial_hash"
 
     # Verify file structure
@@ -61,28 +61,28 @@ This content was added in an update."
     log "Step 5: Verify index"
     assert_file_contains "metadata/public.jsonl" "Integration Test Post" || return 1
 
-    log "  [OK] Full publish cycle completed successfully"
+    log "  [OK] Full post cycle completed successfully"
     return 0
 }
 
-# Test: Stdin publish mode
-test_stdin_publish() {
-    setup_test_env "stdin_publish"
+# Test: Stdin post mode
+test_stdin_post() {
+    setup_test_env "stdin_post"
     trap teardown_test_env EXIT
 
     # Initialize
     "$POLIS_BIN" --json init > /dev/null 2>&1 || return 1
 
-    # Publish from stdin with filename
+    # Post from stdin with filename
     local result
     result=$(echo "# Stdin Post
 
-This post was created from stdin." | "$POLIS_BIN" --json publish - --filename stdin-post.md 2>&1)
+This post was created from stdin." | "$POLIS_BIN" --json post - --filename stdin-post.md 2>&1)
     local exit_code=$?
 
     assert_exit_code 0 "$exit_code" || return 1
     assert_valid_json "$result" || return 1
-    assert_json_success "$result" "publish" || return 1
+    assert_json_success "$result" "post" || return 1
 
     # Verify file was created
     local canonical_path
@@ -93,7 +93,7 @@ This post was created from stdin." | "$POLIS_BIN" --json publish - --filename st
     assert_file_contains "$canonical_path" "Stdin Post" || return 1
     assert_file_contains "$canonical_path" "created from stdin" || return 1
 
-    log "  [OK] Stdin publish works correctly"
+    log "  [OK] Stdin post works correctly"
     return 0
 }
 
@@ -105,15 +105,15 @@ test_rebuild_index() {
     # Initialize
     "$POLIS_BIN" --json init > /dev/null 2>&1 || return 1
 
-    # Publish multiple posts
+    # Create multiple posts
     create_sample_post "post1.md" "First Post"
-    "$POLIS_BIN" --json publish post1.md > /dev/null 2>&1 || return 1
+    "$POLIS_BIN" --json post post1.md > /dev/null 2>&1 || return 1
 
     create_sample_post "post2.md" "Second Post"
-    "$POLIS_BIN" --json publish post2.md > /dev/null 2>&1 || return 1
+    "$POLIS_BIN" --json post post2.md > /dev/null 2>&1 || return 1
 
     create_sample_post "post3.md" "Third Post"
-    "$POLIS_BIN" --json publish post3.md > /dev/null 2>&1 || return 1
+    "$POLIS_BIN" --json post post3.md > /dev/null 2>&1 || return 1
 
     # Count initial index entries
     local initial_count
@@ -161,7 +161,7 @@ test_version_reconstruction() {
     # Initialize
     "$POLIS_BIN" --json init > /dev/null 2>&1 || return 1
 
-    # Create and publish post with specific content
+    # Create and post with specific content
     cat > original-post.md << 'EOF'
 # Version Test
 
@@ -172,11 +172,11 @@ This is the original content that should be preserved in version 1.
 Original paragraph here.
 EOF
 
-    local publish_result
-    publish_result=$("$POLIS_BIN" --json publish original-post.md 2>&1)
+    local post_result
+    post_result=$("$POLIS_BIN" --json post original-post.md 2>&1)
     local canonical_path v1_hash
-    canonical_path=$(echo "$publish_result" | jq -r '.data.file_path')
-    v1_hash=$(echo "$publish_result" | jq -r '.data.content_hash')
+    canonical_path=$(echo "$post_result" | jq -r '.data.file_path')
+    v1_hash=$(echo "$post_result" | jq -r '.data.content_hash')
 
     log "  Version 1 hash: $v1_hash"
 
@@ -227,7 +227,7 @@ Even more content for version 3."
 }
 
 # Run tests
-run_test "Full Publish Cycle" test_full_publish_cycle
-run_test "Stdin Publish" test_stdin_publish
+run_test "Full Post Cycle" test_full_post_cycle
+run_test "Stdin Post" test_stdin_post
 run_test "Rebuild Index" test_rebuild_index
 run_test "Version Reconstruction" test_version_reconstruction

@@ -68,13 +68,13 @@ export DISCOVERY_SERVICE_KEY=your-api-key
 ### Unit Tests (`--category unit`)
 Test individual commands in isolation:
 - `test_init.sh` - polis init command
-- `test_publish.sh` - polis publish command
+- `test_post.sh` - polis post command
 - `test_republish.sh` - polis republish command
 - `test_version.sh` - polis version command
 
 ### Integration Tests (`--category integration`)
 Test command sequences and workflows:
-- `test_publish_workflow.sh` - Full init → publish → republish cycle
+- `test_post_workflow.sh` - Full init → post → republish cycle
 
 ### E2E Tests (`--category e2e`)
 End-to-end tests with real API calls:
@@ -135,11 +135,11 @@ test_my_feature() {
 
     # Run command
     local result
-    result=$("$POLIS_BIN" --json publish "$post_path" 2>&1)
+    result=$("$POLIS_BIN" --json post "$post_path" 2>&1)
 
     # Assertions
     assert_exit_code 0 $? || return 1
-    assert_json_success "$result" "publish" || return 1
+    assert_json_success "$result" "post" || return 1
 
     return 0
 }

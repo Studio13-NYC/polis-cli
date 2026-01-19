@@ -143,49 +143,64 @@ When interactive prompts are auto-skipped in JSON mode, these defaults are used:
 }
 ```
 
-### `polis config`
+### `polis about`
 
-Returns current configuration including CLI version, environment variables, directory paths, and key information.
+Returns complete system information including site details, versions, configuration, keys, and discovery status.
 
 ```json
 {
   "status": "success",
-  "command": "config",
+  "command": "about",
   "data": {
-    "cli": {
-      "version": "0.22.0"
+    "site": {
+      "url": "https://example.com",
+      "title": "My Blog"
     },
-    "environment": {
-      "POLIS_BASE_URL": "https://example.com",
-      "DISCOVERY_SERVICE_URL": "https://xxx.supabase.co/functions/v1",
-      "DISCOVERY_SERVICE_KEY": "[set]"
+    "versions": {
+      "cli": "0.29.0",
+      "well_known_polis": "1.0",
+      "following": "1.0",
+      "blessed_comments": "1.0",
+      "manifest": "1.0"
     },
-    "directories": {
-      "keys": ".polis/keys",
-      "posts": "posts",
-      "comments": "comments",
-      "versions": ".versions"
-    },
-    "files": {
-      "public_index": "metadata/public.jsonl",
-      "blessed_comments": "metadata/blessed-comments.json",
-      "following": "metadata/following.json"
+    "configuration": {
+      "directories": {
+        "keys": ".polis/keys",
+        "posts": "posts",
+        "comments": "comments",
+        "snippets": "snippets",
+        "versions": ".versions"
+      },
+      "files": {
+        "public_index": "metadata/public.jsonl",
+        "blessed_comments": "metadata/blessed-comments.json",
+        "following": "metadata/following.json",
+        "manifest": "metadata/manifest.json"
+      }
     },
     "keys": {
-      "exists": true,
+      "status": "initialized",
       "fingerprint": "SHA256:abc123...",
-      "public_key_file": ".polis/keys/id_ed25519.pub"
+      "public_key_path": ".polis/keys/id_ed25519.pub"
     },
-    "metadata_versions": {
-      "well_known_polis": "0.22.0",
-      "following": "0.1.0",
-      "blessed_comments": "0.1.0"
+    "discovery": {
+      "service_url": "https://xxx.supabase.co/functions/v1",
+      "api_key_set": true,
+      "registration": {
+        "status": "registered",
+        "registry_url": "https://...",
+        "registered_at": "2026-01-10T12:00:00Z"
+      }
+    },
+    "project": {
+      "repository": "https://github.com/vdibart/polis",
+      "license": "AGPL-3.0"
     }
   }
 }
 ```
 
-Note: Sensitive values like `DISCOVERY_SERVICE_KEY` show `[set]` or `[not set]` instead of the actual value.
+Note: Sensitive values like the API key show `api_key_set: true/false` instead of the actual value.
 
 ### `polis post <file>`
 

@@ -165,10 +165,12 @@ Initialize a new Polis directory with keys and metadata.
 ```bash
 polis init
 polis init --site-title "My Awesome Blog"
+polis init --site-title "My Blog" --register
 ```
 
 **Options:**
 - `--site-title <title>` - Set a custom site title for branding (optional)
+- `--register` - Auto-register with discovery service after init (requires `POLIS_BASE_URL` and discovery service credentials)
 - `--posts-dir <dir>` - Custom posts directory (default: `posts`)
 - `--comments-dir <dir>` - Custom comments directory (default: `comments`)
 - `--keys-dir <dir>` - Custom keys directory (default: `.polis/keys`)
@@ -602,85 +604,68 @@ polis 0.22.0
 
 ### `polis about`
 
-Display branded information about Polis including version numbers and project links.
+Display complete system information including site details, versions, configuration, keys, discovery status, and project links.
 
 ```bash
 polis about
+polis --json about
 ```
 
 **Example output:**
 ```
 Polis - Decentralized Social Networking
 Your content, free from platform control
-
 ────────────────────────────────────────
-  CLI version:          0.29.0
-  Site version:         0.29.0
-  Following version:    0.1.0
-  Blessings version:    0.1.0
 
-  Site title:           My Polis Site
-  Site URL:             https://example.com
+SITE
+  URL:      https://example.com
+  Title:    My Blog
 
-  Registration:         Registered
-  Registry:             https://xxx.supabase.co/functions/v1
-  Registered at:        2026-01-15T10:30:00Z
-────────────────────────────────────────
-  Project:  https://github.com/anthropics/polis
-  License:  AGPL v3
+VERSIONS
+  CLI:                   0.29.0
+  .well-known/polis:     1.0
+  following.json:        1.0
+  blessed-comments.json: 1.0
+  manifest.json:         1.0
+
+CONFIGURATION
+  Directories:
+    Keys:      .polis/keys
+    Posts:     posts
+    Comments:  comments
+    Snippets:  snippets
+    Versions:  .versions
+
+  Files:
+    Public index:      metadata/public.jsonl
+    Blessed comments:  metadata/blessed-comments.json
+    Following:         metadata/following.json
+    Manifest:          metadata/manifest.json
+
+KEYS
+  Status:       initialized
+  Fingerprint:  SHA256:abc123...
+  Public key:   .polis/keys/id_ed25519.pub
+
+DISCOVERY
+  Service URL:  https://xxx.supabase.co/functions/v1
+  API Key:      [set]
+  Registration: registered
+  Registry URL: https://xxx.supabase.co/...
+  Registered:   2026-01-10T12:00:00Z
+
+PROJECT
+  Repository:   https://github.com/vdibart/polis
+  License:      AGPL-3.0
 ```
 
 **Registration status values:**
-- **Registered** - Site is registered with the discovery service
-- **Not registered** - Site is not publicly listed (run `polis register` to join the directory)
-- **Discovery service not configured** - `DISCOVERY_SERVICE_URL` or `DISCOVERY_SERVICE_KEY` not set
-- **Check failed** - Could not reach the discovery service
+- **registered** - Site is registered with the discovery service
+- **not registered** - Site is not publicly listed (run `polis register` to join the directory)
+- **discovery not configured** - `DISCOVERY_SERVICE_URL` or `DISCOVERY_SERVICE_KEY` not set
+- **check failed** - Could not reach the discovery service
 
-**JSON mode:** Returns structured data including registration status. Use `polis --json about` for scripted access.
-
-### `polis config`
-
-Display current configuration including CLI version, environment variables, directory paths, and key information.
-
-```bash
-# Human-readable output
-polis config
-
-# JSON output for scripting
-polis --json config
-polis config --json
-```
-
-**Example output:**
-```
-Polis Configuration
-════════════════════════════════════════
-
-CLI
-  Version:              0.22.0
-
-Environment
-  POLIS_BASE_URL:       https://example.com
-  DISCOVERY_SERVICE_URL:  https://xxx.supabase.co/functions/v1
-  DISCOVERY_SERVICE_KEY: [set]
-
-Directories
-  Keys:                 .polis/keys
-  Posts:                posts
-  Comments:             comments
-  Versions:             .versions
-
-Files
-  Public index:         metadata/public.jsonl
-  Blessed comments:     metadata/blessed-comments.json
-  Following:            metadata/following.json
-
-Keys
-  Status:               initialized
-  Fingerprint:          SHA256:abc123...
-```
-
-**JSON mode:** See [JSON-MODE.md](JSON-MODE.md) for the full JSON response format.
+**JSON mode:** Returns structured data with all sections. See [JSON-MODE.md](JSON-MODE.md) for the full JSON response format.
 
 ### `polis register`
 
@@ -1114,7 +1099,7 @@ polis init --site-title "My Awesome Blog"
 The site title is stored in `metadata/manifest.json` and used:
 - In HTML page titles and headers (`{{site_title}}` template variable)
 - When displaying your comments on other people's posts
-- In `polis about` and `polis config` output
+- In `polis about` output
 
 If not set, the domain from `POLIS_BASE_URL` is used as a fallback.
 

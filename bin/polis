@@ -28,7 +28,7 @@ set -e
 #   4. Hardcoded defaults
 
 # Fixed constants (never configurable - required for discovery)
-VERSION="0.30.0"
+VERSION="0.31.0"
 WELL_KNOWN_DIR=".well-known"
 WELL_KNOWN_FILE="polis"
 
@@ -233,6 +233,7 @@ cmd_init() {
     local custom_snippets_index=""
     local custom_versions_dir=""
     local custom_site_title=""
+    local auto_register=false
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -279,6 +280,10 @@ cmd_init() {
             --site-title)
                 custom_site_title="$2"
                 shift 2
+                ;;
+            --register)
+                auto_register=true
+                shift
                 ;;
             *)
                 error "Unknown option: $1. Use 'polis help init' for usage."
@@ -515,6 +520,29 @@ EOF
             warn "ACTION REQUIRED: Update .env with your configuration values:"
             info "  - POLIS_BASE_URL: Your site's public URL"
             info "  - DISCOVERY_SERVICE_KEY: Your API key for blessing operations"
+        fi
+    fi
+
+    # Auto-register if requested
+    if [ "$auto_register" = true ]; then
+        if [ -z "$POLIS_BASE_URL" ]; then
+            if [ "$JSON_MODE" != true ]; then
+                echo ""
+                warn "Cannot auto-register: POLIS_BASE_URL not set"
+                info "Set it with: export POLIS_BASE_URL=https://yourdomain.com"
+            fi
+        elif [ -z "$DISCOVERY_SERVICE_URL" ] || [ -z "$DISCOVERY_SERVICE_KEY" ]; then
+            if [ "$JSON_MODE" != true ]; then
+                echo ""
+                warn "Cannot auto-register: Discovery service not configured"
+                info "Set DISCOVERY_SERVICE_URL and DISCOVERY_SERVICE_KEY in .env"
+            fi
+        else
+            if [ "$JSON_MODE" != true ]; then
+                echo ""
+                info_human "Auto-registering with discovery service..."
+            fi
+            cmd_register
         fi
     fi
 }
@@ -4005,35 +4033,53 @@ cmd_version() {
 }
 
 # Command: polis about
-# Display branded info about Polis (human-readable only)
+# Display complete Polis system information (consolidated from about + config)
 cmd_about() {
-    # Get versions from metadata files
-    local site_version="not initialized"
-    local following_version="not initialized"
-    local blessings_version="not initialized"
+    # ═══════════════════════════════════════════════════════════════════════
+    # GATHER DATA
+    # ═══════════════════════════════════════════════════════════════════════
 
-    if [ -f "$WELL_KNOWN_DIR/polis" ]; then
-        site_version=$(jq -r '.version // "unknown"' "$WELL_KNOWN_DIR/polis" 2>/dev/null || echo "unknown")
-    fi
-
-    if [ -f "$FOLLOWING_INDEX" ]; then
-        following_version=$(jq -r '.version // "unknown"' "$FOLLOWING_INDEX" 2>/dev/null || echo "unknown")
-    fi
-
-    if [ -f "$BLESSED_COMMENTS" ]; then
-        blessings_version=$(jq -r '.version // "unknown"' "$BLESSED_COMMENTS" 2>/dev/null || echo "unknown")
-    fi
-
-    # Get site URL
-    local site_url="${POLIS_BASE_URL:-not configured}"
-
-    # Get site title from manifest (optional)
+    # Site info
+    local site_url="${POLIS_BASE_URL:-}"
     local site_title=""
     if [ -f "$MANIFEST" ]; then
         site_title=$(jq -r '.site_title // empty' "$MANIFEST" 2>/dev/null)
     fi
 
-    # Check registration status (if discovery service is configured)
+    # Version info from metadata files
+    local wellknown_version="not initialized"
+    local following_version="not initialized"
+    local blessings_version="not initialized"
+    local manifest_version="not initialized"
+
+    if [ -f "$WELL_KNOWN_DIR/polis" ]; then
+        wellknown_version=$(jq -r '.version // "unknown"' "$WELL_KNOWN_DIR/polis" 2>/dev/null || echo "unknown")
+    fi
+    if [ -f "$FOLLOWING_INDEX" ]; then
+        following_version=$(jq -r '.version // "unknown"' "$FOLLOWING_INDEX" 2>/dev/null || echo "unknown")
+    fi
+    if [ -f "$BLESSED_COMMENTS" ]; then
+        blessings_version=$(jq -r '.version // "unknown"' "$BLESSED_COMMENTS" 2>/dev/null || echo "unknown")
+    fi
+    if [ -f "$MANIFEST" ]; then
+        manifest_version=$(jq -r '.version // "unknown"' "$MANIFEST" 2>/dev/null || echo "unknown")
+    fi
+
+    # Key info
+    local key_status="not initialized"
+    local key_fingerprint=""
+    local pub_key_file="$KEYS_DIR/id_ed25519.pub"
+    if [ -f "$pub_key_file" ]; then
+        key_status="initialized"
+        key_fingerprint=$(ssh-keygen -lf "$pub_key_file" 2>/dev/null | awk '{print $2}' || echo "unknown")
+    fi
+
+    # Discovery service info
+    local discovery_url="${DISCOVERY_SERVICE_URL:-}"
+    local discovery_key_set=false
+    [ -n "$DISCOVERY_SERVICE_KEY" ] && discovery_key_set=true
+
+    # Registration status (only check if discovery is configured)
     local registration_status="not configured"
     local registry_url=""
     local registered_at=""
@@ -4064,209 +4110,155 @@ cmd_about() {
         fi
     fi
 
+    # ═══════════════════════════════════════════════════════════════════════
+    # OUTPUT
+    # ═══════════════════════════════════════════════════════════════════════
+
     if [ "$JSON_MODE" = true ]; then
         local result=$(jq -n \
-            --arg cli_version "$VERSION" \
-            --arg site_version "$site_version" \
-            --arg following_version "$following_version" \
-            --arg blessings_version "$blessings_version" \
-            --arg site_title "$site_title" \
             --arg site_url "$site_url" \
-            --arg registration_status "$registration_status" \
-            --arg registry_url "$registry_url" \
-            --arg registered_at "$registered_at" \
-            '{
-                cli_version: $cli_version,
-                site_version: $site_version,
-                following_version: $following_version,
-                blessings_version: $blessings_version,
-                site_url: $site_url,
-                registration: {
-                    status: $registration_status,
-                    registry_url: (if $registry_url != "" then $registry_url else null end),
-                    registered_at: (if $registered_at != "" then $registered_at else null end)
-                }
-            } + (if $site_title != "" then {site_title: $site_title} else {} end)')
-        json_success "about" "$result"
-    else
-        # Display branded output
-        echo ""
-        echo -e "${BOLD}${CYAN}Polis${NC} - Decentralized Social Network"
-        echo -e "${DIM}Your content, free from platform control${NC}"
-        echo ""
-        echo "────────────────────────────────────────"
-        echo -e "  ${CYAN}CLI version:${NC}        $VERSION"
-        echo -e "  ${CYAN}Site version:${NC}       $site_version"
-        echo -e "  ${CYAN}Following version:${NC}  $following_version"
-        echo -e "  ${CYAN}Blessings version:${NC}  $blessings_version"
-        echo ""
-        [ -n "$site_title" ] && echo -e "  ${CYAN}Site title:${NC}         $site_title"
-        echo -e "  ${CYAN}Site URL:${NC}           $site_url"
-        echo ""
-        # Registration status
-        if [ "$registration_status" = "registered" ]; then
-            echo -e "  ${CYAN}Registration:${NC}       ${GREEN}Registered${NC}"
-            [ -n "$registry_url" ] && echo -e "  ${CYAN}Registry:${NC}           $registry_url"
-            [ -n "$registered_at" ] && echo -e "  ${CYAN}Registered at:${NC}      $registered_at"
-        elif [ "$registration_status" = "not registered" ]; then
-            echo -e "  ${CYAN}Registration:${NC}       ${YELLOW}Not registered${NC}"
-            echo -e "  ${DIM}Run 'polis register' to make your site publicly discoverable${NC}"
-        elif [ "$registration_status" = "not configured" ]; then
-            echo -e "  ${CYAN}Registration:${NC}       ${DIM}Discovery service not configured${NC}"
-        else
-            echo -e "  ${CYAN}Registration:${NC}       ${RED}Check failed${NC}"
-        fi
-        echo "────────────────────────────────────────"
-        echo -e "  ${CYAN}Project:${NC}            https://github.com/vdibart/polis"
-        echo -e "  ${CYAN}License:${NC}            AGPL v3"
-        echo ""
-    fi
-}
-
-# Command: polis config
-# Display configuration settings (supports --json)
-cmd_config() {
-    # Get key info
-    local key_exists=false
-    local key_fingerprint="n/a"
-    local pub_key_file="$KEYS_DIR/id_ed25519.pub"
-
-    if [ -f "$pub_key_file" ]; then
-        key_exists=true
-        key_fingerprint=$(ssh-keygen -lf "$pub_key_file" 2>/dev/null | awk '{print $2}' || echo "unknown")
-    fi
-
-    # Get metadata versions
-    local wellknown_version="not initialized"
-    local following_version="not initialized"
-    local blessings_version="not initialized"
-
-    if [ -f "$WELL_KNOWN_DIR/polis" ]; then
-        wellknown_version=$(jq -r '.version // "unknown"' "$WELL_KNOWN_DIR/polis" 2>/dev/null || echo "unknown")
-    fi
-
-    if [ -f "$FOLLOWING_INDEX" ]; then
-        following_version=$(jq -r '.version // "unknown"' "$FOLLOWING_INDEX" 2>/dev/null || echo "unknown")
-    fi
-
-    if [ -f "$BLESSED_COMMENTS" ]; then
-        blessings_version=$(jq -r '.version // "unknown"' "$BLESSED_COMMENTS" 2>/dev/null || echo "unknown")
-    fi
-
-    local manifest_version="not initialized"
-    local site_title=""
-    if [ -f "$MANIFEST" ]; then
-        manifest_version=$(jq -r '.version // "unknown"' "$MANIFEST" 2>/dev/null || echo "unknown")
-        site_title=$(jq -r '.site_title // empty' "$MANIFEST" 2>/dev/null)
-    fi
-
-    # Mask sensitive values
-    local discovery_key_status="[not set]"
-    if [ -n "$DISCOVERY_SERVICE_KEY" ]; then
-        discovery_key_status="[set]"
-    fi
-
-    if [ "$JSON_MODE" = true ]; then
-        jq -n \
-            --arg cli_version "$VERSION" \
-            --arg base_url "${POLIS_BASE_URL:-}" \
-            --arg endpoint_base "$DISCOVERY_SERVICE_URL" \
-            --arg discovery_key "$discovery_key_status" \
             --arg site_title "$site_title" \
-            --arg keys_dir "$KEYS_DIR" \
-            --arg posts_dir "$POSTS_DIR" \
-            --arg comments_dir "$COMMENTS_DIR" \
-            --arg versions_dir "$VERSIONS_DIR_NAME" \
-            --arg public_index "$PUBLIC_INDEX" \
-            --arg blessed_comments "$BLESSED_COMMENTS" \
-            --arg following_index "$FOLLOWING_INDEX" \
-            --arg manifest "$MANIFEST" \
-            --argjson key_exists "$key_exists" \
-            --arg key_fingerprint "$key_fingerprint" \
-            --arg pub_key_file "$pub_key_file" \
+            --arg cli_version "$VERSION" \
             --arg wellknown_version "$wellknown_version" \
             --arg following_version "$following_version" \
             --arg blessings_version "$blessings_version" \
             --arg manifest_version "$manifest_version" \
+            --arg keys_dir "$KEYS_DIR" \
+            --arg posts_dir "$POSTS_DIR" \
+            --arg comments_dir "$COMMENTS_DIR" \
+            --arg snippets_dir "$SNIPPETS_DIR" \
+            --arg versions_dir "$VERSIONS_DIR_NAME" \
+            --arg public_index "$PUBLIC_INDEX" \
+            --arg blessed_comments "$BLESSED_COMMENTS" \
+            --arg following_index "$FOLLOWING_INDEX" \
+            --arg manifest_path "$MANIFEST" \
+            --arg key_status "$key_status" \
+            --arg key_fingerprint "$key_fingerprint" \
+            --arg pub_key_file "$pub_key_file" \
+            --arg discovery_url "$discovery_url" \
+            --argjson discovery_key_set "$discovery_key_set" \
+            --arg registration_status "$registration_status" \
+            --arg registry_url "$registry_url" \
+            --arg registered_at "$registered_at" \
             '{
-                status: "success",
-                command: "config",
-                data: {
-                    versions: {
-                        cli: $cli_version,
-                        well_known_polis: $wellknown_version,
-                        following: $following_version,
-                        blessed_comments: $blessings_version,
-                        manifest: $manifest_version
-                    },
-                    site: {
-                        url: $base_url,
-                        title: (if $site_title == "" then null else $site_title end)
-                    },
-                    environment: {
-                        POLIS_BASE_URL: $base_url,
-                        DISCOVERY_SERVICE_URL: $endpoint_base,
-                        DISCOVERY_SERVICE_KEY: $discovery_key
-                    },
+                site: {
+                    url: (if $site_url == "" then null else $site_url end),
+                    title: (if $site_title == "" then null else $site_title end)
+                },
+                versions: {
+                    cli: $cli_version,
+                    well_known_polis: $wellknown_version,
+                    following: $following_version,
+                    blessed_comments: $blessings_version,
+                    manifest: $manifest_version
+                },
+                configuration: {
                     directories: {
                         keys: $keys_dir,
                         posts: $posts_dir,
                         comments: $comments_dir,
+                        snippets: $snippets_dir,
                         versions: $versions_dir
                     },
                     files: {
                         public_index: $public_index,
                         blessed_comments: $blessed_comments,
                         following: $following_index,
-                        manifest: $manifest
-                    },
-                    keys: {
-                        exists: $key_exists,
-                        fingerprint: $key_fingerprint,
-                        public_key_file: $pub_key_file
+                        manifest: $manifest_path
                     }
+                },
+                keys: {
+                    status: $key_status,
+                    fingerprint: (if $key_fingerprint == "" then null else $key_fingerprint end),
+                    public_key_path: $pub_key_file
+                },
+                discovery: {
+                    service_url: (if $discovery_url == "" then null else $discovery_url end),
+                    api_key_set: $discovery_key_set,
+                    registration: {
+                        status: $registration_status,
+                        registry_url: (if $registry_url == "" then null else $registry_url end),
+                        registered_at: (if $registered_at == "" then null else $registered_at end)
+                    }
+                },
+                project: {
+                    repository: "https://github.com/vdibart/polis",
+                    license: "AGPL-3.0"
                 }
-            }'
+            }')
+        json_success "about" "$result"
     else
+        # Display branded output with sections
         echo ""
-        echo -e "${BOLD}Polis Configuration${NC}"
-        echo "════════════════════════════════════════"
+        echo -e "${BOLD}${CYAN}Polis${NC} - Decentralized Social Network"
+        echo -e "${DIM}Your content, free from platform control${NC}"
         echo ""
-        echo -e "${CYAN}Versions${NC}"
+
+        # SITE
+        echo -e "${CYAN}SITE${NC}"
+        echo -e "  URL:      ${site_url:-${DIM}[not set]${NC}}"
+        echo -e "  Title:    ${site_title:-${DIM}[not set]${NC}}"
+        echo ""
+
+        # VERSIONS
+        echo -e "${CYAN}VERSIONS${NC}"
         echo "  CLI:                   $VERSION"
         echo "  .well-known/polis:     $wellknown_version"
         echo "  following.json:        $following_version"
         echo "  blessed-comments.json: $blessings_version"
         echo "  manifest.json:         $manifest_version"
         echo ""
-        echo -e "${CYAN}Site${NC}"
-        echo "  URL:                   ${POLIS_BASE_URL:-[not set]}"
-        echo "  Title:                 ${site_title:-[not set]}"
+
+        # CONFIGURATION
+        echo -e "${CYAN}CONFIGURATION${NC}"
+        echo "  Directories:"
+        echo "    Keys:      $KEYS_DIR"
+        echo "    Posts:     $POSTS_DIR"
+        echo "    Comments:  $COMMENTS_DIR"
+        echo "    Snippets:  $SNIPPETS_DIR"
+        echo "    Versions:  $VERSIONS_DIR_NAME"
         echo ""
-        echo -e "${CYAN}Environment${NC}"
-        echo "  POLIS_BASE_URL:        ${POLIS_BASE_URL:-[not set]}"
-        echo "  DISCOVERY_SERVICE_URL: $DISCOVERY_SERVICE_URL"
-        echo "  DISCOVERY_SERVICE_KEY: $discovery_key_status"
+        echo "  Files:"
+        echo "    Public index:      $PUBLIC_INDEX"
+        echo "    Blessed comments:  $BLESSED_COMMENTS"
+        echo "    Following:         $FOLLOWING_INDEX"
+        echo "    Manifest:          $MANIFEST"
         echo ""
-        echo -e "${CYAN}Directories${NC}"
-        echo "  Keys:                  $KEYS_DIR"
-        echo "  Posts:                 $POSTS_DIR"
-        echo "  Comments:              $COMMENTS_DIR"
-        echo "  Versions:              $VERSIONS_DIR_NAME"
-        echo ""
-        echo -e "${CYAN}Paths${NC}"
-        echo "  Public index:          $PUBLIC_INDEX"
-        echo "  Blessed comments:      $BLESSED_COMMENTS"
-        echo "  Following:             $FOLLOWING_INDEX"
-        echo "  Manifest:              $MANIFEST"
-        echo ""
-        echo -e "${CYAN}Keys${NC}"
-        if [ "$key_exists" = true ]; then
-            echo "  Status:                initialized"
-            echo "  Fingerprint:           $key_fingerprint"
-        else
-            echo "  Status:                not initialized"
+
+        # KEYS
+        echo -e "${CYAN}KEYS${NC}"
+        echo "  Status:       $key_status"
+        if [ "$key_status" = "initialized" ]; then
+            echo "  Fingerprint:  $key_fingerprint"
+            echo "  Public key:   $pub_key_file"
         fi
+        echo ""
+
+        # DISCOVERY
+        echo -e "${CYAN}DISCOVERY${NC}"
+        echo -e "  Service URL:  ${discovery_url:-${DIM}[not set]${NC}}"
+        if [ "$discovery_key_set" = true ]; then
+            echo "  API Key:      [set]"
+        else
+            echo -e "  API Key:      ${DIM}[not set]${NC}"
+        fi
+        if [ "$registration_status" = "registered" ]; then
+            echo -e "  Registration: ${GREEN}registered${NC}"
+            [ -n "$registry_url" ] && echo "  Registry URL: $registry_url"
+            [ -n "$registered_at" ] && echo "  Registered:   $registered_at"
+        elif [ "$registration_status" = "not registered" ]; then
+            echo -e "  Registration: ${YELLOW}not registered${NC}"
+        elif [ "$registration_status" = "not configured" ]; then
+            echo -e "  Registration: ${DIM}not configured${NC}"
+        else
+            echo -e "  Registration: ${RED}check failed${NC}"
+        fi
+        echo ""
+
+        # PROJECT
+        echo -e "${CYAN}PROJECT${NC}"
+        echo "  Repository:   https://github.com/vdibart/polis"
+        echo "  License:      AGPL-3.0"
         echo ""
     fi
 }
@@ -8194,9 +8186,6 @@ main() {
         about)
             cmd_about "$@"
             ;;
-        config)
-            cmd_config "$@"
-            ;;
         rotate-key)
             cmd_rotate_key "$@"
             ;;
@@ -8293,6 +8282,8 @@ main() {
             echo ""
             echo "Commands related to local configuration management:"
             echo "  polis init [options]            Initialize Polis directory structure"
+            echo "    --site-title <title>          Site display name (stored in manifest.json)"
+            echo "    --register                    Auto-register with discovery service after init"
             echo "    --keys-dir <path>             Custom keys directory (default: .polis/keys)"
             echo "    --posts-dir <path>            Custom posts directory (default: posts)"
             echo "    --comments-dir <path>         Custom comments directory (default: comments)"
@@ -8302,8 +8293,7 @@ main() {
             echo "                                  Rebuild local indexes (flags are combinable)"
             echo "  polis index                     View index (JSONL; use --json for grouped)"
             echo "  polis version                   Print CLI version"
-            echo "  polis about                     Show branded info, versions, and project links"
-            echo "  polis config                    Show all configuration settings (supports --json)"
+            echo "  polis about                     Show site, versions, config, keys, discovery info"
             echo "  polis rotate-key [--delete-old-key]"
             echo "                                  Generate new keypair and re-sign all content"
             echo ""

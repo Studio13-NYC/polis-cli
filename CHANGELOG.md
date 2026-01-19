@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.31.0] - 2026-01-18
+
+### Added
+- **Auto-registration on init** - New `polis init --register` flag automatically registers your site with the discovery service after initialization
+  - Requires `POLIS_BASE_URL` and discovery service credentials to be configured
+  - Shows helpful warnings if prerequisites are missing (initialization still succeeds)
+  - Streamlines the setup process for new sites joining the network
+
+- **Improved help text** - `polis init --site-title` flag now documented in built-in help output
+
+### Changed
+- **Consolidated configuration display** - `polis config` command merged into `polis about` for unified system information
+  - `polis about` now shows: site info (URL, title), version details (CLI, .well-known/polis, following.json, blessed-comments.json, manifest.json), configuration paths, key status and fingerprint, discovery service configuration, and project details
+  - Supports both human-readable and `--json` output modes
+  - Provides single command for complete system status overview
+
+- **TUI about screen redesign** - TUI version bumped to 0.6.0 with enhanced about display
+  - Now shows SITE, VERSIONS, KEYS, DISCOVERY, and PROJECT sections matching CLI output
+  - Fixed "not configured" display bug that occurred after `polis config` command removal
+  - Consistent user experience between CLI and TUI interfaces
+
+### Removed
+- **`polis config` command** - Deprecated in favor of `polis about` which provides all the same information with consistent `--json` support
+
 ## [0.30.0] - 2026-01-18
 
 ### Added

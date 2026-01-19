@@ -20,7 +20,7 @@ set -e
 # VERSION
 # =============================================================================
 
-TUI_VERSION="0.5.0"
+TUI_VERSION="0.6.0"
 
 # =============================================================================
 # LOGGING
@@ -1665,36 +1665,96 @@ do_preview() {
 do_about() {
     header "ABOUT POLIS"
 
-    # Get config from polis CLI
-    local config_json
-    config_json=$("$POLIS_CLI" --json config 2>/dev/null || echo '{}')
+    # Get info from polis CLI
+    local about_json
+    about_json=$("$POLIS_CLI" --json about 2>/dev/null || echo '{}')
 
-    local cli_version
-    cli_version=$(echo "$config_json" | jq -r '.data.versions.cli // "unknown"' 2>/dev/null || echo "unknown")
+    # Extract all fields
+    local cli_version site_url site_title
+    local wellknown_ver following_ver blessed_ver manifest_ver
+    local keys_status key_fingerprint key_path
+    local discovery_url api_key_set reg_status reg_url reg_at
 
-    local site_url
-    site_url=$(echo "$config_json" | jq -r '.data.site.url // ""' 2>/dev/null || echo "")
-    [ -z "$site_url" ] && site_url="not configured"
+    cli_version=$(echo "$about_json" | jq -r '.data.versions.cli // "unknown"')
+    site_url=$(echo "$about_json" | jq -r '.data.site.url // empty')
+    site_title=$(echo "$about_json" | jq -r '.data.site.title // empty')
 
-    local site_title
-    site_title=$(echo "$config_json" | jq -r '.data.site.title // empty' 2>/dev/null || echo "")
+    wellknown_ver=$(echo "$about_json" | jq -r '.data.versions.well_known_polis // "n/a"')
+    following_ver=$(echo "$about_json" | jq -r '.data.versions.following // "n/a"')
+    blessed_ver=$(echo "$about_json" | jq -r '.data.versions.blessed_comments // "n/a"')
+    manifest_ver=$(echo "$about_json" | jq -r '.data.versions.manifest // "n/a"')
+
+    keys_status=$(echo "$about_json" | jq -r '.data.keys.status // "unknown"')
+    key_fingerprint=$(echo "$about_json" | jq -r '.data.keys.fingerprint // empty')
+    key_path=$(echo "$about_json" | jq -r '.data.keys.public_key_path // empty')
+
+    discovery_url=$(echo "$about_json" | jq -r '.data.discovery.service_url // empty')
+    api_key_set=$(echo "$about_json" | jq -r '.data.discovery.api_key_set // false')
+    reg_status=$(echo "$about_json" | jq -r '.data.discovery.registration.status // "unknown"')
+    reg_url=$(echo "$about_json" | jq -r '.data.discovery.registration.registry_url // empty')
+    reg_at=$(echo "$about_json" | jq -r '.data.discovery.registration.registered_at // empty')
 
     echo ""
     echo -e "${BOLD}Polis${NC} - Decentralized Social Network"
     echo -e "${DIM}Your content, free from platform control${NC}"
     echo ""
-    divider
+
+    # SITE
+    echo -e "${CYAN}SITE${NC}"
+    if [ -n "$site_url" ]; then
+        echo -e "  URL:      $site_url"
+    else
+        echo -e "  URL:      ${DIM}[not set]${NC}"
+    fi
+    if [ -n "$site_title" ]; then
+        echo -e "  Title:    $site_title"
+    else
+        echo -e "  Title:    ${DIM}[not set]${NC}"
+    fi
     echo ""
-    echo -e "  ${CYAN}polis-tui version:${NC}  $TUI_VERSION"
-    echo -e "  ${CYAN}polis CLI version:${NC}  $cli_version"
+
+    # VERSIONS
+    echo -e "${CYAN}VERSIONS${NC}"
+    echo "  polis-tui:             $TUI_VERSION"
+    echo "  polis CLI:             $cli_version"
+    echo "  .well-known/polis:     $wellknown_ver"
+    echo "  following.json:        $following_ver"
+    echo "  blessed-comments.json: $blessed_ver"
+    echo "  manifest.json:         $manifest_ver"
     echo ""
-    [ -n "$site_title" ] && echo -e "  ${CYAN}Site title:${NC}         $site_title"
-    echo -e "  ${CYAN}Site URL:${NC}           $site_url"
+
+    # KEYS
+    echo -e "${CYAN}KEYS${NC}"
+    echo "  Status:       $keys_status"
+    if [ "$keys_status" = "initialized" ] && [ -n "$key_fingerprint" ]; then
+        echo "  Fingerprint:  $key_fingerprint"
+        echo "  Public key:   $key_path"
+    fi
     echo ""
-    divider
+
+    # DISCOVERY
+    echo -e "${CYAN}DISCOVERY${NC}"
+    if [ -n "$discovery_url" ]; then
+        echo "  Service URL:  $discovery_url"
+    else
+        echo -e "  Service URL:  ${DIM}[not set]${NC}"
+    fi
+    if [ "$api_key_set" = "true" ]; then
+        echo "  API Key:      [set]"
+    else
+        echo -e "  API Key:      ${DIM}[not set]${NC}"
+    fi
+    echo "  Registration: $reg_status"
+    if [ "$reg_status" = "registered" ]; then
+        [ -n "$reg_url" ] && echo "  Registry URL: $reg_url"
+        [ -n "$reg_at" ] && echo "  Registered:   $reg_at"
+    fi
     echo ""
-    echo -e "  ${CYAN}Project:${NC}            https://github.com/vdibart/polis"
-    echo -e "  ${CYAN}License:${NC}            AGPL v3"
+
+    # PROJECT
+    echo -e "${CYAN}PROJECT${NC}"
+    echo "  Repository:   https://github.com/vdibart/polis"
+    echo "  License:      AGPL-3.0"
     echo ""
 
     wait_for_key

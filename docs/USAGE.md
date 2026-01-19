@@ -1378,6 +1378,53 @@ polis-tui --version
 - Polis must be initialized (`polis init`)
 - `$EDITOR` environment variable (falls back to nano/vi)
 
+## Shell Completion
+
+Polis includes tab completion scripts for bash and zsh. After setup, you can type `polis i<tab>` to complete to `init`.
+
+### Bash
+
+Add to your `~/.bashrc`:
+
+```bash
+source /path/to/polis/completions/polis.bash
+```
+
+Or for auto-loading, copy to the bash-completion directory:
+
+```bash
+cp completions/polis.bash ~/.local/share/bash-completion/completions/polis
+```
+
+### Zsh
+
+Add the completions directory to your fpath in `~/.zshrc`:
+
+```zsh
+fpath=(/path/to/polis/completions $fpath)
+autoload -Uz compinit && compinit
+```
+
+Or copy to your zsh completions directory:
+
+```bash
+mkdir -p ~/.zsh/completions
+cp completions/polis.zsh ~/.zsh/completions/_polis
+```
+
+Then add to `~/.zshrc`:
+
+```zsh
+fpath=(~/.zsh/completions $fpath)
+autoload -Uz compinit && compinit
+```
+
+### What's Completed
+
+- All 24 polis commands (init, post, comment, etc.)
+- Subcommands for `blessing` and `migrations`
+- Global `--json` flag
+
 ## Troubleshooting
 
 ### "ssh-keygen: command not found"

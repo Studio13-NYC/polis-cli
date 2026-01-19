@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.32.0] - 2026-01-18
+
+### Added
+- **Shell completion support** - Tab completion for bash and zsh shells to improve command-line productivity
+  - Complete all 24 polis commands (type `polis i<tab>` to expand to `init`)
+  - Complete subcommands for `blessing` and `migrations` namespaces
+  - Complete the global `--json` flag
+  - Includes installation scripts: `completions/polis.bash` and `completions/polis.zsh`
+  - Detailed setup instructions added to USAGE.md for both bash and zsh
+
 ## [0.31.0] - 2026-01-18
 
 ### Added

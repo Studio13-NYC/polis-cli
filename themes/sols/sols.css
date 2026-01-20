@@ -29,22 +29,22 @@
     /* Text - warm creams */
     --color-text: #f0e8dc;
     --color-text-soft: #d4c8b8;
-    --color-text-muted: #8a7a6a;
+    --color-text-muted: #a09080;
 
     /* Accent colors */
     --color-sage: #8a9a6a;
     --color-cream: #e8dcc8;
 
     /* Borders */
-    --color-border: rgba(212, 130, 154, 0.25);
-    --color-border-light: rgba(212, 130, 154, 0.4);
+    --color-border: rgba(212, 130, 154, 0.4);
+    --color-border-light: rgba(212, 130, 154, 0.55);
 
     /* Typography */
     --font-mono: 'JetBrains Mono', 'Fira Code', 'SF Mono', Consolas, monospace;
     --font-display: 'Orbitron', var(--font-mono);
 
     /* Layout */
-    --max-width: 600px;
+    --max-width: 900px;
 }
 
 /* Reset */
@@ -61,6 +61,20 @@ body {
     background: var(--color-bg);
     -webkit-font-smoothing: antialiased;
     min-height: 100vh;
+}
+
+/* Focus states for accessibility */
+a:focus-visible,
+button:focus-visible,
+[tabindex]:focus-visible {
+    outline: 2px solid var(--color-cyan);
+    outline-offset: 2px;
+}
+
+/* Global container centering */
+.container {
+    max-width: var(--max-width);
+    margin: 0 auto;
 }
 
 /* ============================================
@@ -137,7 +151,9 @@ body {
    ============================================ */
 
 .site-nav {
-    padding: 1rem 1.5rem;
+    padding: 1rem 0;
+    max-width: var(--max-width);
+    margin: 0 auto;
 }
 
 .nav-home {
@@ -152,17 +168,35 @@ body {
     color: var(--color-peach);
 }
 
-.post-content .post-meta {
-    text-align: right;
-    margin-top: 0.5rem;
+/* Post header with date and signature */
+.post-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding: 1.5rem 0 0;
+    margin-bottom: 0.25rem;
 }
 
-.site-footer .post-meta {
-    text-align: center;
-}
-
-.post-meta .post-date {
+.post-header .post-date {
     font-size: 0.85rem;
+    color: var(--color-text-muted);
+}
+
+.post-header .post-meta {
+    font-size: 0.7rem;
+    color: var(--color-text-muted);
+}
+
+.post-meta .meta-label {
+    color: var(--color-text-muted);
+}
+
+.post-meta .meta-value {
+    color: var(--color-teal);
+}
+
+.post-meta .meta-sep {
+    margin: 0 0.5rem;
     color: var(--color-text-muted);
 }
 
@@ -171,7 +205,9 @@ body {
    ============================================ */
 
 .hero {
-    padding: 2.5rem 1.5rem 1.5rem;
+    padding: 2.5rem 0 1.5rem;
+    max-width: var(--max-width);
+    margin: 0 auto;
 }
 
 .hero-title {
@@ -205,6 +241,7 @@ body {
     border: 1px solid var(--color-border);
     border-left: 3px solid var(--color-pink);
     padding: 1.25rem 1.5rem;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
 }
 
 .about-content p {
@@ -338,7 +375,7 @@ body {
 .comment-item .comment-author {
     font-size: 0.85rem;
     font-weight: 600;
-    color: var(--color-teal);
+    color: var(--color-sage);
 }
 
 .comment-item .comment-date {
@@ -458,6 +495,7 @@ body {
     border: 1px solid var(--color-border);
     border-left: 3px solid var(--color-pink);
     padding: 1rem 1.25rem;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
 }
 
 .comment-header {
@@ -470,7 +508,7 @@ body {
 .comment-author {
     font-size: 0.95rem;
     font-weight: 600;
-    color: var(--color-teal);
+    color: var(--color-sage);
 }
 
 .comment-date {
@@ -501,6 +539,7 @@ body {
     border: 1px solid var(--color-border);
     border-left: 3px solid var(--color-pink);
     padding: 1.25rem 1.5rem;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
 }
 
 .content-body p {
@@ -633,6 +672,22 @@ body {
    RESPONSIVE
    ============================================ */
 
+/* Tablet */
+@media (max-width: 768px) {
+    body {
+        font-size: 0.93rem;
+    }
+
+    .hero-title {
+        font-size: 1.35rem;
+    }
+
+    .section-title {
+        font-size: 0.8rem;
+    }
+}
+
+/* Mobile */
 @media (max-width: 600px) {
     .hero-title {
         font-size: 1.25rem;
@@ -656,5 +711,25 @@ body {
 
     .footer-tagline {
         font-size: 0.7rem;
+    }
+}
+
+/* Small phones */
+@media (max-width: 480px) {
+    .hero,
+    .about,
+    .recent-posts,
+    .recent-comments,
+    .links,
+    .comments,
+    .post-content,
+    .reply-context {
+        padding-left: 0.75rem;
+        padding-right: 0.75rem;
+    }
+
+    .site-nav {
+        padding-left: 0.75rem;
+        padding-right: 0.75rem;
     }
 }

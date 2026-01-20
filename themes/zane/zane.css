@@ -25,7 +25,7 @@
     /* Text - clean greys */
     --color-text: #f0f0f0;
     --color-text-soft: #d0d0d0;
-    --color-text-muted: #7a7a7a;
+    --color-text-muted: #9a9a9a;
 
     /* Accent colors from Zane palette */
     --color-lavender: #6888a0;
@@ -42,7 +42,7 @@
     --font-display: 'Orbitron', var(--font-mono);
 
     /* Layout */
-    --max-width: 600px;
+    --max-width: 900px;
 }
 
 /* Reset */
@@ -59,6 +59,20 @@ body {
     background: var(--color-bg);
     -webkit-font-smoothing: antialiased;
     min-height: 100vh;
+}
+
+/* Focus states for accessibility */
+a:focus-visible,
+button:focus-visible,
+[tabindex]:focus-visible {
+    outline: 2px solid var(--color-teal);
+    outline-offset: 2px;
+}
+
+/* Global container centering */
+.container {
+    max-width: var(--max-width);
+    margin: 0 auto;
 }
 
 /* ============================================
@@ -135,7 +149,9 @@ body {
    ============================================ */
 
 .site-nav {
-    padding: 1rem 1.5rem;
+    padding: 1rem 0;
+    max-width: var(--max-width);
+    margin: 0 auto;
 }
 
 .nav-home {
@@ -150,17 +166,35 @@ body {
     color: var(--color-teal-soft);
 }
 
-.post-content .post-meta {
-    text-align: right;
-    margin-top: 0.5rem;
+/* Post header with date and signature */
+.post-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding: 1.5rem 0 0;
+    margin-bottom: 0.25rem;
 }
 
-.site-footer .post-meta {
-    text-align: center;
-}
-
-.post-meta .post-date {
+.post-header .post-date {
     font-size: 0.85rem;
+    color: var(--color-text-muted);
+}
+
+.post-header .post-meta {
+    font-size: 0.7rem;
+    color: var(--color-text-muted);
+}
+
+.post-meta .meta-label {
+    color: var(--color-text-muted);
+}
+
+.post-meta .meta-value {
+    color: var(--color-teal);
+}
+
+.post-meta .meta-sep {
+    margin: 0 0.5rem;
     color: var(--color-text-muted);
 }
 
@@ -169,7 +203,9 @@ body {
    ============================================ */
 
 .hero {
-    padding: 2.5rem 1.5rem 1.5rem;
+    padding: 2.5rem 0 1.5rem;
+    max-width: var(--max-width);
+    margin: 0 auto;
 }
 
 .hero-title {
@@ -203,6 +239,7 @@ body {
     border: 1px solid var(--color-border);
     border-left: 3px solid var(--color-lavender);
     padding: 1.25rem 1.5rem;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
 }
 
 .about-content p {
@@ -266,7 +303,7 @@ body {
 
 .post-date {
     font-size: 0.75rem;
-    color: var(--color-text-muted);
+    color: var(--color-gold);
     flex-shrink: 0;
 }
 
@@ -456,6 +493,7 @@ body {
     border: 1px solid var(--color-border);
     border-left: 3px solid var(--color-lavender);
     padding: 1rem 1.25rem;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
 }
 
 .comment-header {
@@ -499,6 +537,7 @@ body {
     border: 1px solid var(--color-border);
     border-left: 3px solid var(--color-lavender);
     padding: 1.25rem 1.5rem;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
 }
 
 .content-body p {
@@ -631,6 +670,22 @@ body {
    RESPONSIVE
    ============================================ */
 
+/* Tablet */
+@media (max-width: 768px) {
+    body {
+        font-size: 0.93rem;
+    }
+
+    .hero-title {
+        font-size: 1.35rem;
+    }
+
+    .section-title {
+        font-size: 0.8rem;
+    }
+}
+
+/* Mobile */
 @media (max-width: 600px) {
     .hero-title {
         font-size: 1.25rem;
@@ -654,5 +709,25 @@ body {
 
     .footer-tagline {
         font-size: 0.7rem;
+    }
+}
+
+/* Small phones */
+@media (max-width: 480px) {
+    .hero,
+    .about,
+    .recent-posts,
+    .recent-comments,
+    .links,
+    .comments,
+    .post-content,
+    .reply-context {
+        padding-left: 0.75rem;
+        padding-right: 0.75rem;
+    }
+
+    .site-nav {
+        padding-left: 0.75rem;
+        padding-right: 0.75rem;
     }
 }

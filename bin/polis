@@ -28,7 +28,7 @@ set -e
 #   4. Hardcoded defaults
 
 # Fixed constants (never configurable - required for discovery)
-VERSION="0.32.0"
+VERSION="0.33.0"
 WELL_KNOWN_DIR=".well-known"
 WELL_KNOWN_FILE="polis"
 
@@ -6160,8 +6160,8 @@ cmd_register() {
             if [ "$pubkey_http_code" = "200" ]; then
                 local ds_public_key=$(echo "$pubkey_body" | jq -r '.public_key // ""')
                 if [ -n "$ds_public_key" ]; then
-                    # Reconstruct canonical payload
-                    local canonical_payload=$(jq -n \
+                    # Reconstruct canonical payload (must be compact JSON)
+                    local canonical_payload=$(jq -cn \
                         --argjson ver "$registration_version" \
                         --arg act "register" \
                         --arg dom "$domain" \
@@ -6170,17 +6170,18 @@ cmd_register() {
                     # Verify attestation signature
                     local temp_payload=$(mktemp)
                     local temp_sig=$(mktemp)
-                    local temp_pubkey=$(mktemp)
+                    local temp_allowed_signers=$(mktemp)
                     echo -n "$canonical_payload" > "$temp_payload"
                     echo "$service_attestation" > "$temp_sig"
-                    echo "$ds_public_key" > "$temp_pubkey"
+                    # allowed_signers file format: <principal> <key-type> <key>
+                    echo "discovery-service $ds_public_key" > "$temp_allowed_signers"
 
-                    if ssh-keygen -Y verify -f "$temp_pubkey" -I discovery-service -n file -s "$temp_sig" < "$temp_payload" 2>/dev/null; then
+                    if ssh-keygen -Y verify -f "$temp_allowed_signers" -I discovery-service -n file -s "$temp_sig" < "$temp_payload" 2>/dev/null; then
                         attestation_verified="valid"
                     else
                         attestation_verified="failed"
                     fi
-                    rm -f "$temp_payload" "$temp_sig" "$temp_pubkey"
+                    rm -f "$temp_payload" "$temp_sig" "$temp_allowed_signers"
                 fi
             fi
         fi
@@ -6226,8 +6227,8 @@ cmd_register() {
     # Not registered - proceed with registration
     info_human "Registering $domain with discovery service..."
 
-    # Build canonical payload
-    local register_payload=$(jq -n \
+    # Build canonical payload (must be compact JSON to match server-side verification)
+    local register_payload=$(jq -cn \
         --argjson ver 1 \
         --arg act "register" \
         --arg dom "$domain" \
@@ -6425,8 +6426,8 @@ cmd_unregister() {
 
     info_human "Unregistering $domain..."
 
-    # Build canonical payload
-    local unregister_payload=$(jq -n \
+    # Build canonical payload (must be compact JSON to match server-side verification)
+    local unregister_payload=$(jq -cn \
         --argjson ver 1 \
         --arg act "unregister" \
         --arg dom "$domain" \

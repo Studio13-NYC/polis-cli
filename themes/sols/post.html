@@ -27,11 +27,18 @@
     <!-- Post Content -->
     <article class="post-content">
         <div class="container">
+            <div class="post-header">
+                <div class="post-date">{{published_human}}</div>
+                <div class="post-meta">
+                    <span class="meta-label">Signed by</span>
+                    <span class="meta-value">{{author_name}}</span>
+                    <span class="meta-sep">|</span>
+                    <span class="meta-label">Version</span>
+                    <span class="meta-value">{{signature_short}}</span>
+                </div>
+            </div>
             <div class="content-body">
                 {{content}}
-            </div>
-            <div class="post-meta">
-                <span class="post-date">{{published_human}}</span>
             </div>
         </div>
     </article>
@@ -50,13 +57,6 @@
 
     <!-- Footer -->
     <footer class="site-footer">
-        <div class="post-meta">
-            <span class="meta-label">Signed by</span>
-            <span class="meta-value">{{author_name}}</span>
-            <span class="meta-sep">|</span>
-            <span class="meta-label">Version</span>
-            <span class="meta-value">{{signature_short}}</span>
-        </div>
         <a href="https://polis.pub" class="footer-logo">POLIS<span class="footer-tagline">Your content, free from platform control</span></a>
     </footer>
 

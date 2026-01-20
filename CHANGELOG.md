@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.33.0] - 2026-01-20
+
+### Added
+- **Post metadata tracking** - Discovery service now tracks and indexes posts from registered authors
+  - Posts can be registered, updated, queried, and removed from the discovery index
+  - Only posts from registered authors are accepted (same privacy model as comments)
+  - Enables discovery of content across the polis network
+  - Schema version bumped to 0.5.0 for discovery service compatibility
+
+### Changed
+- **Theme layout improvements** - Refined post page header layout across all built-in themes (turbo, zane, sols)
+  - Date and signature information now displayed on the same line in post header
+  - Date left-aligned, signature info ("Signed by ... | Version ...") right-aligned
+  - Increased content width from 720px to 900px for better readability
+  - Centered content container for improved visual balance
+  - Signature information moved from footer to header for better visibility
+  - Index page hero/title alignment now matches content edge
+  - Simplified post header spacing and removed dividing rule
+
+- **Theme visual enhancements** - Accessibility and visual polish for all default themes
+  - Improved muted text contrast for better readability (WCAG compliance)
+  - Added responsive breakpoints: tablet (768px) and small phone (480px)
+  - Added keyboard focus states (`:focus-visible`) for accessibility
+  - Turbo: Glow effects on navigation and post hover, increased border visibility, magenta accent for author names
+  - Zane: Subtle shadows on content cards, gold accent for dates
+  - Sols: Increased pink border visibility, added shadows for depth, sage accent for author names
+
+### Fixed
+- **Registration payload signatures** - Use compact JSON formatting to match server-side signature verification
+  - Previously used pretty-printed JSON with newlines, causing signature mismatch errors
+  - Affects `polis register` and `polis unregister` commands
+  - Ensures cryptographic signatures verify correctly on discovery service
+
+- **Attestation verification** - Fixed signature verification when checking registration status
+  - Now uses proper allowed_signers file format for `ssh-keygen -Y verify`
+  - Format requires `<principal> <key-type> <key>` instead of raw public key
+  - Fixes "Attestation Verification: FAILED" error when running `polis register` on already-registered sites
+
 ## [0.32.0] - 2026-01-18
 
 ### Added

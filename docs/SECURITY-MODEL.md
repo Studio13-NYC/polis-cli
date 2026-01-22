@@ -563,6 +563,65 @@ Migration also records the public key used for verification. When followers appl
 
 ---
 
+### Notifications
+
+**Question:** How does the notification system protect user privacy and prevent abuse?
+
+**Answer:** The notification system is designed with privacy and security as core principles:
+
+#### Signed Requests
+
+Notification queries to the discovery service require Ed25519 signatures:
+
+```
+GET /notifications?domain=mysite.com&since=2026-01-20T10:00:00Z
+
+Headers:
+  X-Polis-Signature: <Ed25519 signature>
+  X-Polis-Timestamp: 2026-01-20T12:05:00Z
+```
+
+The canonical payload that gets signed:
+```
+GET /notifications domain=mysite.com since=2026-01-20T10:00:00Z timestamp=2026-01-20T12:05:00Z
+```
+
+This ensures only you can query your own notifications.
+
+#### Attack Prevention
+
+| Attack | Mitigation |
+|--------|------------|
+| Query someone else's notifications | Signature verification fails (requires their private key) |
+| Replay captured request | Timestamp expiry (5-minute window) |
+| Brute force polling | Rate limiting (60 requests/hour per domain) |
+| Enumerate registered domains | Must provide valid signature for each domain |
+| Spam follow announcements | Rate limiting (100/day) + deduplication |
+
+#### Privacy Considerations
+
+**What the discovery service learns:**
+
+| Data | Visibility | Notes |
+|------|------------|-------|
+| Your domain | Full | Required for authentication |
+| When you poll | Full | Request timestamps |
+| Who you follow | Temporary | Fetched on-demand, not stored |
+| Your comments | Partial | Only metadata, not content |
+
+**What remains private:**
+
+- Notification preferences (stored locally in `.polis/`)
+- Which notifications you've read (stored locally)
+- Your full social graph (discovery fetches `following.json` on-demand but doesn't store it)
+
+#### Opt-in Behaviors
+
+- **Follow announcements:** Require explicit `--announce` flag
+- **Notification sync:** User initiates with `polis notifications sync`
+
+---
+
 ## Known Limitations
 
 ### Key Rotation
@@ -668,6 +727,7 @@ Optional encryption for private content. Would require:
 
 ## Document History
 
+- 2026-01-21: Added Notifications section (signed requests, attack prevention, privacy)
 - 2026-01-12: Added Implementation Security Audit section (private key handling verification)
 - 2026-01-07: Initial version
 

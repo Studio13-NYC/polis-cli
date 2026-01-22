@@ -28,7 +28,7 @@ set -e
 #   4. Hardcoded defaults
 
 # Fixed constants (never configurable - required for discovery)
-VERSION="0.33.0"
+VERSION="0.34.0"
 WELL_KNOWN_DIR=".well-known"
 WELL_KNOWN_FILE="polis"
 
@@ -120,6 +120,10 @@ apply_defaults() {
     : "${FOLLOWING_INDEX:=metadata/following.json}"
     : "${SNIPPETS_INDEX:=metadata/snippets.jsonl}"
     : "${MANIFEST:=metadata/manifest.json}"
+
+    # Notification files (private, in .polis/)
+    : "${NOTIFICATIONS_FILE:=.polis/notifications.jsonl}"
+    : "${NOTIFICATIONS_MANIFEST:=.polis/notifications-manifest.json}"
 }
 
 # Main configuration initialization
@@ -427,10 +431,11 @@ EOF
     local private_key_path="$keys_dir/id_ed25519"
     if [ ! -f ".gitignore" ]; then
         cat > ".gitignore" << EOF
+.polis/
+/themes
 /polis
+/polis-tui
 .env*
-archive/
-$private_key_path
 EOF
         files_created+=(".gitignore")
         success_human "Created .gitignore (excludes private key)"
@@ -1745,6 +1750,378 @@ is_comment_blessed() {
         "$blessed_file" 2>/dev/null || echo "0")
 
     [ "$count" -gt 0 ]
+}
+
+# ============================================================================
+# NOTIFICATION HELPERS
+# ============================================================================
+
+# Initialize notifications manifest if it doesn't exist
+init_notifications_manifest() {
+    local manifest="$NOTIFICATIONS_MANIFEST"
+    local manifest_dir=$(dirname "$manifest")
+
+    # Create directory if needed
+    [ ! -d "$manifest_dir" ] && mkdir -p "$manifest_dir"
+
+    if [ ! -f "$manifest" ]; then
+        local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+        jq -n \
+            --arg version "$VERSION" \
+            --arg ts "$timestamp" \
+            '{
+                version: $version,
+                last_requested_ts: $ts,
+                preferences: {
+                    poll_interval_minutes: 60,
+                    enabled_types: ["new_follower", "new_post", "version_available", "blessing_changed"],
+                    muted_domains: []
+                }
+            }' > "$manifest"
+    fi
+}
+
+# Get last_requested_ts from notifications manifest
+get_notifications_watermark() {
+    local manifest="$NOTIFICATIONS_MANIFEST"
+
+    if [ ! -f "$manifest" ]; then
+        # Return epoch if no manifest
+        echo "1970-01-01T00:00:00Z"
+        return
+    fi
+
+    jq -r '.last_requested_ts // "1970-01-01T00:00:00Z"' "$manifest"
+}
+
+# Update last_requested_ts in notifications manifest
+update_notifications_watermark() {
+    local new_ts="$1"
+    local manifest="$NOTIFICATIONS_MANIFEST"
+
+    if [ ! -f "$manifest" ]; then
+        init_notifications_manifest
+    fi
+
+    local temp_file="${manifest}.tmp"
+    jq --arg ts "$new_ts" '.last_requested_ts = $ts' "$manifest" > "$temp_file"
+    mv "$temp_file" "$manifest"
+}
+
+# Get notification preferences
+get_notification_preferences() {
+    local manifest="$NOTIFICATIONS_MANIFEST"
+
+    if [ ! -f "$manifest" ]; then
+        echo '{}'
+        return
+    fi
+
+    jq -c '.preferences // {}' "$manifest"
+}
+
+# Update notification preference
+update_notification_preference() {
+    local key="$1"
+    local value="$2"
+    local manifest="$NOTIFICATIONS_MANIFEST"
+
+    if [ ! -f "$manifest" ]; then
+        init_notifications_manifest
+    fi
+
+    local temp_file="${manifest}.tmp"
+    jq --arg key "$key" --argjson value "$value" '.preferences[$key] = $value' "$manifest" > "$temp_file"
+    mv "$temp_file" "$manifest"
+}
+
+# Add a notification to the JSONL file
+add_notification() {
+    local type="$1"
+    local source="$2"
+    local payload="$3"
+    local dedup_key="$4"
+
+    local notif_file="$NOTIFICATIONS_FILE"
+    local notif_dir=$(dirname "$notif_file")
+
+    # Create directory if needed
+    [ ! -d "$notif_dir" ] && mkdir -p "$notif_dir"
+
+    # Check for duplicate using dedup_key
+    if [ -n "$dedup_key" ] && [ -f "$notif_file" ]; then
+        if grep -q "\"dedup_key\":\"$dedup_key\"" "$notif_file" 2>/dev/null; then
+            # Already exists, skip
+            return 0
+        fi
+    fi
+
+    # Generate unique ID
+    local timestamp=$(date +%s)
+    local random=$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')
+    local id="notif_${timestamp}_${random}"
+    local created_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+    # Create notification entry
+    local entry=$(jq -n -c \
+        --arg id "$id" \
+        --arg type "$type" \
+        --arg created "$created_at" \
+        --arg source "$source" \
+        --argjson payload "$payload" \
+        --arg dedup "$dedup_key" \
+        '{
+            id: $id,
+            type: $type,
+            created_at: $created,
+            source: $source,
+            payload: $payload,
+            dedup_key: $dedup
+        }')
+
+    # Append to JSONL
+    echo "$entry" >> "$notif_file"
+    echo "$id"
+}
+
+# Get all notifications (returns JSONL content)
+get_notifications() {
+    local notif_file="$NOTIFICATIONS_FILE"
+
+    if [ ! -f "$notif_file" ]; then
+        return 0
+    fi
+
+    cat "$notif_file"
+}
+
+# Get notification count
+get_notification_count() {
+    local notif_file="$NOTIFICATIONS_FILE"
+
+    if [ ! -f "$notif_file" ]; then
+        echo "0"
+        return
+    fi
+
+    wc -l < "$notif_file" | tr -d ' '
+}
+
+# Remove notification by ID (mark as read/dismissed)
+remove_notification() {
+    local id="$1"
+    local notif_file="$NOTIFICATIONS_FILE"
+
+    if [ ! -f "$notif_file" ]; then
+        return 1
+    fi
+
+    local temp_file="${notif_file}.tmp"
+
+    # Filter out the notification with matching ID
+    grep -v "\"id\":\"$id\"" "$notif_file" > "$temp_file" 2>/dev/null || true
+    mv "$temp_file" "$notif_file"
+}
+
+# Remove notifications older than N days
+remove_old_notifications() {
+    local days="$1"
+    local notif_file="$NOTIFICATIONS_FILE"
+
+    if [ ! -f "$notif_file" ]; then
+        return 0
+    fi
+
+    # Calculate cutoff timestamp
+    local cutoff_epoch
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        cutoff_epoch=$(date -v-${days}d +%s)
+    else
+        cutoff_epoch=$(date -d "$days days ago" +%s)
+    fi
+
+    local temp_file="${notif_file}.tmp"
+    local removed=0
+
+    # Filter notifications newer than cutoff
+    while IFS= read -r line; do
+        local created_at=$(echo "$line" | jq -r '.created_at // empty')
+        if [ -n "$created_at" ]; then
+            local entry_epoch
+            if [[ "$OSTYPE" == "darwin"* ]]; then
+                entry_epoch=$(date -jf "%Y-%m-%dT%H:%M:%SZ" "$created_at" +%s 2>/dev/null || echo "0")
+            else
+                entry_epoch=$(date -d "$created_at" +%s 2>/dev/null || echo "0")
+            fi
+
+            if [ "$entry_epoch" -ge "$cutoff_epoch" ]; then
+                echo "$line" >> "$temp_file"
+            else
+                removed=$((removed + 1))
+            fi
+        fi
+    done < "$notif_file"
+
+    if [ -f "$temp_file" ]; then
+        mv "$temp_file" "$notif_file"
+    else
+        # All notifications were old, create empty file
+        : > "$notif_file"
+    fi
+
+    echo "$removed"
+}
+
+# Remove all notifications
+remove_all_notifications() {
+    local notif_file="$NOTIFICATIONS_FILE"
+
+    if [ -f "$notif_file" ]; then
+        : > "$notif_file"
+    fi
+}
+
+# Check if notification type is enabled
+is_notification_type_enabled() {
+    local type="$1"
+    local manifest="$NOTIFICATIONS_MANIFEST"
+
+    if [ ! -f "$manifest" ]; then
+        # Default: all types enabled
+        return 0
+    fi
+
+    local enabled=$(jq -r --arg t "$type" '.preferences.enabled_types // [] | index($t) != null' "$manifest")
+    [ "$enabled" = "true" ]
+}
+
+# Check if domain is muted
+is_domain_muted() {
+    local domain="$1"
+    local manifest="$NOTIFICATIONS_MANIFEST"
+
+    if [ ! -f "$manifest" ]; then
+        return 1
+    fi
+
+    local muted=$(jq -r --arg d "$domain" '.preferences.muted_domains // [] | index($d) != null' "$manifest")
+    [ "$muted" = "true" ]
+}
+
+# ============================================================================
+# VERSION CHECK HELPERS
+# ============================================================================
+
+# Compare two semantic versions
+# Returns: 1 if a > b, 0 if equal, 2 if a < b
+compare_versions() {
+    local a="$1"
+    local b="$2"
+
+    # Split into arrays
+    IFS='.' read -ra a_parts <<< "$a"
+    IFS='.' read -ra b_parts <<< "$b"
+
+    # Compare each part
+    local max=${#a_parts[@]}
+    [ ${#b_parts[@]} -gt $max ] && max=${#b_parts[@]}
+
+    for ((i=0; i<max; i++)); do
+        local a_val=${a_parts[$i]:-0}
+        local b_val=${b_parts[$i]:-0}
+
+        if [ "$a_val" -gt "$b_val" ]; then
+            return 1
+        elif [ "$a_val" -lt "$b_val" ]; then
+            return 2
+        fi
+    done
+    return 0
+}
+
+# Check for CLI version updates from discovery service
+# Returns JSON with version info or empty on failure
+# Sets global variables: LATEST_VERSION, UPGRADE_AVAILABLE, LATEST_DOWNLOAD_URL
+check_version_update() {
+    # Skip if discovery service not configured
+    if [ -z "$DISCOVERY_SERVICE_URL" ]; then
+        LATEST_VERSION=""
+        UPGRADE_AVAILABLE=false
+        return 1
+    fi
+
+    local endpoint="${DISCOVERY_SERVICE_URL}/polis-version?current=${VERSION}"
+
+    # Make request (no auth required for version check)
+    local response
+    response=$(curl -s --max-time 10 -w "\n%{http_code}" \
+        --location --request GET "$endpoint" \
+        --header 'Content-Type: application/json' 2>/dev/null)
+
+    local http_code=$(echo "$response" | tail -n 1)
+    local body=$(echo "$response" | sed '$d')
+
+    if [ "$http_code" != "200" ]; then
+        LATEST_VERSION=""
+        UPGRADE_AVAILABLE=false
+        return 1
+    fi
+
+    # Parse response
+    LATEST_VERSION=$(echo "$body" | jq -r '.latest // empty' 2>/dev/null)
+    UPGRADE_AVAILABLE=$(echo "$body" | jq -r '.upgrade_available // false' 2>/dev/null)
+    LATEST_DOWNLOAD_URL=$(echo "$body" | jq -r '.download_url // empty' 2>/dev/null)
+    LATEST_RELEASE_NOTES=$(echo "$body" | jq -r '.release_notes // empty' 2>/dev/null)
+
+    # Store notification if upgrade available
+    if [ "$UPGRADE_AVAILABLE" = "true" ] && is_notification_type_enabled "version_available"; then
+        local payload=$(jq -n \
+            --arg current "$VERSION" \
+            --arg latest "$LATEST_VERSION" \
+            --arg url "$LATEST_DOWNLOAD_URL" \
+            '{
+                current_version: $current,
+                latest_version: $latest,
+                download_url: $url
+            }')
+        add_notification "version_available" "discovery" "$payload" "version_available:${LATEST_VERSION}" > /dev/null
+    fi
+
+    return 0
+}
+
+# Check for version pending apply (CLI newer than metadata files)
+check_version_pending() {
+    if [ ! -f "$MANIFEST" ]; then
+        return 1
+    fi
+
+    local metadata_version=$(jq -r '.version // empty' "$MANIFEST" 2>/dev/null)
+    if [ -z "$metadata_version" ]; then
+        return 1
+    fi
+
+    # Compare versions
+    compare_versions "$VERSION" "$metadata_version"
+    local result=$?
+
+    if [ $result -eq 1 ]; then
+        # CLI version > metadata version, suggest rebuild
+        if is_notification_type_enabled "version_pending"; then
+            local payload=$(jq -n \
+                --arg cli "$VERSION" \
+                --arg metadata "$metadata_version" \
+                '{
+                    cli_version: $cli,
+                    metadata_version: $metadata,
+                    suggestion: "Run '\''polis rebuild'\'' to update metadata files"
+                }')
+            add_notification "version_pending" "local" "$payload" "version_pending:${VERSION}" > /dev/null
+        fi
+        return 0
+    fi
+
+    return 1
 }
 
 # ============================================================================
@@ -3735,42 +4112,49 @@ signature: $signature
 
 # Command: polis rebuild
 cmd_rebuild() {
-    local do_content=false
+    local do_posts=false
     local do_comments=false
+    local do_notifications=false
 
     # Parse flags (combinable)
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --content)
-                do_content=true
+            --posts)
+                do_posts=true
                 shift
                 ;;
             --comments)
                 do_comments=true
                 shift
                 ;;
+            --notifications)
+                do_notifications=true
+                shift
+                ;;
             --all)
-                do_content=true
+                do_posts=true
                 do_comments=true
+                do_notifications=true
                 shift
                 ;;
             *)
-                json_error "rebuild" "INVALID_INPUT" "Unknown option: $1. Use: polis rebuild --content|--comments|--all"
+                json_error "rebuild" "INVALID_INPUT" "Unknown option: $1. Use: polis rebuild --posts|--comments|--notifications|--all"
                 ;;
         esac
     done
 
     # Require at least one target
-    if [[ "$do_content" == false && "$do_comments" == false ]]; then
-        json_error "rebuild" "INVALID_INPUT" "Must specify target: --content, --comments, or --all"
+    if [[ "$do_posts" == false && "$do_comments" == false && "$do_notifications" == false ]]; then
+        json_error "rebuild" "INVALID_INPUT" "Must specify target: --posts, --comments, --notifications, or --all"
     fi
 
     local posts_count=0
     local comments_count=0
     local blessed_count=0
+    local notifications_reset=false
 
-    # Rebuild content index
-    if [[ "$do_content" == true ]]; then
+    # Rebuild posts/comments index
+    if [[ "$do_posts" == true ]]; then
         info_human "Rebuilding content index..."
         rebuild_index
         # Count entries
@@ -3792,17 +4176,35 @@ cmd_rebuild() {
         success_human "Rebuilt blessed-comments.json ($blessed_count blessed comments)"
     fi
 
+    # Reset notifications
+    if [[ "$do_notifications" == true ]]; then
+        info_human "Resetting notifications..."
+        rm -f "$NOTIFICATIONS_FILE"
+        rm -f "$NOTIFICATIONS_MANIFEST"
+        # Initialize fresh notification manifest
+        echo '{"version":"1.0","last_sync":null,"preferences":{}}' > "$NOTIFICATIONS_MANIFEST"
+        notifications_reset=true
+        success_human "Reset notification files"
+    fi
+
+    # Always regenerate manifest after any rebuild
+    generate_manifest "true"
+    success_human "Regenerated manifest.json"
+
     # Output results
     if [ "$JSON_MODE" = true ]; then
         local result=$(jq -n \
-            --argjson content "$do_content" \
-            --argjson comments "$do_comments" \
+            --argjson posts_rebuilt "$do_posts" \
+            --argjson comments_rebuilt "$do_comments" \
+            --argjson notifications_reset "$notifications_reset" \
             --argjson posts "$posts_count" \
             --argjson comments_indexed "$comments_count" \
             --argjson blessed "$blessed_count" \
             '{
-                content_rebuilt: $content,
-                comments_rebuilt: $comments,
+                posts_rebuilt: $posts_rebuilt,
+                comments_rebuilt: $comments_rebuilt,
+                notifications_reset: $notifications_reset,
+                manifest_regenerated: true,
                 posts_indexed: $posts,
                 comments_indexed: $comments_indexed,
                 blessed_comments: $blessed
@@ -3833,12 +4235,6 @@ cmd_index() {
         # Output raw JSONL
         cat "$PUBLIC_INDEX"
     fi
-}
-
-# Command: polis manifest
-# Regenerate manifest.json from public.jsonl
-cmd_manifest() {
-    generate_manifest
 }
 
 # Command: polis discover
@@ -4110,6 +4506,25 @@ cmd_about() {
         fi
     fi
 
+    # Check for version updates
+    local upgrade_available="false"
+    local latest_version=""
+    local download_url=""
+    if check_version_update; then
+        upgrade_available="$UPGRADE_AVAILABLE"
+        latest_version="$LATEST_VERSION"
+        download_url="$LATEST_DOWNLOAD_URL"
+    fi
+
+    # Check for version pending apply
+    local version_pending="false"
+    if check_version_pending; then
+        version_pending="true"
+    fi
+
+    # Get notification count
+    local notification_count=$(get_notification_count)
+
     # ═══════════════════════════════════════════════════════════════════════
     # OUTPUT
     # ═══════════════════════════════════════════════════════════════════════
@@ -4119,6 +4534,11 @@ cmd_about() {
             --arg site_url "$site_url" \
             --arg site_title "$site_title" \
             --arg cli_version "$VERSION" \
+            --arg latest_version "$latest_version" \
+            --argjson upgrade_available "$upgrade_available" \
+            --arg download_url "$download_url" \
+            --argjson version_pending "$version_pending" \
+            --argjson notification_count "$notification_count" \
             --arg wellknown_version "$wellknown_version" \
             --arg following_version "$following_version" \
             --arg blessings_version "$blessings_version" \
@@ -4147,10 +4567,17 @@ cmd_about() {
                 },
                 versions: {
                     cli: $cli_version,
+                    latest: (if $latest_version == "" then null else $latest_version end),
+                    upgrade_available: $upgrade_available,
+                    download_url: (if $download_url == "" then null else $download_url end),
+                    version_pending: $version_pending,
                     well_known_polis: $wellknown_version,
                     following: $following_version,
                     blessed_comments: $blessings_version,
                     manifest: $manifest_version
+                },
+                notifications: {
+                    unread_count: $notification_count
                 },
                 configuration: {
                     directories: {
@@ -4202,12 +4629,26 @@ cmd_about() {
 
         # VERSIONS
         echo -e "${CYAN}VERSIONS${NC}"
-        echo "  CLI:                   $VERSION"
+        if [ "$upgrade_available" = "true" ]; then
+            echo -e "  CLI:                   $VERSION ${YELLOW}→ $latest_version available${NC}"
+        else
+            echo "  CLI:                   $VERSION"
+        fi
+        if [ "$version_pending" = "true" ]; then
+            echo -e "  ${YELLOW}! Metadata files need update. Run 'polis rebuild'${NC}"
+        fi
         echo "  .well-known/polis:     $wellknown_version"
         echo "  following.json:        $following_version"
         echo "  blessed-comments.json: $blessings_version"
         echo "  manifest.json:         $manifest_version"
         echo ""
+
+        # NOTIFICATIONS
+        if [ "$notification_count" -gt 0 ]; then
+            echo -e "${CYAN}NOTIFICATIONS${NC}"
+            echo -e "  ${YELLOW}$notification_count unread${NC} - run 'polis notifications' to view"
+            echo ""
+        fi
 
         # CONFIGURATION
         echo -e "${CYAN}CONFIGURATION${NC}"
@@ -4358,7 +4799,7 @@ cmd_rotate_key() {
     # 7. Rebuild index
     info_human ""
     info_human "Rebuilding index..."
-    cmd_rebuild --content > /dev/null 2>&1
+    cmd_rebuild --posts > /dev/null 2>&1
     success_human "Rebuilt public.jsonl index"
 
     # 8. Handle old key
@@ -6505,19 +6946,54 @@ cmd_unregister() {
 # NOTIFICATIONS COMMAND
 # ============================================================================
 
-cmd_notifications() {
-    # Check initialization
-    if [ ! -f "$WELL_KNOWN_DIR/polis" ]; then
-        json_error "notifications" "INVALID_STATE" "Polis not initialized. Run 'polis init' first."
+# List notifications (default subcommand)
+cmd_notifications_list() {
+    local show_all=false
+    local type_filter=""
+
+    # Parse options
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --all|-a)
+                show_all=true
+                shift
+                ;;
+            --type|-t)
+                type_filter="$2"
+                shift 2
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+
+    # Initialize notifications manifest if needed
+    init_notifications_manifest
+
+    # Get local notifications
+    local notif_count=$(get_notification_count)
+    local notifications="[]"
+
+    if [ "$notif_count" -gt 0 ]; then
+        # Convert JSONL to JSON array
+        notifications=$(get_notifications | jq -s '.')
+
+        # Apply type filter if specified
+        if [ -n "$type_filter" ]; then
+            local types_array=$(echo "$type_filter" | tr ',' '\n' | jq -R . | jq -s .)
+            notifications=$(echo "$notifications" | jq --argjson types "$types_array" \
+                '[.[] | select(.type as $t | $types | index($t) != null)]')
+            notif_count=$(echo "$notifications" | jq 'length')
+        fi
     fi
 
-    local has_notifications=false
+    # Also get pending blessings and migrations (legacy notifications)
     local pending_blessings="[]"
     local pending_count=0
     local migrations="[]"
     local migration_count=0
 
-    # --- Pending Blessings ---
     if [ -n "$DISCOVERY_SERVICE_URL" ] && [ -n "$DISCOVERY_SERVICE_KEY" ]; then
         local domain=$(extract_domain_from_url "$POLIS_BASE_URL")
         if [ -n "$domain" ]; then
@@ -6528,43 +7004,49 @@ cmd_notifications() {
             if [ -n "$blessing_response" ]; then
                 pending_count=$(echo "$blessing_response" | jq -r '.count // 0' 2>/dev/null)
                 if [ "$pending_count" -gt 0 ]; then
-                    has_notifications=true
                     pending_blessings=$(echo "$blessing_response" | jq -c '.requests // []' 2>/dev/null)
                 fi
             fi
         fi
-    fi
 
-    # --- Domain Migrations ---
-    local relevant_domains=$(collect_relevant_domains | paste -sd ',' -)
-
-    if [ -n "$relevant_domains" ] && [ -n "$DISCOVERY_SERVICE_URL" ]; then
-        local migration_response=$(query_domain_migrations "$relevant_domains")
-        migration_count=$(echo "$migration_response" | jq -r '.count // 0' 2>/dev/null)
-
-        if [ "$migration_count" -gt 0 ]; then
-            has_notifications=true
-            migrations=$(echo "$migration_response" | jq -c '.migrations // []' 2>/dev/null)
+        local relevant_domains=$(collect_relevant_domains | paste -sd ',' -)
+        if [ -n "$relevant_domains" ]; then
+            local migration_response=$(query_domain_migrations "$relevant_domains")
+            migration_count=$(echo "$migration_response" | jq -r '.count // 0' 2>/dev/null)
+            if [ "$migration_count" -gt 0 ]; then
+                migrations=$(echo "$migration_response" | jq -c '.migrations // []' 2>/dev/null)
+            fi
         fi
     fi
 
-    # --- Output ---
+    # Output
     if [ "$JSON_MODE" = true ]; then
         local result=$(jq -n \
+            --argjson notifications "$notifications" \
             --argjson blessings "$pending_blessings" \
             --argjson migrations "$migrations" \
             '{
+                notifications: $notifications,
                 pending_blessings: $blessings,
                 domain_migrations: $migrations
             }')
         json_success "notifications" "$result"
     else
-        if [ "$has_notifications" = false ]; then
-            info "No new notifications"
+        local total_count=$((notif_count + pending_count + migration_count))
+
+        if [ "$total_count" -eq 0 ]; then
+            info "No notifications"
             return
         fi
 
         echo ""
+
+        # Display local notifications
+        if [ "$notif_count" -gt 0 ]; then
+            info "=== Notifications ($notif_count) ==="
+            echo "$notifications" | jq -r '.[] | "  [\(.type)] \(.payload | tostring | .[0:60])... (\(.created_at[:10]))"' 2>/dev/null
+            echo ""
+        fi
 
         # Display pending blessings
         if [ "$pending_count" -gt 0 ]; then
@@ -6583,6 +7065,280 @@ cmd_notifications() {
             info "Run 'polis migrations apply' to update local references."
         fi
     fi
+}
+
+# Read/dismiss notifications
+cmd_notifications_read() {
+    local id="$1"
+    local all=false
+
+    if [ "$id" = "--all" ] || [ "$id" = "-a" ]; then
+        all=true
+    fi
+
+    if [ "$all" = true ]; then
+        remove_all_notifications
+        if [ "$JSON_MODE" = true ]; then
+            json_success "notifications-read" '{"removed": "all"}'
+        else
+            success "All notifications marked as read"
+        fi
+    elif [ -n "$id" ]; then
+        remove_notification "$id"
+        if [ "$JSON_MODE" = true ]; then
+            json_success "notifications-read" "{\"removed\": \"$id\"}"
+        else
+            success "Notification $id marked as read"
+        fi
+    else
+        if [ "$JSON_MODE" = true ]; then
+            json_error "notifications-read" "INVALID_INPUT" "Notification ID required. Use --all to mark all as read."
+        else
+            error "Notification ID required. Use --all to mark all as read."
+        fi
+    fi
+}
+
+# Dismiss notifications (same as read, but named differently for UX)
+cmd_notifications_dismiss() {
+    local id="$1"
+    shift || true
+
+    # Check for --older-than option
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --older-than)
+                local days="${2%d}"  # Remove 'd' suffix if present
+                shift 2
+                local removed=$(remove_old_notifications "$days")
+                if [ "$JSON_MODE" = true ]; then
+                    json_success "notifications-dismiss" "{\"removed\": $removed, \"older_than_days\": $days}"
+                else
+                    success "Dismissed $removed notifications older than $days days"
+                fi
+                return
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+
+    # If no --older-than, behave like read
+    cmd_notifications_read "$id"
+}
+
+# Sync notifications from discovery service (placeholder for Phase 2+)
+cmd_notifications_sync() {
+    local reset=false
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --reset)
+                reset=true
+                shift
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+
+    # Initialize manifest
+    init_notifications_manifest
+
+    if [ "$reset" = true ]; then
+        update_notifications_watermark "1970-01-01T00:00:00Z"
+        info_human "Reset watermark. Next sync will fetch all notifications."
+    fi
+
+    local last_ts=$(get_notifications_watermark)
+    local new_ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+    # Check for version updates (Phase 1)
+    local version_notification_added=false
+    if [ -n "$DISCOVERY_SERVICE_URL" ]; then
+        local version_endpoint="${DISCOVERY_SERVICE_URL}/polis-version"
+        local version_response=$(curl -s --max-time 10 \
+            "${version_endpoint}?current=${VERSION}" 2>/dev/null)
+
+        if [ -n "$version_response" ]; then
+            local latest=$(echo "$version_response" | jq -r '.latest // empty')
+            local upgrade=$(echo "$version_response" | jq -r '.upgrade_available // false')
+
+            if [ "$upgrade" = "true" ] && [ -n "$latest" ]; then
+                # Check if we should add this notification
+                if is_notification_type_enabled "version_available"; then
+                    local payload=$(echo "$version_response" | jq -c \
+                        --arg current "$VERSION" \
+                        '{current_version: $current, latest_version: .latest, released_at: .released_at, download_url: .download_url}')
+                    add_notification "version_available" "discovery" "$payload" "version_available:$latest" > /dev/null
+                    version_notification_added=true
+                fi
+            fi
+        fi
+    fi
+
+    # Update watermark
+    update_notifications_watermark "$new_ts"
+
+    # Output
+    if [ "$JSON_MODE" = true ]; then
+        local result=$(jq -n \
+            --arg last "$last_ts" \
+            --arg new "$new_ts" \
+            --argjson version_added "$version_notification_added" \
+            '{
+                synced_from: $last,
+                synced_to: $new,
+                version_notification_added: $version_added
+            }')
+        json_success "notifications-sync" "$result"
+    else
+        success "Synced notifications"
+        if [ "$version_notification_added" = true ]; then
+            info "New version available notification added"
+        fi
+    fi
+}
+
+# Configure notification preferences
+cmd_notifications_config() {
+    local action=""
+    local value=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --poll-interval)
+                action="poll_interval"
+                value="$2"
+                shift 2
+                ;;
+            --enable)
+                action="enable"
+                value="$2"
+                shift 2
+                ;;
+            --disable)
+                action="disable"
+                value="$2"
+                shift 2
+                ;;
+            --mute)
+                action="mute"
+                value="$2"
+                shift 2
+                ;;
+            --unmute)
+                action="unmute"
+                value="$2"
+                shift 2
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+
+    # Initialize manifest
+    init_notifications_manifest
+
+    if [ -z "$action" ]; then
+        # Show current config
+        local prefs=$(get_notification_preferences)
+        if [ "$JSON_MODE" = true ]; then
+            json_success "notifications-config" "$prefs"
+        else
+            echo ""
+            info "Notification Preferences:"
+            echo "$prefs" | jq -r '
+                "  Poll interval: \(.poll_interval_minutes // 60) minutes",
+                "  Enabled types: \(.enabled_types // [] | join(", "))",
+                "  Muted domains: \(.muted_domains // [] | if length == 0 then "(none)" else join(", ") end)"
+            '
+            echo ""
+        fi
+        return
+    fi
+
+    local manifest="$NOTIFICATIONS_MANIFEST"
+    local temp_file="${manifest}.tmp"
+
+    case "$action" in
+        poll_interval)
+            # Parse interval (e.g., "30m" -> 30)
+            local minutes="${value%m}"
+            if [ "$minutes" -lt 15 ]; then
+                minutes=15
+                info_human "Minimum poll interval is 15 minutes. Setting to 15."
+            fi
+            jq --argjson mins "$minutes" '.preferences.poll_interval_minutes = $mins' "$manifest" > "$temp_file"
+            mv "$temp_file" "$manifest"
+            success_human "Poll interval set to $minutes minutes"
+            ;;
+        enable)
+            jq --arg t "$value" '.preferences.enabled_types |= (. + [$t] | unique)' "$manifest" > "$temp_file"
+            mv "$temp_file" "$manifest"
+            success_human "Enabled notification type: $value"
+            ;;
+        disable)
+            jq --arg t "$value" '.preferences.enabled_types |= (. - [$t])' "$manifest" > "$temp_file"
+            mv "$temp_file" "$manifest"
+            success_human "Disabled notification type: $value"
+            ;;
+        mute)
+            jq --arg d "$value" '.preferences.muted_domains |= (. + [$d] | unique)' "$manifest" > "$temp_file"
+            mv "$temp_file" "$manifest"
+            success_human "Muted domain: $value"
+            ;;
+        unmute)
+            jq --arg d "$value" '.preferences.muted_domains |= (. - [$d])' "$manifest" > "$temp_file"
+            mv "$temp_file" "$manifest"
+            success_human "Unmuted domain: $value"
+            ;;
+    esac
+
+    if [ "$JSON_MODE" = true ]; then
+        local prefs=$(get_notification_preferences)
+        json_success "notifications-config" "$prefs"
+    fi
+}
+
+# Main notifications command dispatcher
+cmd_notifications() {
+    # Check initialization
+    if [ ! -f "$WELL_KNOWN_DIR/polis" ]; then
+        json_error "notifications" "INVALID_STATE" "Polis not initialized. Run 'polis init' first."
+    fi
+
+    local subcommand="${1:-}"
+
+    case "$subcommand" in
+        read)
+            shift
+            cmd_notifications_read "$@"
+            ;;
+        dismiss)
+            shift
+            cmd_notifications_dismiss "$@"
+            ;;
+        sync)
+            shift
+            cmd_notifications_sync "$@"
+            ;;
+        config)
+            shift
+            cmd_notifications_config "$@"
+            ;;
+        list|"")
+            shift 2>/dev/null || true
+            cmd_notifications_list "$@"
+            ;;
+        *)
+            # Treat unknown as list with options
+            cmd_notifications_list "$@"
+            ;;
+    esac
 }
 
 # ============================================================================
@@ -8175,9 +8931,6 @@ main() {
         index)
             cmd_index "$@"
             ;;
-        manifest)
-            cmd_manifest "$@"
-            ;;
         discover)
             cmd_discover "$@"
             ;;
@@ -8266,13 +9019,20 @@ main() {
             echo "  polis discover                  Check followed authors for new content"
             echo "  polis discover --author <url>   Check a specific author"
             echo "  polis discover --since <date>   Show items since date (ignores last_checked)"
-            echo "  polis manifest                  Regenerate manifest.json (auto-runs on publish)"
+            echo ""
+            echo "Commands related to notifications:"
+            echo "  polis notifications             List unread notifications"
+            echo "  polis notifications list        List notifications (--type <types>, --all)"
+            echo "  polis notifications read <id>   Mark notification as read (--all for all)"
+            echo "  polis notifications dismiss <id>"
+            echo "                                  Dismiss notification (--older-than 30d for old ones)"
+            echo "  polis notifications sync        Sync notifications from discovery service (--reset for full)"
+            echo "  polis notifications config      Configure preferences (--poll-interval, --enable, --disable, --mute)"
             echo ""
             echo "Commands related to site administration:"
             echo "  polis register                  List your site in the public directory (makes content discoverable)"
             echo "  polis unregister [--force]      Unregister site (hard delete, requires confirmation)"
             echo "  polis render [--force]          Render markdown posts and comments to HTML"
-            echo "  polis notifications             Show pending actions (blessing requests, domain migrations)"
             echo "  polis migrate <new-domain>      Migrate all content to a new domain (re-signs files, updates DB)"
             echo "  polis migrations apply          Apply discovered domain migrations to local files"
             echo ""
@@ -8290,8 +9050,8 @@ main() {
             echo "    --comments-dir <path>         Custom comments directory (default: comments)"
             echo "    --snippets-dir <path>         Custom snippets directory (default: snippets)"
             echo "    --versions-dir <path>         Custom versions directory (default: .versions)"
-            echo "  polis rebuild --content|--comments|--all"
-            echo "                                  Rebuild local indexes (flags are combinable)"
+            echo "  polis rebuild --posts|--comments|--notifications|--all"
+            echo "                                  Rebuild indexes and reset state (auto-regenerates manifest)"
             echo "  polis index                     View index (JSONL; use --json for grouped)"
             echo "  polis version                   Print CLI version"
             echo "  polis about                     Show site, versions, config, keys, discovery info"

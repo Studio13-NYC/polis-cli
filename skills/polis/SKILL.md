@@ -287,52 +287,197 @@ The following environment variables should be configured:
 
 ## Feature 6: Notifications
 
-**Trigger phrases**: "notifications", "pending actions", "what needs attention", "any updates"
+**Trigger phrases**: "notifications", "pending actions", "what needs attention", "any updates", "check for updates"
 
 ### Workflow
 
-1. **Fetch all notifications**:
+1. **Fetch notifications**:
    ```bash
+   # List unread notifications
    ./cli/bin/polis --json notifications
+
+   # List all notifications (including read)
+   ./cli/bin/polis --json notifications list --all
+
+   # Filter by type
+   ./cli/bin/polis --json notifications list --type version_available,new_follower
    ```
 
 2. **Present categorized notifications**:
    ```
    === Notifications ===
 
-   Blessing Requests (N pending):
-   - Request #42 from alice@example.com on "Your Post Title"
-   - Request #43 from bob@example.com on "Another Post"
+   Updates (1 unread):
+   - [version_available] CLI v0.35.0 available (you have v0.34.0)
 
-   Domain Migrations (M discovered):
-   - old-domain.com -> new-domain.com (2025-01-15)
+   Pending Actions (2 unread):
+   - [version_pending] Metadata files need update - run 'polis rebuild'
+
+   Social (3 unread):
+   - [new_follower] alice.com started following you
+   - [new_post] bob.com published "New Article"
+   - [blessing_changed] Your comment was blessed on charlie.com
    ```
 
-3. **Offer actions**:
-   - For blessing requests: "Review these?" -> switch to blessing workflow
-   - For migrations: "Apply these updates?" -> run migrations apply
+3. **Offer actions based on notification type**:
+   - `version_available` - "Upgrade available. Show release notes?"
+   - `version_pending` - "Run `polis rebuild --all` to update metadata?"
+   - `new_follower` - "Follow them back?"
+   - `new_post` - "Preview this post?"
+   - `blessing_changed` - "View the comment?"
 
-### Migration Application
-
-When user wants to apply migrations:
-
-1. **Run interactive apply**:
+4. **Mark notifications as handled**:
    ```bash
-   ./cli/bin/polis migrations apply
+   # Mark specific notification as read
+   ./cli/bin/polis --json notifications read <id>
+
+   # Mark all as read
+   ./cli/bin/polis --json notifications read --all
+
+   # Dismiss old notifications
+   ./cli/bin/polis --json notifications dismiss --older-than 30d
    ```
 
-2. **For each migration, CLI shows**:
-   - Old domain -> New domain
-   - Key verification status (ensures same owner)
-   - Affected local files
-   - Prompts for confirmation
+### Notification Types
 
-3. **Report results**:
-   - Files updated
-   - Git changes staged
+| Type | Source | Description |
+|------|--------|-------------|
+| `version_available` | Discovery service | New CLI version released |
+| `version_pending` | Local detection | CLI upgraded but metadata needs rebuild |
+| `new_follower` | Discovery service | Someone followed you |
+| `new_post` | Discovery service | Followed author published |
+| `blessing_changed` | Discovery service | Your comment was blessed/unblessed |
 
-### Security Note
-The CLI verifies public key continuity before applying migrations. If the new domain's public key doesn't match the stored key from when migration was recorded, the migration is skipped with a warning about possible hijacking.
+### Syncing Notifications
+
+```bash
+# Fetch new notifications from discovery service
+./cli/bin/polis --json notifications sync
+
+# Reset and do full re-sync
+./cli/bin/polis --json notifications sync --reset
+```
+
+### Configuring Preferences
+
+```bash
+# Show current config
+./cli/bin/polis --json notifications config
+
+# Set poll interval
+./cli/bin/polis notifications config --poll-interval 30m
+
+# Enable/disable notification types
+./cli/bin/polis notifications config --enable new_post
+./cli/bin/polis notifications config --disable version_available
+
+# Mute specific domains
+./cli/bin/polis notifications config --mute spam.com
+./cli/bin/polis notifications config --unmute spam.com
+```
+
+### Local Storage
+
+Notifications are stored locally:
+- `.polis/notifications.jsonl` - Notification log (one per line)
+- `.polis/notifications-manifest.json` - Preferences and sync state
+
+---
+
+## Feature 7: Site Registration
+
+**Trigger phrases**: "register", "register site", "make discoverable", "unregister"
+
+### Workflow
+
+1. **Register with discovery service**:
+   ```bash
+   ./cli/bin/polis --json register
+   ```
+
+2. **Report registration status**:
+   - Site URL registered
+   - Public key stored
+   - Now discoverable by other polis users
+
+3. **Unregister if requested** (destructive - confirm first):
+   ```bash
+   ./cli/bin/polis --json unregister --force
+   ```
+
+### Notes
+- Registration makes your site discoverable
+- Required for receiving blessing requests
+- `polis init --register` can auto-register during initialization
+
+---
+
+## Feature 8: Clone Remote Site
+
+**Trigger phrases**: "clone", "download site", "fetch site", "mirror"
+
+### Workflow
+
+1. **Clone a remote polis site**:
+   ```bash
+   # Clone to auto-named directory
+   ./cli/bin/polis --json clone https://alice.com
+
+   # Clone to specific directory
+   ./cli/bin/polis --json clone https://alice.com ./alice-site
+
+   # Force full re-download
+   ./cli/bin/polis --json clone https://alice.com --full
+
+   # Only fetch changes (incremental)
+   ./cli/bin/polis --json clone https://alice.com --diff
+   ```
+
+2. **Report what was downloaded**:
+   - Posts fetched
+   - Comments fetched
+   - Metadata files
+
+### Use Cases
+- Local backup of followed authors
+- Offline reading
+- Analysis of site structure
+
+---
+
+## Feature 9: About / Site Info
+
+**Trigger phrases**: "about", "site info", "show config", "what's my setup"
+
+### Workflow
+
+1. **Get comprehensive site info**:
+   ```bash
+   ./cli/bin/polis --json about
+   ```
+
+2. **Present dashboard**:
+   ```
+   === Site ===
+   URL: https://yoursite.com
+   Title: Your Site Name
+
+   === Versions ===
+   CLI: 0.34.0
+   Manifest: 0.34.0
+
+   === Keys ===
+   Status: configured
+   Fingerprint: SHA256:abc123...
+
+   === Discovery ===
+   Service: https://discovery.polis.pub
+   Registered: yes
+   ```
+
+### Notes
+- Replaces the old `polis config` command
+- Shows version mismatch warnings (CLI vs manifest)
 
 ---
 

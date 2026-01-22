@@ -770,18 +770,6 @@ do_render() {
     wait_for_key
 }
 
-# Run polis manifest
-do_manifest() {
-    header "REGENERATE MANIFEST"
-    echo ""
-
-    info "Regenerating manifest.json..."
-    run_polis_human manifest 2>&1
-
-    echo ""
-    wait_for_key
-}
-
 # Admin menu for maintenance operations
 do_admin() {
     while true; do
@@ -789,7 +777,6 @@ do_admin() {
         choice=$(inline_select "Admin" \
             "register"     "List site in public directory" \
             "unregister"   "Unregister site" \
-            "manifest"     "Regenerate manifest.json" \
             "render"       "Rebuild site (polis render)" \
             "render_force" "Rebuild site (force re-render all)" \
             || true)
@@ -800,9 +787,6 @@ do_admin() {
                 ;;
             unregister)
                 do_unregister
-                ;;
-            manifest)
-                do_manifest
                 ;;
             render)
                 do_render

@@ -7,32 +7,32 @@
 # Or copy to ~/.zsh/completions/_polis (create dir if needed)
 
 _polis() {
-    local -a commands blessing_subcommands migrations_subcommands
+    local -a commands blessing_subcommands migrations_subcommands notifications_subcommands
+    local cmd_pos=2  # Default command position
 
     commands=(
         'about:Show site, versions, config, keys, discovery info'
         'blessing:Manage comment blessings'
-        'clone:Clone a remote polis site'
-        'comment:Create a comment on a post'
-        'discover:Check followed authors for new content'
+        'clone:Clone a remote polis site (--full, --diff)'
+        'comment:Create a comment on a post (--filename, --title for stdin)'
+        'discover:Check followed authors for new content (--author, --since)'
         'extract:Reconstruct a specific version of a file'
-        'follow:Follow an author'
+        'follow:Follow an author (--announce to broadcast)'
         'index:View content index'
         'init:Initialize Polis directory structure'
-        'manifest:Regenerate manifest.json'
         'migrate:Migrate content to a new domain'
         'migrations:Apply discovered domain migrations'
-        'notifications:Show pending actions'
-        'post:Create a new post'
+        'notifications:View and manage notifications'
+        'post:Create a new post (--filename, --title for stdin)'
         'preview:Preview a post or comment with signature verification'
-        'rebuild:Rebuild local indexes'
+        'rebuild:Rebuild indexes (--posts, --comments, --notifications, --all)'
         'register:Register site with discovery service'
-        'render:Render markdown to HTML'
+        'render:Render markdown to HTML (--force, --init-templates)'
         'republish:Update an already-published file'
-        'rotate-key:Generate new keypair and re-sign content'
-        'snippet:Publish a reusable template snippet'
-        'unfollow:Unfollow an author'
-        'unregister:Unregister site from discovery service'
+        'rotate-key:Generate new keypair and re-sign content (--delete-old-key)'
+        'snippet:Publish a reusable template snippet (--filename, --title for stdin)'
+        'unfollow:Unfollow an author (--announce to broadcast)'
+        'unregister:Unregister site from discovery service (--force to skip confirmation)'
         'version:Print CLI version'
     )
 
@@ -48,24 +48,194 @@ _polis() {
         'apply:Apply discovered domain migrations'
     )
 
+    notifications_subcommands=(
+        'list:List notifications (--type to filter, --all to show all)'
+        'read:Mark notification as read (--all for all)'
+        'dismiss:Dismiss notification (--older-than 30d for old ones)'
+        'sync:Sync from discovery service (--reset for full sync)'
+        'config:Configure preferences (--poll-interval, --enable, --disable, --mute, --unmute)'
+    )
+
+    # Adjust command position if --json is first
+    if [[ "$words[2]" == "--json" ]]; then
+        cmd_pos=3
+    fi
+
+    local actual_cmd="$words[$cmd_pos]"
+
     _arguments -C \
         '--json[Output results in JSON format]' \
         '--help[Show help]' \
         '1: :->command' \
-        '2: :->subcommand' \
         '*: :->args'
 
     case $state in
         command)
             _describe -t commands 'polis commands' commands
             ;;
-        subcommand)
-            case $words[2] in
+        args)
+            # If we're completing right after --json, show commands
+            if [[ "$words[2]" == "--json" && $CURRENT -eq 3 ]]; then
+                _describe -t commands 'polis commands' commands
+                return
+            fi
+
+            case $actual_cmd in
                 blessing)
-                    _describe -t subcommands 'blessing subcommands' blessing_subcommands
+                    if [[ $CURRENT -eq $((cmd_pos + 1)) ]]; then
+                        _describe -t subcommands 'blessing subcommands' blessing_subcommands
+                    fi
                     ;;
                 migrations)
-                    _describe -t subcommands 'migrations subcommands' migrations_subcommands
+                    if [[ $CURRENT -eq $((cmd_pos + 1)) ]]; then
+                        _describe -t subcommands 'migrations subcommands' migrations_subcommands
+                    fi
+                    ;;
+                notifications)
+                    if [[ $CURRENT -eq $((cmd_pos + 1)) ]]; then
+                        _describe -t subcommands 'notifications subcommands' notifications_subcommands
+                    else
+                        local subcmd="$words[$((cmd_pos + 1))]"
+                        case $subcmd in
+                            list)
+                                _arguments \
+                                    '--json[Output in JSON format]' \
+                                    '--type[Filter by notification type]:type:(version_available version_pending new_follower new_post blessing_changed)' \
+                                    '--all[Show all notifications]'
+                                ;;
+                            read)
+                                _arguments \
+                                    '--json[Output in JSON format]' \
+                                    '--all[Mark all as read]'
+                                ;;
+                            dismiss)
+                                _arguments \
+                                    '--json[Output in JSON format]' \
+                                    '--older-than[Dismiss notifications older than]:duration:(7d 14d 30d 60d 90d)'
+                                ;;
+                            sync)
+                                _arguments \
+                                    '--json[Output in JSON format]' \
+                                    '--reset[Reset watermark and do full sync]'
+                                ;;
+                            config)
+                                _arguments \
+                                    '--json[Output in JSON format]' \
+                                    '--poll-interval[Set poll interval]:interval:(15m 30m 60m 120m)' \
+                                    '--enable[Enable notification type]:type:(version_available version_pending new_follower new_post blessing_changed)' \
+                                    '--disable[Disable notification type]:type:(version_available version_pending new_follower new_post blessing_changed)' \
+                                    '--mute[Mute domain]:domain:' \
+                                    '--unmute[Unmute domain]:domain:'
+                                ;;
+                        esac
+                    fi
+                    ;;
+                follow)
+                    _arguments \
+                        '--json[Output in JSON format]' \
+                        '--announce[Broadcast follow to discovery service]' \
+                        ':url:'
+                    ;;
+                unfollow)
+                    _arguments \
+                        '--json[Output in JSON format]' \
+                        '--announce[Broadcast unfollow to discovery service]' \
+                        ':url:'
+                    ;;
+                render)
+                    _arguments \
+                        '--json[Output in JSON format]' \
+                        '--force[Force re-render all files]' \
+                        '--init-templates[Create default templates in .polis/templates]'
+                    ;;
+                rebuild)
+                    _arguments \
+                        '--json[Output in JSON format]' \
+                        '--posts[Rebuild public.jsonl from posts and comments]' \
+                        '--comments[Rebuild blessed-comments.json]' \
+                        '--notifications[Reset notification files]' \
+                        '--all[Rebuild all indexes and reset notifications]'
+                    ;;
+                unregister)
+                    _arguments \
+                        '--json[Output in JSON format]' \
+                        '--force[Skip confirmation prompt]'
+                    ;;
+                init)
+                    _arguments \
+                        '--json[Output in JSON format]' \
+                        '--site-title[Set custom site title]:title:' \
+                        '--register[Auto-register with discovery service]' \
+                        '--posts-dir[Custom posts directory]:directory:_files -/' \
+                        '--comments-dir[Custom comments directory]:directory:_files -/' \
+                        '--keys-dir[Custom keys directory]:directory:_files -/' \
+                        '--snippets-dir[Custom snippets directory]:directory:_files -/' \
+                        '--versions-dir[Custom versions directory]:directory:_files -/' \
+                        '--themes-dir[Custom themes directory]:directory:_files -/'
+                    ;;
+                clone)
+                    _arguments \
+                        '--json[Output in JSON format]' \
+                        '--full[Re-download all content]' \
+                        '--diff[Only download new/changed content]' \
+                        ':url:'
+                    ;;
+                discover)
+                    _arguments \
+                        '--json[Output in JSON format]' \
+                        '--author[Check a specific author]:url:' \
+                        '--since[Show items since date]:date:'
+                    ;;
+                rotate-key)
+                    _arguments \
+                        '--json[Output in JSON format]' \
+                        '--delete-old-key[Delete old keypair instead of archiving]'
+                    ;;
+                post)
+                    _arguments \
+                        '--json[Output in JSON format]' \
+                        '--filename[Output filename for stdin mode]:filename:' \
+                        '--title[Override title extraction]:title:' \
+                        ':file:_files'
+                    ;;
+                comment)
+                    _arguments \
+                        '--json[Output in JSON format]' \
+                        '--filename[Output filename for stdin mode]:filename:' \
+                        '--title[Override title extraction]:title:' \
+                        ':url:' \
+                        ':file:_files'
+                    ;;
+                snippet)
+                    _arguments \
+                        '--json[Output in JSON format]' \
+                        '--filename[Output filename for stdin mode]:filename:' \
+                        '--title[Override title extraction]:title:' \
+                        ':file:_files'
+                    ;;
+                republish)
+                    _arguments \
+                        '--json[Output in JSON format]' \
+                        ':file:_files'
+                    ;;
+                preview)
+                    _arguments \
+                        '--json[Output in JSON format]' \
+                        ':url:'
+                    ;;
+                extract)
+                    _arguments \
+                        '--json[Output in JSON format]' \
+                        ':file:_files' \
+                        ':version-hash:'
+                    ;;
+                migrate)
+                    _arguments \
+                        '--json[Output in JSON format]' \
+                        ':new-domain:'
+                    ;;
+                about|version|index|register)
+                    _arguments '--json[Output in JSON format]'
                     ;;
             esac
             ;;

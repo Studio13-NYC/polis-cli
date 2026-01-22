@@ -422,31 +422,38 @@ polis --json preview https://alice.com/posts/hello.md
 }
 ```
 
-### `polis rebuild [--diff|--full]`
+### `polis rebuild`
 
-Rebuild the `public.jsonl` index from all published files. Optionally sync `blessed-comments.json` from the discovery service.
+Rebuild local indexes and reset state. Automatically regenerates `manifest.json` after any rebuild.
 
 ```bash
-# Rebuild content index only (default)
-polis rebuild
+# Rebuild posts/comments index
+polis rebuild --posts
 
-# Also sync missing blessed comments (incremental)
-polis rebuild --diff
+# Rebuild blessed comments index
+polis rebuild --comments
 
-# Rebuild blessed-comments.json entirely from database
-polis rebuild --full
+# Reset notification files
+polis rebuild --notifications
+
+# Rebuild everything
+polis rebuild --all
 ```
 
-**Flags (mutually exclusive):**
-- `--diff` - Adds any blessed comments from the discovery service that are missing locally
-- `--full` - Truncates and rebuilds `blessed-comments.json` entirely from the discovery service
+**Flags (combinable):**
+- `--posts` - Rebuild `public.jsonl` from posts and comments on disk
+- `--comments` - Rebuild `blessed-comments.json` from discovery service
+- `--notifications` - Reset notification files (`.polis/notifications.jsonl`, `.polis/notifications-manifest.json`)
+- `--all` - All of the above
+
+**Note:** `manifest.json` is automatically regenerated after any rebuild operation.
 
 **Use when:**
 - Index is corrupted or out of sync
 - You manually edited published files
 - You restored from backup
-- `--diff`: Sync blessings after being offline
-- `--full`: Reset blessing state to match server exactly
+- Notification state is corrupted
+- CLI version was upgraded (clears "metadata files need update" warning)
 
 ### `polis index [--json]`
 
@@ -969,6 +976,103 @@ polis unfollow https://alice.example.com
 2. Removes all blessed comments from this author (nuclear option)
 
 **Warning:** This is a destructive action - all previously blessed comments from this author will be hidden.
+
+### `polis notifications`
+
+View and manage notifications about activity on your site and from authors you follow.
+
+```bash
+# List unread notifications (default)
+polis notifications
+
+# List all notifications
+polis notifications list
+
+# Show specific types
+polis notifications list --type new_follower,version_available
+
+# JSON output
+polis --json notifications
+```
+
+**Notification types:**
+- `version_available` - A new CLI version is available
+- `version_pending` - You upgraded but metadata files need update (run `polis rebuild`)
+- `new_follower` - Someone you don't follow started following you
+- `new_post` - An author you follow published a new post
+- `blessing_changed` - Your comment was blessed or unblessed
+
+#### `polis notifications read <id>`
+
+Mark a notification as read (removes it from the list).
+
+```bash
+polis notifications read notif_1737388800_abc123
+
+# Mark all as read
+polis notifications read --all
+```
+
+#### `polis notifications dismiss <id>`
+
+Dismiss a notification without marking as read.
+
+```bash
+polis notifications dismiss notif_1737388800_abc123
+
+# Dismiss old notifications
+polis notifications dismiss --older-than 30d
+```
+
+#### `polis notifications sync`
+
+Sync notifications from the discovery service.
+
+```bash
+# Fetch new notifications
+polis notifications sync
+
+# Reset watermark and do full re-sync
+polis notifications sync --reset
+```
+
+#### `polis notifications config`
+
+Configure notification preferences.
+
+```bash
+# Show current config
+polis notifications config
+
+# Set poll interval
+polis notifications config --poll-interval 30m
+
+# Enable/disable notification types
+polis notifications config --enable new_post
+polis notifications config --disable version_available
+
+# Mute notifications from specific domain
+polis notifications config --mute spam.com
+polis notifications config --unmute spam.com
+```
+
+**Local storage:**
+- `.polis/notifications.jsonl` - Notification log (one per line)
+- `.polis/notifications-manifest.json` - Preferences and sync state
+
+### `polis follow --announce`
+
+When following or unfollowing an author, you can optionally announce this to the discovery service:
+
+```bash
+# Follow and announce (others can discover you follow alice)
+polis follow https://alice.com --announce
+
+# Unfollow and announce
+polis unfollow https://alice.com --announce
+```
+
+**Privacy note:** Without `--announce`, follow/unfollow is local-only. With `--announce`, your follow action is recorded in the discovery service (opt-in).
 
 ### Auto-Blessing
 

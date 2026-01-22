@@ -95,14 +95,44 @@ Follow an author (auto-bless their future comments).
 
 ```bash
 ./cli/bin/polis --json follow https://alice.com
+
+# Announce follow to discovery service (opt-in)
+./cli/bin/polis --json follow https://alice.com --announce
 ```
+
+Options:
+- `--announce` - Broadcast follow to discovery service (others can see you follow this author)
 
 ### `polis unfollow <author-url>`
 Stop following an author and hide their comments.
 
 ```bash
 ./cli/bin/polis --json unfollow https://alice.com
+
+# Announce unfollow to discovery service
+./cli/bin/polis --json unfollow https://alice.com --announce
 ```
+
+Options:
+- `--announce` - Broadcast unfollow to discovery service
+
+### `polis discover`
+Check followed authors for new content.
+
+```bash
+# Check all followed authors
+./cli/bin/polis --json discover
+
+# Check a specific author
+./cli/bin/polis --json discover --author https://alice.com
+
+# Show items since a specific date
+./cli/bin/polis --json discover --since 2026-01-15
+```
+
+Options:
+- `--author <url>` - Check a specific author only
+- `--since <date>` - Show items since date (ignores last_checked)
 
 ## Index Commands
 
@@ -114,26 +144,30 @@ View the content index.
 ```
 
 ### `polis rebuild`
-Rebuild local indexes. Requires at least one target flag.
+Rebuild local indexes and reset state. Automatically regenerates `manifest.json` after any rebuild.
 
 ```bash
-# Rebuild content index (public.jsonl)
-./cli/bin/polis --json rebuild --content
+# Rebuild posts index (public.jsonl)
+./cli/bin/polis --json rebuild --posts
 
 # Full rebuild of blessed comments from discovery service
 ./cli/bin/polis --json rebuild --comments
 
-# Rebuild all indexes
+# Reset notification files
+./cli/bin/polis --json rebuild --notifications
+
+# Rebuild all indexes and reset notifications
 ./cli/bin/polis --json rebuild --all
 
 # Flags are combinable
-./cli/bin/polis --json rebuild --content --comments
+./cli/bin/polis --json rebuild --posts --comments
 ```
 
 Options:
-- `--content` - Rebuild public.jsonl from posts and comments
+- `--posts` - Rebuild public.jsonl from posts and comments on disk
 - `--comments` - Full rebuild of blessed-comments.json from discovery service
-- `--all` - Rebuild all indexes (equivalent to `--content --comments`)
+- `--notifications` - Reset notification files (.polis/notifications.jsonl and notifications-manifest.json)
+- `--all` - All of the above
 
 ## Render Commands
 
@@ -244,13 +278,79 @@ Migrate all content to a new domain (re-signs files, updates database).
 Auto-detects current domain from published files. Updates all URLs, re-signs content, and updates discovery service database (preserves blessing status).
 
 ### `polis notifications`
-Show pending actions: blessing requests, domain migrations.
+View and manage notifications about activity on your site and from followed authors.
 
 ```bash
+# List unread notifications (default)
 ./cli/bin/polis --json notifications
+
+# List all notifications
+./cli/bin/polis --json notifications list --all
+
+# Filter by type
+./cli/bin/polis --json notifications list --type version_available,new_follower
 ```
 
-Returns pending blessings for your posts and domain migrations for authors you interact with.
+**Notification types:**
+- `version_available` - New CLI version released
+- `version_pending` - CLI upgraded but metadata needs rebuild
+- `new_follower` - Someone you don't follow followed you
+- `new_post` - Followed author published a new post
+- `blessing_changed` - Your comment was blessed/unblessed
+
+### `polis notifications read <id>`
+Mark a notification as read.
+
+```bash
+./cli/bin/polis --json notifications read notif_1737388800_abc123
+
+# Mark all as read
+./cli/bin/polis --json notifications read --all
+```
+
+### `polis notifications dismiss <id>`
+Dismiss a notification without marking as read.
+
+```bash
+./cli/bin/polis --json notifications dismiss notif_1737388800_abc123
+
+# Dismiss old notifications
+./cli/bin/polis --json notifications dismiss --older-than 30d
+```
+
+### `polis notifications sync`
+Sync notifications from the discovery service.
+
+```bash
+# Fetch new notifications
+./cli/bin/polis --json notifications sync
+
+# Reset watermark and do full re-sync
+./cli/bin/polis --json notifications sync --reset
+```
+
+### `polis notifications config`
+Configure notification preferences.
+
+```bash
+# Show current config
+./cli/bin/polis --json notifications config
+
+# Set poll interval
+./cli/bin/polis notifications config --poll-interval 30m
+
+# Enable/disable notification types
+./cli/bin/polis notifications config --enable new_post
+./cli/bin/polis notifications config --disable version_available
+
+# Mute/unmute specific domains
+./cli/bin/polis notifications config --mute spam.com
+./cli/bin/polis notifications config --unmute spam.com
+```
+
+**Local storage:**
+- `.polis/notifications.jsonl` - Notification log
+- `.polis/notifications-manifest.json` - Preferences and sync state
 
 ### `polis migrations apply`
 Interactively apply discovered domain migrations to local files.
@@ -271,3 +371,77 @@ Reconstruct a specific version from history.
 ```bash
 ./cli/bin/polis extract posts/20260106/my-post.md sha256:abc123...
 ```
+
+### `polis about`
+Show comprehensive site information: URL, versions, keys, discovery status.
+
+```bash
+./cli/bin/polis --json about
+```
+
+Displays:
+- Site info (URL, title)
+- Versions (CLI, manifest, following.json, blessed-comments.json)
+- Keys (status, fingerprint, public key path)
+- Discovery (service URL, registration status)
+
+### `polis register`
+Register your site with the discovery service (makes content discoverable).
+
+```bash
+./cli/bin/polis --json register
+```
+
+Required for:
+- Receiving blessing requests from others
+- Being discoverable by other polis users
+- Follow announcements
+
+### `polis unregister`
+Unregister your site from the discovery service (hard delete).
+
+```bash
+# Requires confirmation
+./cli/bin/polis --json unregister
+
+# Skip confirmation
+./cli/bin/polis --json unregister --force
+```
+
+Options:
+- `--force` - Skip confirmation prompt
+
+### `polis clone <url>`
+Clone a remote polis site for local analysis or backup.
+
+```bash
+# Clone to auto-named directory
+./cli/bin/polis --json clone https://alice.com
+
+# Clone to specific directory
+./cli/bin/polis --json clone https://alice.com ./alice-backup
+
+# Force full re-download (ignore cached state)
+./cli/bin/polis --json clone https://alice.com --full
+
+# Only download new/changed content (incremental)
+./cli/bin/polis --json clone https://alice.com --diff
+```
+
+Options:
+- `--full` - Re-download all content (ignore cached state)
+- `--diff` - Only download new/changed content (default if previously cloned)
+
+### `polis snippet <file>`
+Publish a reusable template snippet.
+
+```bash
+./cli/bin/polis --json snippet snippets/about.md
+
+# From stdin
+echo "About text here" | ./cli/bin/polis --json snippet - --filename about.md --title "About"
+```
+
+Options:
+- `--filename <name>` - Output filename (for stdin)
+- `--title <title>` - Override title extraction

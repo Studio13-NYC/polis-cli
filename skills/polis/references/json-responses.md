@@ -218,12 +218,17 @@ Returns grouped JSON with posts and comments:
   "status": "success",
   "command": "rebuild",
   "data": {
-    "posts_indexed": 12,
-    "comments_indexed": 34,
-    "index_path": "metadata/public.json"
+    "posts_rebuilt": true,
+    "comments_rebuilt": true,
+    "notifications_reset": true,
+    "posts": 12,
+    "comments_indexed": 5,
+    "blessed": 34
   }
 }
 ```
+
+Fields depend on which flags were used (`--posts`, `--comments`, `--notifications`, `--all`).
 
 ### `polis migrate`
 ```json
@@ -247,23 +252,167 @@ Returns grouped JSON with posts and comments:
   "status": "success",
   "command": "notifications",
   "data": {
-    "pending_blessings": [
+    "notifications": [
       {
-        "id": 42,
-        "comment_url": "https://alice.com/comments/reply.md",
-        "author": "alice@example.com",
-        "in_reply_to": "https://you.com/posts/my-post.md",
-        "timestamp": "2026-01-07T12:00:00Z"
+        "id": "notif_1737388800_abc123",
+        "type": "version_available",
+        "timestamp": "2026-01-20T12:00:00Z",
+        "read": false,
+        "data": {
+          "latest": "0.35.0",
+          "current": "0.34.0",
+          "download_url": "https://github.com/..."
+        }
+      },
+      {
+        "id": "notif_1737388801_def456",
+        "type": "new_follower",
+        "timestamp": "2026-01-20T12:05:00Z",
+        "read": false,
+        "data": {
+          "follower_domain": "alice.com"
+        }
       }
     ],
-    "domain_migrations": [
+    "unread_count": 2,
+    "total_count": 5
+  }
+}
+```
+
+### `polis notifications read`
+```json
+{
+  "status": "success",
+  "command": "notifications-read",
+  "data": {
+    "marked_read": 1,
+    "notification_id": "notif_1737388800_abc123"
+  }
+}
+```
+
+### `polis notifications sync`
+```json
+{
+  "status": "success",
+  "command": "notifications-sync",
+  "data": {
+    "new_notifications": 3,
+    "types": {
+      "version_available": 1,
+      "new_follower": 2
+    }
+  }
+}
+```
+
+### `polis about`
+```json
+{
+  "status": "success",
+  "command": "about",
+  "data": {
+    "site": {
+      "url": "https://yoursite.com",
+      "title": "Your Site Name"
+    },
+    "versions": {
+      "cli": "0.34.0",
+      "manifest": "0.34.0",
+      "following": "1.0",
+      "blessed_comments": "1.0"
+    },
+    "keys": {
+      "status": "configured",
+      "fingerprint": "SHA256:abc123...",
+      "public_key_path": ".polis/keys/id_ed25519.pub"
+    },
+    "discovery": {
+      "service_url": "https://discovery.polis.pub",
+      "registered": true
+    }
+  }
+}
+```
+
+### `polis register`
+```json
+{
+  "status": "success",
+  "command": "register",
+  "data": {
+    "domain": "yoursite.com",
+    "registered_at": "2026-01-20T12:00:00Z",
+    "public_key_stored": true
+  }
+}
+```
+
+### `polis unregister`
+```json
+{
+  "status": "success",
+  "command": "unregister",
+  "data": {
+    "domain": "yoursite.com",
+    "unregistered_at": "2026-01-20T12:00:00Z"
+  }
+}
+```
+
+### `polis clone`
+```json
+{
+  "status": "success",
+  "command": "clone",
+  "data": {
+    "source_url": "https://alice.com",
+    "local_path": "./alice.com",
+    "posts_fetched": 15,
+    "comments_fetched": 42,
+    "mode": "full"
+  }
+}
+```
+
+### `polis discover`
+```json
+{
+  "status": "success",
+  "command": "discover",
+  "data": {
+    "authors_checked": 5,
+    "new_posts": [
       {
-        "old_domain": "old-domain.com",
-        "new_domain": "new-domain.com",
-        "migrated_at": "2026-01-15T10:30:00Z",
-        "public_key": "ssh-ed25519 AAAA..."
+        "author": "https://alice.com",
+        "title": "New Article",
+        "url": "https://alice.com/posts/20260120/new-article.md",
+        "published": "2026-01-20T10:00:00Z"
+      }
+    ],
+    "new_comments": [
+      {
+        "author": "https://bob.com",
+        "url": "https://bob.com/comments/20260120/reply.md",
+        "in_reply_to": "https://yoursite.com/posts/my-post.md",
+        "published": "2026-01-20T11:00:00Z"
       }
     ]
+  }
+}
+```
+
+### `polis snippet`
+```json
+{
+  "status": "success",
+  "command": "snippet",
+  "data": {
+    "file_path": "snippets/about.md",
+    "content_hash": "sha256:abc123...",
+    "timestamp": "2026-01-20T12:00:00Z",
+    "signature": "-----BEGIN SSH SIGNATURE-----..."
   }
 }
 ```

@@ -5,6 +5,64 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.34.0] - 2026-01-21
+
+### Added
+- **Notifications system (Phase 1)** - Local notification tracking with version checking
+  - New `polis notifications` command with subcommands: `list`, `read`, `dismiss`, `sync`, `config`
+  - Track notifications locally in `.polis/notifications.jsonl` (log) and `.polis/notifications-manifest.json` (preferences/state)
+  - Support for notification types: `version_available`, `version_pending`, `new_follower`, `new_post`, `blessing_changed`
+  - Filter notifications by type, show all (including read), mark as read, dismiss old notifications
+  - Sync from discovery service with optional full reset
+  - Configure notification preferences: polling intervals, enable/disable, mute/unmute specific types
+
+- **Version checking in `polis about`** - Automatic upgrade availability detection
+  - Shows "→ X.Y.Z available" when a new CLI version is released
+  - Warns when metadata files need rebuild after upgrade
+  - Displays unread notification count with prompt to view notifications
+
+- **Discovery service version tracking** - Infrastructure for CLI version notifications
+  - New `polis_versions` table tracks CLI releases with version, release notes, download URL, and checksum
+  - `GET /polis-version` endpoint returns latest version with `upgrade_available` flag
+  - Rate limited: 100 requests/hour (global, no authentication required)
+
+- **Discovery service rate limiting** - Per-domain rate limiting infrastructure
+  - New `rate_limits` table tracks requests per domain/endpoint/time window
+  - Atomic rate limit checking and increment via `increment_rate_limit()` RPC
+  - Automatic cleanup of old rate limit entries (older than 24 hours)
+
+- **Documentation**
+  - New `docs/NOTIFICATIONS.md` - Comprehensive notification system documentation
+  - Updated `docs/SECURITY-MODEL.md` - Added notifications security section covering signed requests, attack prevention, and privacy considerations
+  - Updated `docs/USAGE.md` - Added notifications commands and `--announce` flag documentation
+
+### Changed
+- **Consolidated `polis manifest` into `polis rebuild`** - Manifest generation now automatic after rebuild operations
+  - Removed standalone `polis manifest` command
+  - Renamed `--content` flag to `--posts` for clarity
+  - Added `--notifications` flag to reset notification files
+  - `--all` flag now includes posts, comments, and notifications
+
+- **Claude Code skill updated** - Comprehensive update to `/polis` skill with full command coverage
+  - Rewrote Feature 6 (Notifications) with all subcommands documented
+  - Added Feature 7 (Site Registration) for `register`/`unregister` commands
+  - Added Feature 8 (Clone Remote Site) for `polis clone` command
+  - Added Feature 9 (About / Site Info) for `polis about` command
+  - Updated `commands.md` reference with all missing commands and flags
+  - Updated `json-responses.md` with new response schemas
+
+- **Shell completions enhanced** - Full notifications support and improved JSON mode handling
+  - Added `notifications` subcommands: `list`, `read`, `dismiss`, `sync`, `config`
+  - Added completion options for all notification subcommands (`--type`, `--all`, `--older-than`, `--reset`, etc.)
+  - `--json` flag now offered at any position and for all commands
+  - Added `--announce` completion for `follow`/`unfollow` commands
+  - Zsh: Added argument type hints for file paths, URLs, and durations
+
+### Fixed
+- **`polis rebuild --notifications` path error** - Fixed undefined `$POLIS_DIR` variable
+  - Was causing "Permission denied" error when attempting to write to `/notifications-manifest.json`
+  - Now correctly writes to `.polis/notifications-manifest.json`
+
 ## [0.33.0] - 2026-01-20
 
 ### Added

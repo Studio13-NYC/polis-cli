@@ -32,7 +32,7 @@ The Polis notification system follows these design principles:
 
 | Type | Source | Description |
 |------|--------|-------------|
-| `version_available` | Discovery (`polis_versions`) | A new CLI version is available |
+| `version_available` | Discovery (`polis_versions`) | A new CLI/TUI version is available (per-component tracking) |
 | `version_pending` | Local | A new version was downloaded but metadata files haven't been updated |
 
 ### Planned (Phase 2)
@@ -70,16 +70,22 @@ The Polis notification system follows these design principles:
 
 ### `version_available`
 
-**Status:** Planned (Phase 1)
+**Status:** Implemented (Phase 1)
 
 **Data sources:**
-- Discovery service: `polis_versions` table
-- Local: Current CLI version from `polis --version`
+- Discovery service: `polis_versions` table (with `component` column for CLI/TUI/upgrade differentiation)
+- Local: Current CLI version from `VERSION` constant, TUI from `TUI_VERSION`
 
 **Query logic:**
-1. CLI calls `GET /polis-version?current=<current_version>`
-2. Discovery service returns latest version info
-3. If `latest > current`, generate notification with upgrade details
+1. CLI calls `GET /polis-version?current=<version>&component=cli`
+2. TUI calls `GET /polis-version?current=<version>&component=tui`
+3. Discovery service returns latest version info for that component
+4. If `latest > current`, generate notification with upgrade details
+
+**Component tracking:**
+The `polis_versions` table tracks versions independently per component (`cli`, `tui`, `upgrade`).
+Each component has its own `is_latest` flag and version history. The `polis-upgrade` script
+handles migrations and binary updates across version jumps.
 
 **Payload example:**
 ```json

@@ -256,6 +256,15 @@ button:focus-visible,
     font-style: normal;
 }
 
+.about-content a {
+    color: var(--color-teal);
+    text-decoration: none;
+}
+
+.about-content a:hover {
+    text-decoration: underline;
+}
+
 /* ============================================
    RECENT POSTS
    ============================================ */
@@ -604,6 +613,81 @@ button:focus-visible,
 
 .content-body li {
     margin-bottom: 0.5rem;
+}
+
+/* ============================================
+   COMMENT CTA
+   ============================================ */
+
+.comment-cta {
+    padding: 1.5rem;
+}
+
+.comment-cta .container {
+    max-width: var(--max-width);
+}
+
+.cta-box {
+    background: var(--color-bg-light);
+    border: 1px solid var(--color-border);
+    padding: 1rem 1.5rem;
+}
+
+.cta-toggle {
+    font-size: 0.85rem;
+    color: var(--color-text-muted);
+    cursor: pointer;
+    list-style: none;
+}
+
+.cta-toggle::-webkit-details-marker {
+    display: none;
+}
+
+.cta-toggle:hover {
+    color: var(--color-text-soft);
+}
+
+.cta-content {
+    margin-top: 1rem;
+}
+
+.cta-text {
+    font-size: 0.85rem;
+    color: var(--color-text-muted);
+    margin: 0 0 1rem 0;
+}
+
+.cta-code {
+    margin-bottom: 1rem;
+}
+
+.cta-code pre {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    padding: 1rem;
+    overflow-x: auto;
+    font-size: 0.8rem;
+    line-height: 1.5;
+    margin: 0;
+}
+
+.cta-code code {
+    color: var(--color-text-soft);
+}
+
+.cta-code .code-comment {
+    color: var(--color-text-muted);
+}
+
+.cta-link {
+    font-size: 0.8rem;
+    color: var(--color-teal);
+    text-decoration: none;
+}
+
+.cta-link:hover {
+    text-decoration: underline;
 }
 
 /* ============================================

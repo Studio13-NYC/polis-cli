@@ -28,7 +28,7 @@ set -e
 #   4. Hardcoded defaults
 
 # Fixed constants (never configurable - required for discovery)
-VERSION="0.35.0"
+VERSION="0.36.0"
 WELL_KNOWN_DIR=".well-known"
 WELL_KNOWN_FILE="polis"
 
@@ -2071,7 +2071,7 @@ check_version_update() {
         return 1
     fi
 
-    local endpoint="${DISCOVERY_SERVICE_URL}/polis-version?current=${VERSION}"
+    local endpoint="${DISCOVERY_SERVICE_URL}/polis-version?current=${VERSION}&component=cli"
 
     # Make request (no auth required for version check)
     local response

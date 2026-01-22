@@ -1678,6 +1678,20 @@ do_about() {
     reg_url=$(echo "$about_json" | jq -r '.data.discovery.registration.registry_url // empty')
     reg_at=$(echo "$about_json" | jq -r '.data.discovery.registration.registered_at // empty')
 
+    # Check for TUI version update
+    local tui_upgrade_available="false"
+    local tui_latest_version=""
+    if [ -n "$discovery_url" ]; then
+        local tui_version_response
+        tui_version_response=$(curl -s --max-time 5 \
+            --location --request GET "${discovery_url}/polis-version?current=${TUI_VERSION}&component=tui" \
+            --header 'Content-Type: application/json' 2>/dev/null || echo '')
+        if [ -n "$tui_version_response" ]; then
+            tui_upgrade_available=$(echo "$tui_version_response" | jq -r '.upgrade_available // false' 2>/dev/null || echo 'false')
+            tui_latest_version=$(echo "$tui_version_response" | jq -r '.latest // empty' 2>/dev/null || echo '')
+        fi
+    fi
+
     echo ""
     echo -e "${BOLD}Polis${NC} - Decentralized Social Network"
     echo -e "${DIM}Your content, free from platform control${NC}"
@@ -1699,7 +1713,11 @@ do_about() {
 
     # VERSIONS
     echo -e "${CYAN}VERSIONS${NC}"
-    echo "  polis-tui:             $TUI_VERSION"
+    if [ "$tui_upgrade_available" = "true" ]; then
+        echo -e "  polis-tui:             $TUI_VERSION ${YELLOW}→ $tui_latest_version available${NC}"
+    else
+        echo "  polis-tui:             $TUI_VERSION"
+    fi
     echo "  polis CLI:             $cli_version"
     echo "  .well-known/polis:     $wellknown_ver"
     echo "  following.json:        $following_ver"

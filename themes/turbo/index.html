@@ -2,11 +2,12 @@
     Polis Theme: Turbo - Homepage Template
 
     Snippets loaded by this template:
-    - about          - About section (theme: snippets/about.html, global: snippets/about.md)
-    - post-item      - Post list item (theme: snippets/post-item.html)
-    - comment-item   - Comment list item (theme: snippets/comment-item.html)
+    - theme:about        - About section (theme: snippets/about.html)
+    - theme:post-item    - Post list item (theme: snippets/post-item.html)
+    - theme:comment-item - Comment list item (theme: snippets/comment-item.html)
 
-    Snippet lookup order: theme snippets then global snippets
+    To override a theme snippet, create a global snippet with the same name
+    and change {{> theme:name}} to {{> name}} in this template.
 -->
 <!DOCTYPE html>
 <html lang="en">
@@ -27,7 +28,7 @@
     </section>
 
     <!-- About -->
-    {{> about}}
+    {{> theme:about}}
 
     <!-- Recent Posts -->
     <section class="recent-posts">
@@ -35,7 +36,7 @@
             <h2 class="section-title">Recent Posts</h2>
             <div class="post-list">
 {{#posts}}
-                {{> post-item}}
+                {{> theme:post-item}}
 {{/posts}}
             </div>
         </div>
@@ -47,7 +48,7 @@
             <h2 class="section-title">Recent Comments</h2>
             <div class="comment-list">
 {{#comments}}
-                {{> comment-item}}
+                {{> theme:comment-item}}
 {{/comments}}
             </div>
         </div>

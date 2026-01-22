@@ -2,9 +2,10 @@
     Polis Theme: Turbo - Post Template
 
     Snippets loaded by this template:
-    - blessed-comment  - Blessed comment block (theme: snippets/blessed-comment.html)
+    - theme:blessed-comment - Blessed comment block (theme: snippets/blessed-comment.html)
 
-    Snippet lookup order: theme snippets then global snippets
+    To override a theme snippet, create a global snippet with the same name
+    and change {{> theme:name}} to {{> name}} in this template.
 -->
 <!DOCTYPE html>
 <html lang="en">
@@ -49,9 +50,35 @@
             <h2 class="comments-title">Comments ({{blessed_count}})</h2>
             <div class="comments-list">
 {{#blessed_comments}}
-                {{> blessed-comment}}
+                {{> theme:blessed-comment}}
 {{/blessed_comments}}
             </div>
+        </div>
+    </section>
+
+    <!-- Comment CTA -->
+    <section class="comment-cta">
+        <div class="container">
+            <details class="cta-box">
+                <summary class="cta-toggle">Want to comment?</summary>
+                <div class="cta-content">
+                    <p class="cta-text">Polis comments are cryptographically signed and published from your own site. No account needed—just your words and your domain.</p>
+                    <div class="cta-code">
+                        <pre><code><span class="code-comment"># Clone the repo and set up your site</span>
+git clone https://github.com/polis-community/polis
+mkdir ~/my-polis-site && cd ~/my-polis-site
+cp -r /path/to/polis/cli/* .
+./polis init
+
+<span class="code-comment"># Create a comment (creates a signed .md file)</span>
+./polis comment {{url}}
+
+<span class="code-comment"># Deploy to your domain</span>
+<span class="code-comment"># (copy rendered files to your web server)</span></code></pre>
+                    </div>
+                    <a href="https://github.com/polis-community/polis" class="cta-link">Get started with Polis &rarr;</a>
+                </div>
+            </details>
         </div>
     </section>
 

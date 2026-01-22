@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.36.0] - 2026-01-22
+
+### Added
+- **Standalone upgrade tool (`polis-upgrade`)** - New script for managing CLI/TUI upgrades with version migration support
+  - Fetches latest versions from GitHub with SHA-256 checksum verification
+  - Self-update capability (checks and updates itself before proceeding)
+  - Supports `--to VERSION` for partial upgrades and `--check` for dry runs
+  - Auto-detects site directory and polis CLI location
+  - Downloads and executes version-specific migration scripts when needed
+  - Recovery instructions displayed on migration failure
+
+- **Version migration system** - Database-style migration scripts for managing breaking changes
+  - Migration scripts stored in `migrations/cli/` and `migrations/tui/` directories
+  - Each migration includes `manifest.json` with version requirements and checksums
+  - Scripts are idempotent, non-destructive, and checksum-verified before execution
+  - Only created for versions that introduce file/data layout changes
+  - Provides clear upgrade path for users on older versions
+
+- **Multi-component version tracking** - Discovery service now tracks CLI, TUI, and upgrade script independently
+  - New `component` column in `polis_versions` table: `'cli'`, `'tui'`, or `'upgrade'`
+  - Per-component `is_latest` flag and separate version histories
+  - `/polis-version` endpoint accepts optional `?component=` parameter (defaults to `cli`)
+  - Enables independent release cycles for each component
+
+- **TUI version update notification** - About screen now shows TUI update availability
+  - Queries discovery service with `component=tui` parameter
+  - Displays yellow indicator when newer TUI version is available
+  - Consistent with CLI version notification pattern
+
+### Changed
+- **Version check now specifies component** - CLI version checks explicitly pass `component=cli` parameter (backwards compatible with discovery service)
+
 ## [0.35.0] - 2026-01-22
 
 ### Added

@@ -264,7 +264,13 @@ polis snippet snippets/partials/header.html --json
 - **Snippets** are signed content fragments stored in `snippets/` (global) or theme directories
 - **Themes** are complete styling packages stored in `.polis/themes/`
 - Snippets can be included in templates using `{{> path/to/snippet}}`
-- Snippet lookup order: theme snippets first, then global snippets
+- Snippet lookup order: **global snippets first, then theme snippets** (author overrides theme)
+
+**Snippet syntax:**
+- `{{> about}}` - Default lookup (global → theme), tries .md then .html
+- `{{> theme:about}}` - Force theme-first lookup
+- `{{> global:about}}` - Explicit global-first lookup
+- `{{> about.md}}` or `{{> about.html}}` - Load specific file extension
 
 **File formats:**
 - `.md` files are processed through pandoc (markdown → HTML)

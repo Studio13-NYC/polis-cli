@@ -5,6 +5,48 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.35.0] - 2026-01-22
+
+### Added
+- **Comment CTA on post pages** - Collapsible "Want to comment?" section on all default themes
+  - Explains how Polis comments work (cryptographically signed, published from your own site)
+  - Expandable setup instructions with code sample
+  - Links to GitHub repo for full documentation
+  - Uses native `<details>` element (no JavaScript required)
+
+- **Enhanced snippet include syntax** - Full control over snippet resolution with tier prefixes and explicit extensions
+  - **Explicit tier prefixes**: `{{> global:about}}` and `{{> theme:about}}` for fine-grained control
+  - **Explicit extensions**: `{{> about.md}}` or `{{> about.html}}` skips fallback resolution
+  - **Combined syntax**: `{{> theme:about.html}}` for complete specificity
+  - Allows `about.html` (theme wrapper) to include `about.md` (author content) without naming collision
+
+### Changed
+- **Snippet lookup order reversed** - Global snippets (`./snippets/`) now take precedence over theme snippets
+  - Previously: theme → global (theme won)
+  - Now: global → theme (author wins)
+  - Use `{{> theme:name}}` prefix to force theme-first behavior when needed
+
+- **Theme templates updated** - All default themes now use explicit `{{> theme:...}}` prefix for snippets
+  - Ensures themes work out of the box without relying on lookup precedence
+  - Users can override by creating global snippets and changing templates to use `{{> name}}`
+
+### Fixed
+- **Manifest JSON validation** - `polis render` now validates manifest.json before processing
+  - Shows clear error message with parse details if JSON is malformed
+  - Previously failed silently when manifest had syntax errors
+
+- **Snippet rendering error handling** - Pandoc failures in snippets now warn instead of crashing
+  - Displays warning with snippet path and error details
+  - Continues rendering with empty content instead of silent exit
+
+- **Snippet debug output** - Fixed debug messages appearing in rendered HTML
+  - Redirected `load_snippet` and `render_partials` debug output to stderr
+  - Previously, info/warning messages were captured as part of snippet content
+
+- **Missing link styling in about section** - Added `.about-content a` CSS rules to all themes
+  - Links in the about snippet now use theme colors (teal/cyan) instead of browser defaults
+  - Affects sols, turbo, and zane themes
+
 ## [0.34.0] - 2026-01-21
 
 ### Added

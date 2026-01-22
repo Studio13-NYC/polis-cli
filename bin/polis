@@ -28,7 +28,7 @@ set -e
 #   4. Hardcoded defaults
 
 # Fixed constants (never configurable - required for discovery)
-VERSION="0.34.0"
+VERSION="0.35.0"
 WELL_KNOWN_DIR=".well-known"
 WELL_KNOWN_FILE="polis"
 
@@ -570,6 +570,27 @@ extract_frontmatter_field() {
     local file="$1"
     local field="$2"
     awk -v field="$field:" '/^---$/{if(++count==2) exit} count==1 && $0 ~ "^"field{sub("^"field" *", ""); print; exit}' "$file"
+}
+
+# Validate manifest.json exists and is valid JSON
+# Returns 0 if valid, 1 if invalid/missing
+# Prints error message on failure
+validate_manifest() {
+    if [ ! -f "$MANIFEST" ]; then
+        error "Manifest not found: $MANIFEST"
+        error "Run 'polis init' to create a new site."
+        return 1
+    fi
+
+    local jq_error
+    if ! jq_error=$(jq empty "$MANIFEST" 2>&1); then
+        error "Invalid JSON in manifest: $MANIFEST"
+        error "JSON parse error: $jq_error"
+        error "Please fix the syntax error and try again."
+        return 1
+    fi
+
+    return 0
 }
 
 # Extract version history lines
@@ -8216,42 +8237,91 @@ render_blessed_comments() {
     echo "$blessed_html"
 }
 
+# Resolve a snippet path within a specific directory
+# Arguments:
+#   $1 - directory to search in
+#   $2 - snippet path (e.g., "about" or "about.md")
+#   $3 - whether path has explicit extension (true/false)
+# Returns: full path to resolved file, or empty string
+resolve_snippet_in_dir() {
+    local dir="$1"
+    local path="$2"
+    local explicit_ext="$3"
+
+    [ ! -d "$dir" ] && return
+
+    if [ "$explicit_ext" = true ]; then
+        # Explicit extension: only check exact path
+        [ -f "$dir/$path" ] && echo "$dir/$path"
+    else
+        # No extension: try .md -> .html -> exact
+        if [ -f "$dir/$path.md" ]; then
+            echo "$dir/$path.md"
+        elif [ -f "$dir/$path.html" ]; then
+            echo "$dir/$path.html"
+        elif [ -f "$dir/$path" ]; then
+            echo "$dir/$path"
+        fi
+    fi
+}
+
 # Load a snippet by path and render it
 # Returns rendered HTML content
-# Lookup order: theme snippets -> global snippets
+# Lookup order: global snippets -> theme snippets (author overrides theme)
+# Supports:
+#   {{> about}}           - Default: global first, then theme
+#   {{> global:about}}    - Explicit global-first (same as default)
+#   {{> theme:about}}     - Theme-first, then global fallback
+#   {{> about.md}}        - Explicit extension, no fallback
+#   {{> theme:about.html}} - Combined prefix and extension
 load_snippet() {
     local snippet_path="$1"
     local context="$2"  # Optional JSON context for variable substitution
 
-    # Try to find the snippet file
-    # 1. First check theme snippets
-    # 2. Then check global snippets
+    # Parse tier prefix (global: or theme:)
+    local tier_mode="global_first"  # default
+    local base_path="$snippet_path"
+
+    if [[ "$snippet_path" == global:* ]]; then
+        tier_mode="global_first"
+        base_path="${snippet_path#global:}"
+    elif [[ "$snippet_path" == theme:* ]]; then
+        tier_mode="theme_first"
+        base_path="${snippet_path#theme:}"
+    fi
+
+    # Check for explicit extension (.md or .html)
+    local has_explicit_extension=false
+    if [[ "$base_path" == *.md ]] || [[ "$base_path" == *.html ]]; then
+        has_explicit_extension=true
+    fi
+
     local snippet_file=""
     local theme_snippets_dir="$THEMES_DIR/$ACTIVE_THEME/snippets"
 
-    # Check theme snippets first
-    if [ -n "$ACTIVE_THEME" ] && [ -d "$theme_snippets_dir" ]; then
-        if [ -f "$theme_snippets_dir/$snippet_path.md" ]; then
-            snippet_file="$theme_snippets_dir/$snippet_path.md"
-        elif [ -f "$theme_snippets_dir/$snippet_path.html" ]; then
-            snippet_file="$theme_snippets_dir/$snippet_path.html"
-        elif [ -f "$theme_snippets_dir/$snippet_path" ]; then
-            snippet_file="$theme_snippets_dir/$snippet_path"
+    # Resolve based on tier mode
+    if [ "$tier_mode" = "theme_first" ]; then
+        # Theme-first: check theme snippets, then global
+        if [ -n "$ACTIVE_THEME" ] && [ -d "$theme_snippets_dir" ]; then
+            snippet_file=$(resolve_snippet_in_dir "$theme_snippets_dir" "$base_path" "$has_explicit_extension")
         fi
-    fi
-
-    # Fall back to global snippets
-    if [ -z "$snippet_file" ]; then
-        if [ -f "$SNIPPETS_DIR/$snippet_path.md" ]; then
-            snippet_file="$SNIPPETS_DIR/$snippet_path.md"
-        elif [ -f "$SNIPPETS_DIR/$snippet_path.html" ]; then
-            snippet_file="$SNIPPETS_DIR/$snippet_path.html"
-        elif [ -f "$SNIPPETS_DIR/$snippet_path" ]; then
-            snippet_file="$SNIPPETS_DIR/$snippet_path"
+        [ -z "$snippet_file" ] && snippet_file=$(resolve_snippet_in_dir "$SNIPPETS_DIR" "$base_path" "$has_explicit_extension")
+    else
+        # Global-first (default): check global snippets, then theme
+        snippet_file=$(resolve_snippet_in_dir "$SNIPPETS_DIR" "$base_path" "$has_explicit_extension")
+        if [ -z "$snippet_file" ] && [ -n "$ACTIVE_THEME" ] && [ -d "$theme_snippets_dir" ]; then
+            snippet_file=$(resolve_snippet_in_dir "$theme_snippets_dir" "$base_path" "$has_explicit_extension")
         fi
     fi
 
     local content=""
+
+    # Debug: show snippet lookup result (redirect to stderr so it doesn't get captured in output)
+    if [ -n "$snippet_file" ]; then
+        info_human "  Snippet '$snippet_path' -> $snippet_file ($tier_mode)" >&2
+    else
+        warn "Snippet '$snippet_path' not found ($tier_mode, searched: $SNIPPETS_DIR, $theme_snippets_dir)" >&2
+    fi
 
     if [ -n "$snippet_file" ] && [ -f "$snippet_file" ]; then
         # Extract content without frontmatter
@@ -8265,7 +8335,13 @@ load_snippet() {
         if [[ "$snippet_file" == *.md ]]; then
             # Remove leading blank lines, render markdown to HTML
             content=$(echo "$content" | sed '/./,$!d')
-            content=$(echo "$content" | pandoc -f markdown -t html 2>/dev/null)
+            local pandoc_output
+            if pandoc_output=$(echo "$content" | pandoc -f markdown -t html 2>&1); then
+                content="$pandoc_output"
+            else
+                warn "Failed to render snippet '$snippet_path': $pandoc_output" >&2
+                content=""
+            fi
         fi
         # .html files are used as-is
     fi
@@ -8296,6 +8372,11 @@ render_partials() {
     # Pattern: {{> some/path}} or {{> some/path.html}}
     local result="$content"
     local pattern='\{\{>\s*([^}]+)\s*\}\}'
+
+    # Debug: check if any partials exist in content (redirect to stderr)
+    if echo "$content" | grep -q '{{>'; then
+        info_human "  render_partials: found {{> patterns in content (depth=$depth)" >&2
+    fi
 
     # Use grep to find all matches, process each one
     while [[ "$result" =~ $pattern ]]; do
@@ -8749,6 +8830,9 @@ cmd_render() {
     if [ ! -f "$WELL_KNOWN_DIR/polis" ]; then
         json_error "render" "INVALID_STATE" "Polis not initialized. Run 'polis init' first."
     fi
+
+    # Validate manifest JSON
+    validate_manifest || exit 1
 
     # Check pandoc
     if ! command -v pandoc &>/dev/null; then

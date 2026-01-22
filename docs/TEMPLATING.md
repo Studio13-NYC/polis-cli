@@ -87,12 +87,41 @@ Snippets are reusable template fragments included with `{{> name}}` syntax.
 
 When resolving `{{> path}}`:
 
-1. **Theme snippets** - `.polis/themes/{active_theme}/snippets/{path}.html` or `.md`
-2. **Global snippets** - `./snippets/{path}.html` or `.md`
+1. **Global snippets** - `./snippets/{path}.md` or `.html` (author overrides)
+2. **Theme snippets** - `.polis/themes/{active_theme}/snippets/{path}.html` or `.md`
 
-This allows you to:
-- Override theme snippets by creating a file in `./snippets/`
-- Add custom snippets that work across any theme
+This allows you to override theme defaults by creating snippets in `./snippets/`.
+
+### Explicit Tier Selection
+
+Use prefixes to control which tier is checked first:
+
+| Prefix | Behavior |
+|--------|----------|
+| `{{> about}}` | Default: global first, then theme |
+| `{{> global:about}}` | Explicit global-first (same as default) |
+| `{{> theme:about}}` | Theme-first, then global fallback |
+
+Example: A theme's `about.html` provides default styling, but your `snippets/about.md` with personal content takes precedence. Use `{{> theme:about}}` if you need the theme version.
+
+### Explicit File Extensions
+
+By default, extension resolution tries `.md` → `.html` → exact match. Use explicit extensions to load a specific file:
+
+| Syntax | Behavior |
+|--------|----------|
+| `{{> about}}` | Tries about.md, about.html, about |
+| `{{> about.md}}` | Loads about.md only, no fallback |
+| `{{> about.html}}` | Loads about.html only, no fallback |
+
+### Combined Syntax
+
+Prefixes and extensions can be combined:
+
+```html
+{{> theme:about.html}}   <!-- Theme's HTML version specifically -->
+{{> global:about.md}}    <!-- Global's markdown version specifically -->
+```
 
 ### Default Theme Snippets
 
@@ -110,8 +139,8 @@ Each theme includes these snippets:
 Create snippets in `./snippets/` to override theme defaults or add custom content:
 
 ```bash
-# Override the about section
-echo '<div class="about"><p>My custom about section</p></div>' > snippets/about.html
+# Override the about section (will take precedence over theme)
+echo '# About Me' > snippets/about.md
 
 # Create a custom snippet
 mkdir -p snippets/widgets
@@ -120,7 +149,8 @@ echo '<div class="newsletter">Subscribe!</div>' > snippets/widgets/newsletter.ht
 
 Reference in templates:
 ```html
-{{> about}}                  <!-- Uses your override -->
+{{> about}}                  <!-- Uses your global override -->
+{{> theme:about}}            <!-- Forces theme version -->
 {{> widgets/newsletter}}     <!-- Uses your custom snippet -->
 ```
 

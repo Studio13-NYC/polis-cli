@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.37.0] - 2026-01-22
+
+### Added
+- **Recent posts navigation on post pages** - "More from this site" section displays below comments
+  - Shows up to 3 recent posts (automatically excludes current post)
+  - Reuses existing `post-item` snippet for consistent formatting (date, title, comment count)
+  - Hidden automatically when no other posts exist (using CSS `:has()` selector)
+  - New `{{#recent_posts}}` template block available in post templates
+
+### Changed
+- **Comment count display repositioned** - Moved from far-right float to inline placement after post title
+  - Now renders as "(N comments)" directly adjacent to the title in post lists
+  - Applied consistently across all built-in themes (sols, turbo, zane)
+  - Improves readability and semantic grouping of post metadata
+
+- **Comment CTA redesigned** - Replaced expandable box with streamlined inline link
+  - Appears as "Learn how..." link next to "COMMENTS (N)" header on the same line
+  - Expands full-width below the header when clicked
+  - Restored detailed multi-step setup instructions for clarity
+  - Reduced visual clutter on post pages
+
 ## [0.36.0] - 2026-01-22
 
 ### Added

@@ -28,7 +28,7 @@ set -e
 #   4. Hardcoded defaults
 
 # Fixed constants (never configurable - required for discovery)
-VERSION="0.36.0"
+VERSION="0.37.0"
 WELL_KNOWN_DIR=".well-known"
 WELL_KNOWN_FILE="polis"
 
@@ -8443,8 +8443,11 @@ render_sections() {
                 # Count blessed comments for this post
                 local comment_count=0
                 if [ -f "$BLESSED_COMMENTS" ]; then
-                    local post_url_full="$POLIS_BASE_URL/$url"
-                    comment_count=$(jq --arg url "$post_url_full" '[.[] | select(.post_url == $url)] | length' "$BLESSED_COMMENTS" 2>/dev/null || echo 0)
+                    local post_url_html="${POLIS_BASE_URL%/}/$url"
+                    local post_url_md="${post_url_html%.html}.md"
+                    comment_count=$(jq --arg url_html "$post_url_html" --arg url_md "$post_url_md" \
+                        '[.comments[] | select(.post == $url_html or .post == $url_md) | .blessed[]] | length' \
+                        "$BLESSED_COMMENTS" 2>/dev/null) || comment_count=0
                 fi
 
                 # Render inner template with item variables
@@ -8491,7 +8494,8 @@ render_sections() {
             for ((i=0; i<num_comments; i++)); do
                 local path=$(echo "$sorted_comments" | jq -r ".[$i].path // empty")
                 local published=$(echo "$sorted_comments" | jq -r ".[$i].published // empty")
-                local in_reply_to=$(echo "$sorted_comments" | jq -r ".[$i].in_reply_to // empty")
+                # in_reply_to may be a string URL or an object with .url field
+                local in_reply_to=$(echo "$sorted_comments" | jq -r "(.[$i].in_reply_to | if type == \"object\" then .url else . end) // empty")
 
                 [ -z "$path" ] && continue
 
@@ -8548,39 +8552,63 @@ render_sections() {
 
         if [ -f "$BLESSED_COMMENTS" ] && [ -n "$post_url" ]; then
             local post_url_md="${post_url%.html}.md"
+            local post_url_html="${post_url%.md}.html"
             local comments_json
-            comments_json=$(jq -c --arg url "$post_url" --arg url_md "$post_url_md" \
-                '.[] | select(.post_url == $url or .post_url == $url_md)' "$BLESSED_COMMENTS" 2>/dev/null)
+            comments_json=$(jq -c --arg url "$post_url" --arg url_md "$post_url_md" --arg url_html "$post_url_html" \
+                '.comments[] | select(.post == $url or .post == $url_md or .post == $url_html) | .blessed[]' "$BLESSED_COMMENTS" 2>/dev/null)
 
             while IFS= read -r comment_entry; do
                 [ -z "$comment_entry" ] && continue
 
-                local comment_url=$(echo "$comment_entry" | jq -r '.comment_url // empty')
-                local author_name=$(echo "$comment_entry" | jq -r '.author // "Anonymous"')
-                local published=$(echo "$comment_entry" | jq -r '.published // empty')
-
+                local comment_url=$(echo "$comment_entry" | jq -r '.url // empty')
                 [ -z "$comment_url" ] && continue
+
+                # Fetch comment content (local or remote)
+                local raw_content=""
+                local base_url="${POLIS_BASE_URL%/}"
+                if [[ "$comment_url" == "${base_url}"* ]]; then
+                    local url_path="${comment_url#${base_url}}"
+                    url_path="${url_path#/}"
+                    url_path="${url_path#/}"
+                    [ -f "$url_path" ] && raw_content=$(cat "$url_path")
+                fi
+                if [ -z "$raw_content" ]; then
+                    raw_content=$(curl -sL "$comment_url" 2>/dev/null)
+                fi
+
+                # Extract metadata and body from fetched content
+                local author_name=""
+                local published=""
+                local comment_html_content=""
+                if [ -n "$raw_content" ]; then
+                    published=$(echo "$raw_content" | grep '^published:' | head -1 | sed 's/^published: *//')
+                    local c_body=$(extract_body_from_content "$raw_content")
+                    c_body=$(echo "$c_body" | sed '/./,$!d')
+                    comment_html_content=$(echo "$c_body" | pandoc -f markdown -t html 2>/dev/null || echo "$c_body")
+                fi
+
+                # Derive author from URL domain
+                local author_domain=$(echo "$comment_url" | sed 's|https\?://||' | cut -d'/' -f1)
+                author_name="$author_domain"
+
+                # Try to get author's site_title from their manifest
+                local remote_manifest=$(curl -sL "https://$author_domain/metadata/manifest.json" 2>/dev/null)
+                if [ -n "$remote_manifest" ]; then
+                    local remote_title=$(echo "$remote_manifest" | jq -r '.site_title // empty' 2>/dev/null)
+                    [ -n "$remote_title" ] && author_name="$remote_title"
+                fi
 
                 local published_human=$(format_date_human "$published")
 
-                # Fetch comment content from the comment URL
-                local comment_content=""
-                # Try to extract body from local cache or fetch remotely
-                # For now, use the body field if available, otherwise empty
-                comment_content=$(echo "$comment_entry" | jq -r '.body // empty')
-
                 # Render inner template with item variables
                 local item_html="$inner_template"
-
-                # Process any partials in the inner template
                 item_html=$(render_partials "$item_html")
-
-                # Substitute item-level variables
                 item_html="${item_html//\{\{url\}\}/$(escape_for_replacement "$comment_url")}"
                 item_html="${item_html//\{\{author_name\}\}/$(escape_for_replacement "$author_name")}"
+                item_html="${item_html//\{\{author_url\}\}/$(escape_for_replacement "https://$author_domain")}"
                 item_html="${item_html//\{\{published\}\}/$(escape_for_replacement "$published")}"
                 item_html="${item_html//\{\{published_human\}\}/$(escape_for_replacement "$published_human")}"
-                item_html="${item_html//\{\{content\}\}/$(escape_for_replacement "$comment_content")}"
+                item_html="${item_html//\{\{content\}\}/$(escape_for_replacement "$comment_html_content")}"
 
                 blessed_html+="$item_html"
             done <<< "$comments_json"
@@ -8592,6 +8620,71 @@ render_sections() {
         result=$(echo "$result" | perl -0777 -pe '
             BEGIN { local $/; open my $fh, "<", "'"$tmp_replacement"'"; $repl = <$fh>; close $fh; }
             s/\{\{#blessed_comments\}\}.*?\{\{\/blessed_comments\}\}/$repl/s;
+        ')
+        rm -f "$tmp_replacement"
+    fi
+
+    # Process {{#recent_posts}}...{{/recent_posts}} blocks
+    # Shows up to 3 recent posts, excluding the current post (identified by context URL)
+    if echo "$result" | grep -q '{{#recent_posts}}'; then
+        local inner_template
+        inner_template=$(echo "$result" | perl -0777 -ne 'print $1 if /\{\{#recent_posts\}\}(.*?)\{\{\/recent_posts\}\}/s')
+        local recent_html=""
+
+        if [ -f "$PUBLIC_INDEX" ]; then
+            local sorted_posts
+            sorted_posts=$(jq -s '[.[] | select(.type == "post" or .type == null)] | sort_by(.published) | reverse' "$PUBLIC_INDEX" 2>/dev/null)
+
+            local num_posts
+            num_posts=$(echo "$sorted_posts" | jq 'length')
+
+            local rendered_count=0
+            for ((i=0; i<num_posts && rendered_count<3; i++)); do
+                local path=$(echo "$sorted_posts" | jq -r ".[$i].path // empty")
+                local title=$(echo "$sorted_posts" | jq -r ".[$i].title // \"Untitled\"")
+                local published=$(echo "$sorted_posts" | jq -r ".[$i].published // empty")
+
+                [ -z "$path" ] && continue
+
+                local url="${path%.md}.html"
+
+                # Skip the current post (check if its path appears in the context URL)
+                if [ -n "$context" ] && [[ "$context" == *"$path"* ]]; then
+                    continue
+                fi
+
+                local published_human=$(format_date_human "$published")
+
+                # Count blessed comments for this post
+                local comment_count=0
+                if [ -f "$BLESSED_COMMENTS" ]; then
+                    local post_url_html="${POLIS_BASE_URL%/}/$url"
+                    local post_url_md="${post_url_html%.html}.md"
+                    comment_count=$(jq --arg url_html "$post_url_html" --arg url_md "$post_url_md" \
+                        '[.comments[] | select(.post == $url_html or .post == $url_md) | .blessed[]] | length' \
+                        "$BLESSED_COMMENTS" 2>/dev/null) || comment_count=0
+                fi
+
+                # Render inner template with item variables
+                local item_html="$inner_template"
+                item_html=$(render_partials "$item_html")
+                item_html="${item_html//\{\{url\}\}/$(escape_for_replacement "$url")}"
+                item_html="${item_html//\{\{title\}\}/$(escape_for_replacement "$title")}"
+                item_html="${item_html//\{\{published\}\}/$(escape_for_replacement "$published")}"
+                item_html="${item_html//\{\{published_human\}\}/$(escape_for_replacement "$published_human")}"
+                item_html="${item_html//\{\{comment_count\}\}/$(escape_for_replacement "$comment_count")}"
+
+                recent_html+="$item_html"
+                ((++rendered_count))
+            done
+        fi
+
+        # Replace the entire section with rendered recent posts
+        local tmp_replacement=$(mktemp)
+        echo -n "$recent_html" > "$tmp_replacement"
+        result=$(echo "$result" | perl -0777 -pe '
+            BEGIN { local $/; open my $fh, "<", "'"$tmp_replacement"'"; $repl = <$fh>; close $fh; }
+            s/\{\{#recent_posts\}\}.*?\{\{\/recent_posts\}\}/$repl/s;
         ')
         rm -f "$tmp_replacement"
     fi
@@ -8684,14 +8777,14 @@ render_file() {
     local template="${TEMPLATES[$type]}"
     [ -z "$template" ] && template="${TEMPLATES[post]}"
 
-    # Handle blessed comments for posts
-    local blessed_comments=""
+    # Handle blessed comments count for posts
     local blessed_count=0
-    if [ "$type" = "post" ]; then
-        blessed_comments=$(render_blessed_comments "$url")
-        # Count comments (rough count by counting </article> tags)
-        # Note: || must be outside subshell to avoid capturing both grep output AND fallback
-        blessed_count=$(echo "$blessed_comments" | grep -c '</article>' 2>/dev/null) || blessed_count=0
+    if [ "$type" = "post" ] && [ -f "$BLESSED_COMMENTS" ]; then
+        local url_md="${url%.html}.md"
+        local url_html="${url%.md}.html"
+        blessed_count=$(jq --arg url "$url" --arg url_md "$url_md" --arg url_html "$url_html" \
+            '[.comments[] | select(.post == $url or .post == $url_md or .post == $url_html) | .blessed[]] | length' \
+            "$BLESSED_COMMENTS" 2>/dev/null) || blessed_count=0
     fi
 
     # Comment-specific fields
@@ -8710,8 +8803,8 @@ render_file() {
     result=$(render_partials "$result")
 
     # Process {{#section}}...{{/section}} loops
-    # Pass full post URL as context for blessed_comments lookup
-    result=$(render_sections "$result" "$POLIS_BASE_URL/$url")
+    # Pass full post URL as context for blessed_comments and recent_posts lookup
+    result=$(render_sections "$result" "$url")
 
     result="${result//\{\{title\}\}/$(escape_for_replacement "$title")}"
     result="${result//\{\{content\}\}/$(escape_for_replacement "$html_content")}"
@@ -8727,7 +8820,6 @@ render_file() {
     result="${result//\{\{author_name\}\}/$(escape_for_replacement "$author_name")}"
     result="${result//\{\{author_url\}\}/$(escape_for_replacement "$POLIS_BASE_URL")}"
     result="${result//\{\{year\}\}/$(escape_for_replacement "$(date +%Y)")}"
-    result="${result//\{\{blessed_comments\}\}/$(escape_for_replacement "$blessed_comments")}"
     result="${result//\{\{blessed_count\}\}/$(escape_for_replacement "$blessed_count")}"
     result="${result//\{\{in_reply_to_url\}\}/$(escape_for_replacement "$in_reply_to_url")}"
     result="${result//\{\{root_post_url\}\}/$(escape_for_replacement "$root_post_url")}"

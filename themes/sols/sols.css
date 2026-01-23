@@ -329,10 +329,9 @@ button:focus-visible,
 }
 
 .post-comments {
-    font-size: 0.7rem;
+    font-size: 0.75rem;
     color: var(--color-text-muted);
-    margin-left: auto;
-    flex-shrink: 0;
+    font-weight: normal;
 }
 
 .post-item:hover .post-comments {
@@ -477,20 +476,25 @@ button:focus-visible,
    ============================================ */
 
 .comments {
-    padding: 1.5rem 1.5rem 2rem;
+    padding: 1.5rem 1.5rem 1rem;
 }
 
 .comments .container {
     max-width: var(--max-width);
 }
 
+.comments-header {
+    margin-bottom: 1rem;
+}
+
 .comments-title {
+    display: inline;
     font-size: 0.85rem;
     font-weight: 600;
     color: var(--color-text-muted);
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    margin-bottom: 1rem;
+    margin: 0 1rem 0 0;
 }
 
 .comments-list {
@@ -529,6 +533,15 @@ button:focus-visible,
     font-size: 0.9rem;
     color: var(--color-text-soft);
     line-height: 1.6;
+}
+
+.comment-body a {
+    color: var(--color-teal);
+    text-decoration: none;
+}
+
+.comment-body a:hover {
+    text-decoration: underline;
 }
 
 /* ============================================
@@ -618,50 +631,45 @@ button:focus-visible,
 }
 
 /* ============================================
-   COMMENT CTA
+   COMMENT CTA (inline in comments header)
    ============================================ */
 
-.comment-cta {
-    padding: 1.5rem;
+.cta-inline {
+    display: inline;
 }
 
-.comment-cta .container {
-    max-width: var(--max-width);
-}
-
-.cta-box {
-    background: var(--color-bg-light);
-    border: 1px solid var(--color-border);
-    padding: 1rem 1.5rem;
-}
-
-.cta-toggle {
-    font-size: 0.85rem;
-    color: var(--color-text-muted);
+.cta-inline summary.cta-link {
+    display: inline;
+    font-size: 0.8rem;
+    color: var(--color-teal);
     cursor: pointer;
     list-style: none;
+    text-decoration: none;
 }
 
-.cta-toggle::-webkit-details-marker {
+.cta-inline summary.cta-link::-webkit-details-marker {
     display: none;
 }
 
-.cta-toggle:hover {
-    color: var(--color-text-soft);
+.cta-inline summary.cta-link:hover {
+    text-decoration: underline;
 }
 
-.cta-content {
+.cta-inline[open] .cta-content {
+    display: block;
     margin-top: 1rem;
+    padding: 0;
 }
 
 .cta-text {
     font-size: 0.85rem;
     color: var(--color-text-muted);
     margin: 0 0 1rem 0;
+    line-height: 1.6;
 }
 
 .cta-code {
-    margin-bottom: 1rem;
+    margin-bottom: 0.75rem;
 }
 
 .cta-code pre {
@@ -690,6 +698,35 @@ button:focus-visible,
 
 .cta-link:hover {
     text-decoration: underline;
+}
+
+/* Post Footer Navigation */
+.post-footer-nav:not(:has(.post-item)) {
+    display: none;
+}
+
+.post-footer-nav {
+    padding: 2.5rem 1.5rem 1.5rem;
+}
+
+.post-footer-nav .container {
+    max-width: var(--max-width);
+    border-top: 1px solid var(--color-border);
+    padding-top: 1.5rem;
+}
+
+.post-footer-nav .section-title {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--color-peach);
+    margin: 0 0 1rem 0;
+}
+
+.post-footer-nav .post-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
 }
 
 /* ============================================

@@ -520,6 +520,11 @@ button:focus-visible,
     font-size: 0.95rem;
     font-weight: 600;
     color: var(--color-green);
+    text-decoration: none;
+}
+
+.comment-author:hover {
+    text-decoration: underline;
 }
 
 .comment-date {

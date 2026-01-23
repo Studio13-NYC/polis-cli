@@ -28,7 +28,7 @@ set -e
 #   4. Hardcoded defaults
 
 # Fixed constants (never configurable - required for discovery)
-VERSION="0.37.0"
+VERSION="0.38.0"
 WELL_KNOWN_DIR=".well-known"
 WELL_KNOWN_FILE="polis"
 
@@ -2993,7 +2993,7 @@ _internal_beseech_from_file() {
     # Construct proper HTTPS comment URL
     # Convert local file path to public URL
     # Example: comments/my-comment.md -> https://yourdomain.com/comments/my-comment.md
-    local comment_url="$base_url/$input_file"
+    local comment_url="${base_url%/}/$input_file"
 
     # Build canonical JSON payload (WITHOUT signature field)
     # This is what we'll sign
@@ -5873,7 +5873,7 @@ signature: $signature
         # Build canonical URL
         local canonical_url=""
         if [ -n "$POLIS_BASE_URL" ]; then
-            canonical_url="$POLIS_BASE_URL/$canonical_path"
+            canonical_url="${POLIS_BASE_URL%/}/$canonical_path"
         fi
 
         local result=$(jq -n \
@@ -8562,6 +8562,8 @@ render_sections() {
 
                 local comment_url=$(echo "$comment_entry" | jq -r '.url // empty')
                 [ -z "$comment_url" ] && continue
+                # Normalize any double slashes in path (but preserve ://)
+                comment_url=$(echo "$comment_url" | sed 's|://\([^/]*\)//|://\1/|')
 
                 # Fetch comment content (local or remote)
                 local raw_content=""

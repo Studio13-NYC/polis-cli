@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.38.0] - 2026-01-23
+
+### Changed
+- **Comment author now links to comment URL** - Author names in blessed comments are now clickable links
+  - Links point to the comment on the commenter's own site
+  - Added hover underline styling for better affordance
+  - Applied across all built-in themes (sols, turbo, zane)
+
+### Fixed
+- **URL normalization issues** - Eliminated double slashes in comment and post URLs
+  - Defensive URL construction with `${POLIS_BASE_URL%/}` to strip trailing slashes
+  - Prevents malformed URLs like `https://example.com//comments/post.md`
+  - Applied to beseech command and comment URL construction
+  - Removed render-time normalization workaround (now unnecessary)
+
 ## [0.37.0] - 2026-01-22
 
 ### Added

@@ -40,75 +40,56 @@ brew install pandoc  # Optional: for polis render
 ### Install Polis CLI
 
 ```bash
-# Option 1: Add to PATH
-export PATH="/path/to/polis-planning/cli/bin:$PATH"
+# Option 1: Add to PATH (quick start)
+export PATH="/path/to/polis-cli/bin:$PATH"
 
 # Option 2: Create symlink
-sudo ln -s /path/to/polis-planning/cli/bin/polis /usr/local/bin/polis
+sudo ln -s /path/to/polis-cli/bin/polis /usr/local/bin/polis
 
 # Verify installation
 polis --help
 ```
 
-## Quick Start
+### Option 3: Copy to your content repository (recommended)
 
-This example demonstrates a complete workflow: creating a post, commenting on it, and managing blessing requests.
+For production use, copy the CLI tools directly into your content repository. This keeps your site self-contained—CLI versions are locked to your content, and everything deploys together.
 
 ```bash
-# 1. Initialize a new Polis directory
-mkdir my-blog && cd my-blog
-polis init
+# Clone polis-cli
+git clone https://github.com/vdibart/polis-cli.git
 
-# 2. Set up environment variables (required for blessing workflow)
-export POLIS_BASE_URL="https://yourdomain.com"
-export POLIS_DISCOVERY_ENDPOINT="https://xxx.supabase.co/functions/v1"
-
-# 3. Create a post
-cat > posts/hello.md << 'EOF'
-# Hello World
-
-This is my first post on Polis!
-EOF
-
-# 4. Publish the post
-polis post posts/hello.md
-
-# 5. Create a comment on the post
-cat > comments/reply.md << 'EOF'
-# Great post!
-
-I really enjoyed reading this. Looking forward to more!
-EOF
-
-# 6. Comment on your own post (to test the blessing workflow)
-polis comment comments/reply.md ${POLIS_BASE_URL}/posts/$(date +%Y%m%d)/hello.md
-
-# 7. View pending blessing requests
-polis blessing requests
-
-# 8. Grant the blessing (using the comment hash from step 7)
-polis blessing grant <comment-hash>
-
-# Alternatively, deny a blessing:
-# polis blessing deny <comment-hash>
-
-# 9. Set up git for your content
+# Create your content repository
+mkdir my-site && cd my-site
 git init
-git add .
-git commit -m "Initial post and comment"
 
-# 10. Push to your static host (GitHub Pages, Netlify, etc.)
-git push origin main
+# Copy CLI tools and themes
+cp ../polis-cli/bin/polis ./bin/
+cp ../polis-cli/bin/polis-tui ./bin/
+cp ../polis-cli/bin/polis-upgrade ./bin/
+cp -r ../polis-cli/themes ./themes/
+
+# Initialize your site
+./bin/polis init
+
+# Add bin/ to .gitignore if you don't want to version the CLI
+# Or commit it to lock the CLI version with your content
 ```
 
-**What happens in this workflow:**
-- Step 4: Post is published and added to `public.jsonl` index
-- Step 6: Comment is created, automatically requests blessing from discovery service
-- Step 7: Lists all pending comments awaiting your approval
-- Step 8: Approving the comment makes it visible in the discovery service
-- Once blessed, readers can discover your comment when querying the post
+**What to copy:**
+- `bin/polis` — Main CLI
+- `bin/polis-tui` — Terminal UI (optional)
+- `bin/polis-upgrade` — Upgrade script (optional)
+- `themes/` — Theme templates (required for `polis init` and `polis render`)
 
-**Note:** In practice, step 6 would typically be someone else commenting on your post from their own Polis instance. This example shows you commenting on your own post for testing purposes.
+**Why this approach:**
+- Your site is fully self-contained
+- CLI version is locked to your content (no surprise breakage from updates)
+- Works offline after initial setup
+- Easy to deploy—just push your repo
+
+## Quick Start
+
+For a quick introduction, see the [README](../README.md). This guide covers detailed usage.
 
 ## Directory Structure
 
@@ -401,32 +382,7 @@ polis --json preview https://alice.com/posts/hello.md
 - Preview content before responding to it
 - Verify content integrity and authenticity
 
-**JSON mode output:**
-```json
-{
-  "status": "success",
-  "command": "preview",
-  "data": {
-    "url": "https://alice.com/posts/hello.md",
-    "type": "post",
-    "title": "Hello World",
-    "published": "2026-01-05T12:00:00Z",
-    "current_version": "sha256:abc123...",
-    "generator": "polis-cli/0.2.0",
-    "in_reply_to": null,
-    "author": "alice@example.com",
-    "signature": {
-      "status": "valid",
-      "message": "Signature verified against author's public key"
-    },
-    "hash": {
-      "status": "valid"
-    },
-    "validation_issues": [],
-    "body": "# Hello World\n\nThis is my first post..."
-  }
-}
-```
+**JSON mode:** See [JSON-MODE.md](JSON-MODE.md) for response format.
 
 ### `polis rebuild`
 
@@ -547,54 +503,12 @@ polis migrate newdomain.com
 
 **Example output:**
 ```
-[i] Detected current domain: olddomain.com
-[i] New domain: newdomain.com
-
-Continue with migration? (y/N) y
-
-[i] Updating posts...
-[i] Updating comments...
-[i] Updating blessed-comments.json...
-[i] Updating .well-known/polis...
-[i] Rebuilding public.jsonl index...
-[i] Updating discovery service database...
-[✓] Database migration complete (5 rows updated)
-[✓] Staged all changes in git
-
 [✓] Migration complete!
-
-Old domain: olddomain.com
-New domain: newdomain.com
-Posts updated: 3
-Comments updated: 5
-Database rows updated: 5
-
-Next steps:
-1. Deploy to new domain
-2. Set up redirect from old domain (recommended)
-3. Update POLIS_BASE_URL environment variable
+    Old domain: olddomain.com → New domain: newdomain.com
+    Posts: 3, Comments: 5, Database rows: 5
 ```
 
-**JSON mode:**
-```bash
-polis --json migrate newdomain.com | jq
-```
-
-**JSON output:**
-```json
-{
-  "status": "success",
-  "command": "migrate",
-  "data": {
-    "old_domain": "olddomain.com",
-    "new_domain": "newdomain.com",
-    "posts_updated": 3,
-    "comments_updated": 5,
-    "database_updated": true,
-    "database_rows": 5
-  }
-}
-```
+**JSON mode:** See [JSON-MODE.md](JSON-MODE.md) for response format.
 
 **Important notes:**
 - Domain should not include protocol (use `example.com`, not `https://example.com`)
@@ -627,50 +541,14 @@ polis --json about
 **Example output:**
 ```
 Polis - Decentralized Social Networking
-Your content, free from platform control
 ────────────────────────────────────────
-
-SITE
-  URL:      https://example.com
-  Title:    My Blog
-
-VERSIONS
-  CLI:                   0.29.0
-  .well-known/polis:     1.0
-  following.json:        1.0
-  blessed-comments.json: 1.0
-  manifest.json:         1.0
-
-CONFIGURATION
-  Directories:
-    Keys:      .polis/keys
-    Posts:     posts
-    Comments:  comments
-    Snippets:  snippets
-    Versions:  .versions
-
-  Files:
-    Public index:      metadata/public.jsonl
-    Blessed comments:  metadata/blessed-comments.json
-    Following:         metadata/following.json
-    Manifest:          metadata/manifest.json
-
-KEYS
-  Status:       initialized
-  Fingerprint:  SHA256:abc123...
-  Public key:   .polis/keys/id_ed25519.pub
-
-DISCOVERY
-  Service URL:  https://xxx.supabase.co/functions/v1
-  API Key:      [set]
-  Registration: registered
-  Registry URL: https://xxx.supabase.co/...
-  Registered:   2026-01-10T12:00:00Z
-
-PROJECT
-  Repository:   https://github.com/vdibart/polis
-  License:      AGPL-3.0
+SITE        https://example.com (My Blog)
+CLI         0.29.0
+KEYS        initialized (SHA256:abc123...)
+DISCOVERY   registered
 ```
+
+Displays site details, versions, configuration paths, key status, and discovery registration.
 
 **Registration status values:**
 - **registered** - Site is registered with the discovery service
@@ -850,25 +728,7 @@ This enables:
 - Extraction of original markdown from rendered HTML
 - Debugging template issues by comparing source to output
 
-**JSON mode:**
-```bash
-polis --json render | jq
-```
-
-**JSON output:**
-```json
-{
-  "status": "success",
-  "command": "render",
-  "data": {
-    "posts_rendered": 3,
-    "posts_skipped": 0,
-    "comments_rendered": 2,
-    "comments_skipped": 1,
-    "index_generated": true
-  }
-}
-```
+**JSON mode:** See [JSON-MODE.md](JSON-MODE.md) for response format.
 
 ### `polis blessing`
 
@@ -1245,99 +1105,13 @@ Or edit the `config` section in `.well-known/polis` after initialization:
 
 ## JSON Mode
 
-The Polis CLI supports a `--json` flag for machine-readable output, enabling scripting, automation, and testing workflows.
-
-### Usage
-
-Add `--json` before or after the command:
+All commands support `--json` for machine-readable output:
 
 ```bash
-polis --json <command> [options]
-polis <command> --json [options]   # Also works
+polis --json post my-post.md | jq -r '.data.content_hash'
 ```
 
-### Features
-
-When `--json` is enabled:
-- **Structured output**: Valid JSON on stdout (success) or stderr (errors)
-- **Auto-skip prompts**: Interactive prompts are skipped with logged defaults to stderr
-- **No colors**: ANSI color codes are disabled
-- **Exit codes**: 0 for success, 1 for error
-- **Structured errors**: Consistent error codes (FILE_NOT_FOUND, INVALID_INPUT, API_ERROR, etc.)
-
-### Examples
-
-```bash
-# Initialize and extract public key path
-polis --json init | jq -r '.data.key_paths.public'
-
-# Publish and get content hash
-hash=$(polis --json post my-post.md | jq -r '.data.content_hash')
-
-# Comment with reply-to URL (no interactive prompt)
-polis --json comment my-reply.md https://alice.com/posts/hello.md
-
-# Get pending blessing requests
-polis --json blessing requests | jq -r '.data.requests[].id'
-
-# Auto-grant blessing without confirmation
-polis --json blessing grant 123
-
-# Follow author and get blessed count
-polis --json follow https://alice.com | jq '.data.comments_blessed'
-
-# Chain commands in a script
-requests=$(polis --json blessing requests)
-echo "$requests" | jq -r '.data.requests[].id' | while read id; do
-  polis --json blessing grant "$id"
-done
-
-# Error handling
-if ! result=$(polis --json post test.md 2>&1); then
-  error_code=$(echo "$result" | jq -r '.error.code')
-  echo "Failed with error: $error_code"
-  exit 1
-fi
-```
-
-### Response Format
-
-**Success:**
-```json
-{
-  "status": "success",
-  "command": "post",
-  "data": {
-    "file_path": "posts/20260104/my-post.md",
-    "content_hash": "sha256:abc123...",
-    "timestamp": "2026-01-04T12:00:00Z",
-    "signature": "-----BEGIN SSH SIGNATURE-----...",
-    "canonical_url": "https://example.com/posts/20260104/my-post.md"
-  }
-}
-```
-
-**Error:**
-```json
-{
-  "status": "error",
-  "command": "post",
-  "error": {
-    "code": "FILE_NOT_FOUND",
-    "message": "File not found: test.md",
-    "details": {}
-  }
-}
-```
-
-### Supported Commands
-
-All interactive commands support JSON mode:
-- `init`, `publish`, `comment`, `republish`
-- `blessing requests`, `blessing grant`, `blessing deny`, `blessing beseech`
-- `follow`, `unfollow`
-
-See [docs/json-mode.md](../docs/json-mode.md) for complete documentation.
+See [JSON-MODE.md](JSON-MODE.md) for response schemas, error codes, and scripting examples.
 
 ## Publishing Workflow
 
@@ -1439,130 +1213,11 @@ ssh-keygen -Y verify -f alice.pub -I alice@example.com -n file \
 
 ## Terminal User Interface (polis-tui)
 
-For users who prefer a menu-based interface, polis includes a Terminal UI that wraps the CLI.
+For a menu-based interface with dashboard, git integration, and editor support, see [TUI.md](TUI.md).
 
-### Features
+## Upgrading (polis-upgrade)
 
-- **Dashboard** with status overview (posts, following, pending blessings)
-- **Inline selection** with arrow keys or number keys
-- **$EDITOR integration** for writing posts and comments
-- **Git integration** with automatic commit messages and push workflow
-- **HTML regeneration** prompts after content changes
-
-### Usage
-
-```bash
-# Start the TUI
-polis-tui
-
-# Show help
-polis-tui --help
-
-# Show version
-polis-tui --version
-```
-
-### Navigation
-
-| Keys | Action |
-|------|--------|
-| `↑/↓` or `j/k` | Move selection up/down |
-| `1-9` | Jump directly to numbered option |
-| `Enter` | Confirm selection |
-| `q` or `Esc` | Go back / Cancel |
-| `Ctrl+C` | Exit immediately |
-
-### Workflow Example
-
-1. Start `polis-tui` in your initialized polis directory
-2. Select "Publish new post" (arrow keys or press `1`)
-3. Write your content in the editor, save and close
-4. Enter a filename when prompted
-5. Choose to regenerate HTML or commit to git
-6. Edit the suggested commit message if needed
-7. Push to remote when prompted
-
-### Requirements
-
-- Same dependencies as polis CLI (jq, curl, etc.)
-- Polis must be initialized (`polis init`)
-- `$EDITOR` environment variable (falls back to nano/vi)
-
-## Upgrading (`polis-upgrade`)
-
-`polis-upgrade` is a standalone script that handles version migrations and binary updates. It fetches migration scripts from GitHub (tag-pinned) and verifies SHA-256 checksums before execution.
-
-### Usage
-
-```bash
-polis-upgrade [OPTIONS]
-```
-
-### Options
-
-| Option | Description |
-|--------|-------------|
-| `--component cli\|tui` | Component to upgrade (default: `cli`) |
-| `--from VERSION` | Override current version detection |
-| `--to VERSION` | Upgrade to specific version (default: latest) |
-| `--polis-path PATH` | Path to polis CLI script |
-| `--site-dir PATH` | Path to polis site directory |
-| `--yes` | Skip confirmation prompts |
-| `--check` | Only check for updates, don't apply |
-| `--help` | Show help message |
-
-### Examples
-
-```bash
-# Check what upgrades are available
-polis-upgrade --check
-
-# Upgrade CLI to latest
-polis-upgrade
-
-# Upgrade to a specific version
-polis-upgrade --to 0.39.0
-
-# Upgrade TUI
-polis-upgrade --component tui
-
-# Skip prompts (for scripting)
-polis-upgrade --yes
-
-# Override version detection
-polis-upgrade --from 0.33.0
-```
-
-### How It Works
-
-1. **Self-update check** - Verifies `polis-upgrade` itself is current
-2. **Detects current version** - Reads `VERSION` from your installed `polis` script
-3. **Queries discovery service** - Finds the latest available version
-4. **Fetches migrations** - Downloads applicable migration scripts from GitHub
-5. **Verifies checksums** - SHA-256 verification before executing any script
-6. **Runs migrations** - Executes scripts in version order against your site directory
-7. **Downloads binary** - Offers to install the updated CLI/TUI script
-
-### Site Directory Detection
-
-`polis-upgrade` locates your site directory in this order:
-1. `--site-dir` flag
-2. `POLIS_BASE` environment variable
-3. `.env` file in current directory
-4. `.well-known/polis` in current directory
-
-### Migration Scripts
-
-Migrations handle file/data structure changes between versions (e.g., moving config files to new locations). Not every version requires a migration - only versions that change the on-disk layout.
-
-Migration scripts are idempotent (safe to run multiple times) and non-destructive (never delete user content).
-
-### Recovery
-
-If a migration fails mid-sequence, the script prints a recovery command:
-```
-polis-upgrade --from <next_version> --to <target_version>
-```
+For version migrations and binary updates, see [UPGRADING.md](UPGRADING.md).
 
 ## Shell Completion
 
@@ -1633,10 +1288,9 @@ Run `polis rebuild` to regenerate `public.jsonl` from published files.
 
 ## Next Steps
 
-- Read the [Architecture Documentation](../docs/polis-architecture.md) for technical details
-- Set up a discovery service (see `../discovery-service/README.md`)
 - Deploy your content to GitHub Pages, Netlify, or any static host
-- Join the Polis community (links TBD at MVP)
+- Read [SECURITY-MODEL.md](SECURITY-MODEL.md) for cryptographic details
+- Customize your site with [TEMPLATING.md](TEMPLATING.md)
 
 ## Support
 

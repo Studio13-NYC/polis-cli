@@ -590,6 +590,12 @@ button:focus-visible,
     margin-top: 0;
 }
 
+.content-body strong,
+.content-body b {
+    color: var(--color-peach-dim);
+    font-weight: 600;
+}
+
 .content-body a {
     color: var(--color-teal);
     text-decoration: none;

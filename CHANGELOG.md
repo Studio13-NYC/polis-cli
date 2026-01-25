@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.39.0] - 2026-01-24
+
+### Changed
+- **Bold text styling in themes** - Bold/strong text in post content now uses theme accent colors for improved readability
+  - sols theme: dimmed peach (`--color-peach-dim`)
+  - turbo theme: purple accent (`--color-accent`)
+  - zane theme: salmon (`--color-salmon`)
+  - Provides better visual hierarchy and emphasis within post content
+
+### Fixed
+- **Spurious snippet warnings during render** - Removed literal `{{> theme:name}}` syntax from HTML template comments
+  - Template comments were being incorrectly parsed as partial includes
+  - Eliminates confusing warnings about missing snippet files during `polis render`
+- **Recent posts URLs broken on post pages** - Fixed path doubling issue on nested post pages
+  - Made `{{#recent_posts}}` URLs root-relative to prevent incorrect path construction
+  - URLs now correctly resolve from any depth in the site hierarchy
+
+### Documentation
+- **README.md streamlined** - Condensed from 405 to 120 lines with tighter narrative focus
+  - Clearer value proposition: "A decentralized social network where you own everything"
+  - Simplified "The idea" section explaining the self-moderating conversation model
+  - Quick start guide now focuses on getting users running quickly
+  - Removed verbose sections that slowed initial comprehension
+
+- **USAGE.md compressed** - Reduced from 1680 to 1301 lines (23% reduction)
+  - Added "copy to content repo" installation option (recommended for production use)
+  - Moved TUI documentation to dedicated `TUI.md` file
+  - Moved upgrade documentation to dedicated `UPGRADING.md` file
+  - Replaced inline JSON examples with references to `JSON-MODE.md`
+  - Trimmed verbose CLI output examples for better readability
+
+- **New documentation files created**
+  - `TUI.md` - Dedicated guide for the Terminal UI (`polis-tui`)
+  - `UPGRADING.md` - Standalone upgrade instructions and migration guide
+  - Improves discoverability and navigation of documentation
+
 ## [0.38.0] - 2026-01-23
 
 ### Changed

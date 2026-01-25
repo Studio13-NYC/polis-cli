@@ -577,6 +577,12 @@ button:focus-visible,
     margin-top: 0;
 }
 
+.content-body strong,
+.content-body b {
+    color: var(--color-accent);
+    font-weight: 600;
+}
+
 .content-body a {
     color: var(--color-cyan);
     text-decoration: none;

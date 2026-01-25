@@ -28,7 +28,7 @@ set -e
 #   4. Hardcoded defaults
 
 # Fixed constants (never configurable - required for discovery)
-VERSION="0.38.0"
+VERSION="0.39.0"
 WELL_KNOWN_DIR=".well-known"
 WELL_KNOWN_FILE="polis"
 
@@ -8648,7 +8648,7 @@ render_sections() {
 
                 [ -z "$path" ] && continue
 
-                local url="${path%.md}.html"
+                local url="/${path%.md}.html"
 
                 # Skip the current post (check if its path appears in the context URL)
                 if [ -n "$context" ] && [[ "$context" == *"$path"* ]]; then

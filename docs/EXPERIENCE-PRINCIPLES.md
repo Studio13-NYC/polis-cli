@@ -14,6 +14,27 @@ Moving "up" toward convenience or "down" toward control requires no data migrati
 
 ---
 
+## Who This Is For
+
+**Primary audience:** People who want conversation, not just consumption:
+- Understand platform limitations (algorithmic manipulation, lock-in, extraction)
+- Remember when RSS and blogs worked well
+- Value ownership and control over convenience
+- See AI as a tool, not a replacement for human agency
+
+**Specific personas and where they land:**
+
+| Persona | Pain Point | Likely Level |
+|---------|------------|--------------|
+| **Substack authors** | Paying 10%, fighting comment spam, worried about platform dependency | Level 5-6 |
+| **Personal bloggers** | Want discovery without algorithms, community without platforms | Level 2-4 |
+| **Ex-platform users** | Left Twitter/LinkedIn/etc. but miss the social layer | Level 6 |
+| **Builders** | Want to create clients, tools, services on open protocols | Level 1-2 |
+
+**Not for:** People happy with platforms, those seeking viral growth, anyone prioritizing convenience over ownership.
+
+---
+
 ## The Seven Levels
 
 ### Level 1: Builder

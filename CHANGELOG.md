@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.40.0] - 2026-01-26
+
+### Documentation
+- **MANIFESTO.md rewritten** - Complete restructure with clearer strategic vision
+  - New title: "The Social Network That Isn't"
+  - Refined thesis emphasizing web-as-platform vs building new platforms
+  - Added sections: Discovery Service as metadata layer, Blessing Model, Business Model, Competitive Position
+  - Tighter narrative flow from problem statement through solution to long-term vision
+  - Clearer articulation of how Polis differs from decentralized alternatives (Mastodon, Nostr, Bluesky)
+
+- **EXPERIENCE-PRINCIPLES.md enhanced** - Added "Who This Is For" section
+  - Maps specific personas to experience levels (Substack authors → L5-6, Builders → L1-2, etc.)
+  - Explicit audience definition with pain points and entry levels
+  - Clear "not for" criteria to set appropriate expectations
+
+- **README.md refinements** - Minor wording improvements
+  - Clarified that comments are "hosted on" (not "never leave") the commenter's server
+  - Streamlined identity explanation by removing redundant "DNS for identity" reference
+
 ## [0.39.0] - 2026-01-24
 
 ### Changed

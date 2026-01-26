@@ -13,9 +13,9 @@ Your posts live on your domain. Your followers are yours. Your content persist e
 
 Social networks captured something valuable—the connections between people—then held it hostage. Polis gives that back.
 
-With Polis, your content publishes to your server. You decide which comments to amplify or hide, but the comment never leaves the commenter's server.  No algorithms, no oversight, no spam - just self-moderating conversation.
+With Polis, your content publishes to your server. You decide which comments to amplify or hide, but the comment is hosted on the commenter's server.  No algorithms, no oversight, no spam - just self-moderating conversation.
 
-Built on standards you already trust: HTTPS for delivery, DNS for identity, Ed25519 for signatures. Your content is markdown files. Your identity is a keypair. Move hosts anytime—everything comes with you.
+Built on standards you already trust: HTTPS for delivery, Ed25519 for signatures. Your content is markdown files. Your identity is a keypair. Move hosts anytime—everything comes with you.
 
 ---
 

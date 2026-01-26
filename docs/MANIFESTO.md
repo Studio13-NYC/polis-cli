@@ -1,4 +1,4 @@
-# Polis: The Social Network That Isn't
+# Polis: The Social Network for the Open Web
 
 ---
 

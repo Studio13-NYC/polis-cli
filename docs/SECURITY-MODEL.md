@@ -727,6 +727,7 @@ Optional encryption for private content. Would require:
 
 ## Document History
 
+- 2026-01-26: Moved File Content Integrity sections to USAGE.md (better discoverability for operational guidance)
 - 2026-01-21: Added Notifications section (signed requests, attack prevention, privacy)
 - 2026-01-12: Added Implementation Security Audit section (private key handling verification)
 - 2026-01-07: Initial version

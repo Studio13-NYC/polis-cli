@@ -30,7 +30,6 @@ _polis() {
         'render:Render markdown to HTML (--force, --init-templates)'
         'republish:Update an already-published file'
         'rotate-key:Generate new keypair and re-sign content (--delete-old-key)'
-        'snippet:Publish a reusable template snippet (--filename, --title for stdin)'
         'unfollow:Unfollow an author (--announce to broadcast)'
         'unregister:Unregister site from discovery service (--force to skip confirmation)'
         'version:Print CLI version'
@@ -204,13 +203,6 @@ _polis() {
                         '--filename[Output filename for stdin mode]:filename:' \
                         '--title[Override title extraction]:title:' \
                         ':url:' \
-                        ':file:_files'
-                    ;;
-                snippet)
-                    _arguments \
-                        '--json[Output in JSON format]' \
-                        '--filename[Output filename for stdin mode]:filename:' \
-                        '--title[Override title extraction]:title:' \
                         ':file:_files'
                     ;;
                 republish)

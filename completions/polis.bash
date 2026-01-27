@@ -13,7 +13,7 @@ _polis_completion() {
     # All top-level commands
     local commands="about blessing clone comment discover extract follow
         index init migrate migrations notifications post preview
-        rebuild register render republish rotate-key snippet unfollow
+        rebuild register render republish rotate-key unfollow
         unregister version"
 
     # Subcommands for specific commands
@@ -38,7 +38,6 @@ _polis_completion() {
     local rotate_key_opts="--delete-old-key --json"
     local post_opts="--filename --title --json"
     local comment_opts="--filename --title --json"
-    local snippet_opts="--filename --title --json"
 
     # Global options
     local global_opts="--json --help"
@@ -87,68 +86,84 @@ _polis_completion() {
                         local subcmd="${COMP_WORDS[$((cmd_pos + 1))]}"
                         case $subcmd in
                             list)
-                                COMPREPLY=($(compgen -W "$notifications_list_opts" -- "$cur"))
+                                [[ "$cur" == -* ]] && COMPREPLY=($(compgen -W "$notifications_list_opts" -- "$cur"))
                                 ;;
                             read)
-                                COMPREPLY=($(compgen -W "$notifications_read_opts" -- "$cur"))
+                                [[ "$cur" == -* ]] && COMPREPLY=($(compgen -W "$notifications_read_opts" -- "$cur"))
                                 ;;
                             dismiss)
-                                COMPREPLY=($(compgen -W "$notifications_dismiss_opts" -- "$cur"))
+                                [[ "$cur" == -* ]] && COMPREPLY=($(compgen -W "$notifications_dismiss_opts" -- "$cur"))
                                 ;;
                             sync)
-                                COMPREPLY=($(compgen -W "$notifications_sync_opts" -- "$cur"))
+                                [[ "$cur" == -* ]] && COMPREPLY=($(compgen -W "$notifications_sync_opts" -- "$cur"))
                                 ;;
                             config)
-                                COMPREPLY=($(compgen -W "$notifications_config_opts" -- "$cur"))
+                                [[ "$cur" == -* ]] && COMPREPLY=($(compgen -W "$notifications_config_opts" -- "$cur"))
                                 ;;
                         esac
                     fi
                     ;;
-                follow)
-                    COMPREPLY=($(compgen -W "$follow_opts" -- "$cur"))
-                    ;;
-                unfollow)
-                    COMPREPLY=($(compgen -W "$unfollow_opts" -- "$cur"))
+                follow|unfollow)
+                    # Only complete flags if typing a flag, otherwise allow default (URL input)
+                    if [[ "$cur" == -* ]]; then
+                        [[ "$actual_cmd" == "follow" ]] && COMPREPLY=($(compgen -W "$follow_opts" -- "$cur"))
+                        [[ "$actual_cmd" == "unfollow" ]] && COMPREPLY=($(compgen -W "$unfollow_opts" -- "$cur"))
+                    fi
                     ;;
                 render)
-                    COMPREPLY=($(compgen -W "$render_opts" -- "$cur"))
+                    [[ "$cur" == -* ]] && COMPREPLY=($(compgen -W "$render_opts" -- "$cur"))
                     ;;
                 rebuild)
-                    COMPREPLY=($(compgen -W "$rebuild_opts" -- "$cur"))
+                    [[ "$cur" == -* ]] && COMPREPLY=($(compgen -W "$rebuild_opts" -- "$cur"))
                     ;;
                 init)
-                    COMPREPLY=($(compgen -W "$init_opts" -- "$cur"))
+                    [[ "$cur" == -* ]] && COMPREPLY=($(compgen -W "$init_opts" -- "$cur"))
                     ;;
                 unregister)
-                    COMPREPLY=($(compgen -W "$unregister_opts" -- "$cur"))
+                    [[ "$cur" == -* ]] && COMPREPLY=($(compgen -W "$unregister_opts" -- "$cur"))
                     ;;
                 clone)
-                    COMPREPLY=($(compgen -W "$clone_opts" -- "$cur"))
+                    [[ "$cur" == -* ]] && COMPREPLY=($(compgen -W "$clone_opts" -- "$cur"))
                     ;;
                 discover)
-                    COMPREPLY=($(compgen -W "$discover_opts" -- "$cur"))
+                    [[ "$cur" == -* ]] && COMPREPLY=($(compgen -W "$discover_opts" -- "$cur"))
                     ;;
                 rotate-key)
-                    COMPREPLY=($(compgen -W "$rotate_key_opts" -- "$cur"))
+                    [[ "$cur" == -* ]] && COMPREPLY=($(compgen -W "$rotate_key_opts" -- "$cur"))
                     ;;
-                post)
-                    COMPREPLY=($(compgen -W "$post_opts" -- "$cur"))
+                post|republish)
+                    # Complete flags if typing flag, otherwise fall back to file completion
+                    if [[ "$cur" == -* ]]; then
+                        COMPREPLY=($(compgen -W "$post_opts" -- "$cur"))
+                    fi
+                    # Empty COMPREPLY + "-o default" = file completion
                     ;;
                 comment)
-                    COMPREPLY=($(compgen -W "$comment_opts" -- "$cur"))
+                    # Complete flags if typing flag, otherwise fall back to file completion
+                    if [[ "$cur" == -* ]]; then
+                        COMPREPLY=($(compgen -W "$comment_opts" -- "$cur"))
+                    fi
                     ;;
-                snippet)
-                    COMPREPLY=($(compgen -W "$snippet_opts" -- "$cur"))
+                extract)
+                    # First arg is file, second is hash - only complete flags
+                    if [[ "$cur" == -* ]]; then
+                        COMPREPLY=($(compgen -W "--json" -- "$cur"))
+                    fi
                     ;;
-                republish|preview|extract|migrate)
-                    COMPREPLY=($(compgen -W "--json" -- "$cur"))
+                preview|migrate)
+                    # These take URLs, not files - only complete flags
+                    if [[ "$cur" == -* ]]; then
+                        COMPREPLY=($(compgen -W "--json" -- "$cur"))
+                    fi
                     ;;
                 about|version|index|register)
-                    COMPREPLY=($(compgen -W "--json" -- "$cur"))
+                    [[ "$cur" == -* ]] && COMPREPLY=($(compgen -W "--json" -- "$cur"))
                     ;;
             esac
             ;;
     esac
 }
 
-complete -F _polis_completion polis
+# -o default: fall back to default completion (files) when COMPREPLY is empty
+# -o bashdefault: fall back to bash default completions (variables, etc.)
+complete -o default -o bashdefault -F _polis_completion polis

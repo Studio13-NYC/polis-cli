@@ -403,20 +403,6 @@ Fields depend on which flags were used (`--posts`, `--comments`, `--notification
 }
 ```
 
-### `polis snippet`
-```json
-{
-  "status": "success",
-  "command": "snippet",
-  "data": {
-    "file_path": "snippets/about.md",
-    "content_hash": "sha256:abc123...",
-    "timestamp": "2026-01-20T12:00:00Z",
-    "signature": "-----BEGIN SSH SIGNATURE-----..."
-  }
-}
-```
-
 ### `polis migrations apply`
 ```json
 {

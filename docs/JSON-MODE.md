@@ -424,22 +424,6 @@ Similar structure to `follow`, with `removed_from_following` and `comments_denie
 }
 ```
 
-### `polis snippet <file>`
-
-```json
-{
-  "status": "success",
-  "command": "snippet",
-  "data": {
-    "path": "snippets/homepage/about.md",
-    "title": "About Section",
-    "version": "sha256:abc123...",
-    "timestamp": "2026-01-15T12:00:00Z",
-    "signature": "-----BEGIN SSH SIGNATURE-----..."
-  }
-}
-```
-
 ### `polis index --json`
 
 Returns posts and comments grouped from the public index.

@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.41.0] - 2026-01-26
+
+### Removed
+- **`polis snippet` command** - Snippets no longer require signing
+  - Snippets are now simple content files - just place `.md` or `.html` files in the `snippets/` directory
+  - No frontmatter or metadata required
+  - Existing signed snippets continue to work (frontmatter is automatically stripped during render)
+  - The `snippets.jsonl` index is no longer created on init and can be safely deleted from existing sites
+  - Rationale: Snippets are local template fragments that never travel between sites, so cryptographic signing adds friction without providing security benefits
+
+### Changed
+- **`.env` file location** - Configuration now stored in CLI directory instead of per-site
+  - The `.env` file is now shared across all polis sites (contains global settings like `DISCOVERY_SERVICE_KEY`)
+  - `polis init` checks the CLI directory for `.env` and copies from `.env.example` if missing
+  - If neither exists, the command provides clear instructions with an example `cp` command
+  - CLI directory resolution follows symlinks correctly when determining the location
+
+### Fixed
+- **`polis render` silent failure** - Now validates `POLIS_BASE_URL` before rendering
+  - Previously failed silently with broken URLs if `.env` was missing or `POLIS_BASE_URL` was unset
+  - Now shows a clear error message with the exact path to the `.env` file that needs configuration
+
+- **Bash completion breaks file path completion** - Fixed `polis post <tab>` not completing file paths
+  - Completion now only activates for flags when typing `--`, otherwise falls back to default file completion
+  - Added `-o default -o bashdefault` for proper fallback behavior
+
+- **JSON parsing fragility** - Replaced fragile grep/sed JSON parsing with jq
+  - Multiple functions now use `jq` for safer JSON extraction (`extract_author_from_wellknown`, `_internal_beseech_from_file`, `rebuild_blessed_comments`)
+  - Note: Canonical payload building for cryptographic signing intentionally uses printf (not jq) to ensure consistent key ordering and whitespace for signature verification
+
+### Documentation
+- **USAGE.md** - Added "File Content Integrity" guidance
+  - Explains how `current-version` hash and `signature` are computed for posts and comments
+  - Documents what breaks when manually editing published files without running `polis republish`
+  - Clarifies which files are safe to edit (rendered HTML, themes) vs. which are not (signed `.md` files)
+  - Explains operational implications of changing `POLIS_BASE_URL` without proper migration
+  - Moved from SECURITY-MODEL.md for better discoverability
+
 ## [0.40.0] - 2026-01-26
 
 ### Documentation

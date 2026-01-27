@@ -431,17 +431,3 @@ Clone a remote polis site for local analysis or backup.
 Options:
 - `--full` - Re-download all content (ignore cached state)
 - `--diff` - Only download new/changed content (default if previously cloned)
-
-### `polis snippet <file>`
-Publish a reusable template snippet.
-
-```bash
-./cli/bin/polis --json snippet snippets/about.md
-
-# From stdin
-echo "About text here" | ./cli/bin/polis --json snippet - --filename about.md --title "About"
-```
-
-Options:
-- `--filename <name>` - Output filename (for stdin)
-- `--title <title>` - Override title extraction

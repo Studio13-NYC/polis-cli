@@ -113,7 +113,6 @@ After running `polis init`, your directory will contain:
 │       └── sols/            # Nine Sols inspired theme
 ├── metadata/                 # Metadata files
 │   ├── public.jsonl         # Content index (JSONL format)
-│   ├── snippets.jsonl       # Snippet index (JSONL format)
 │   ├── blessed-comments.json # Index of approved comments
 │   ├── manifest.json        # Site metadata (active_theme, site_title)
 │   └── following.json       # Following list
@@ -217,32 +216,21 @@ polis republish posts/20260106/my-post.md
 - Uses unified diff format (compatible with `diff`/`patch` tools)
 - Enables version reconstruction
 
-### `polis snippet <file>`
+### Snippets
 
-Sign and publish a reusable template snippet.
+Snippets are reusable content fragments for templates. Unlike posts and comments, snippets don't require signing - just place plain `.md` or `.html` files in the `snippets/` directory.
 
 ```bash
-# Publish a snippet from file
-polis snippet snippets/homepage/about.md
+# Create a snippet - just write a file
+echo "Hi, I'm Vincent." > snippets/about.md
 
-# Publish from stdin
-echo "Welcome to my site!" | polis snippet -
-cat about.md | polis snippet --stdin
-
-# With custom filename (when using stdin)
-echo "Hello" | polis snippet - --filename homepage/greeting.html
-
-# JSON mode
-polis snippet snippets/partials/header.html --json
+# Use nested directories for organization
+mkdir -p snippets/homepage
+echo "<footer>© 2026</footer>" > snippets/homepage/footer.html
 ```
 
-**What it does:**
-1. Signs the snippet content with Ed25519 private key
-2. Adds frontmatter with metadata (title, published, version, signature)
-3. Appends entry to `metadata/snippets.jsonl` index
-
 **Snippets vs Themes:**
-- **Snippets** are signed content fragments stored in `snippets/` (global) or theme directories
+- **Snippets** are content fragments stored in `snippets/` (global) or theme directories
 - **Themes** are complete styling packages stored in `.polis/themes/`
 - Snippets can be included in templates using `{{> path/to/snippet}}`
 - Snippet lookup order: **global snippets first, then theme snippets** (author overrides theme)
@@ -257,18 +245,13 @@ polis snippet snippets/partials/header.html --json
 - `.md` files are processed through pandoc (markdown → HTML)
 - `.html` files are used as-is
 
-**Example snippet (`snippets/homepage/about.md`):**
+**Example snippet (`snippets/about.md`):**
 ```markdown
----
-title: About Section
-published: 2026-01-15T12:00:00Z
-version: sha256:abc123...
-signature: -----BEGIN SSH SIGNATURE-----...
----
-
 Hi, I'm Vincent. I build things with code and think deeply about
 how technology shapes human connection.
 ```
+
+**Note:** Snippets don't need frontmatter - just the content. If you have existing snippets with frontmatter from older versions, they'll continue to work (frontmatter is stripped during render).
 
 ### Publishing from stdin
 
@@ -1210,6 +1193,106 @@ curl https://alice.com/.well-known/polis | jq -r .public_key > alice.pub
 ssh-keygen -Y verify -f alice.pub -I alice@example.com -n file \
   -s signature.sig < content.txt
 ```
+
+### File Content Integrity
+
+Each published file (`.md`) - **both posts and comments** - contains two integrity fields in its frontmatter:
+
+**`current-version` (Content Hash)**
+
+The SHA-256 hash of the **entire file content** (frontmatter + body), canonicalized:
+
+```
+current-version: sha256:a1b2c3d4e5f6...
+```
+
+**Canonicalization** ensures consistent hashing:
+- Trailing whitespace removed from each line
+- Trailing empty lines removed
+- Exactly one newline at the end
+
+**`signature` (Cryptographic Signature)**
+
+The Ed25519 signature is computed over the **entire file content minus the signature field itself**, canonicalized:
+
+```
+signature: AAAAB3NzaC1lZDI1NTE5...
+```
+
+This means the signature covers:
+- All frontmatter fields (title, published, type, current-version, in-reply-to, etc.)
+- The entire body content
+
+### What Happens If You Edit Without Republishing
+
+If you manually edit a published post or comment and deploy without running `polis republish`:
+
+| Change Made | Hash Valid? | Signature Valid? | Consequence |
+|-------------|-------------|------------------|-------------|
+| Edit body text | ❌ No | ❌ No | Verification fails |
+| Edit title | ❌ No | ❌ No | Verification fails |
+| Edit published date | ❌ No | ❌ No | Verification fails |
+| Edit current-version | ❌ No | ❌ No | Verification fails |
+| Edit any frontmatter | ❌ No | ❌ No | Verification fails |
+| Trailing whitespace only | ✅ Maybe* | ✅ Maybe* | May pass due to canonicalization |
+
+*Canonicalization normalizes trailing whitespace, so minor whitespace changes may not break verification.
+
+**Practical consequences of editing without republishing:**
+
+1. **`polis preview <url>`** shows: "Signature: FAILED"
+2. **Other polis users** see the content as tampered/unverified
+3. **New blessing requests** may fail verification
+4. **Version history** becomes inconsistent (hash doesn't match content)
+
+**Safe fields to change:** None. Any edit to a published `.md` file requires `polis republish` to:
+- Recompute the content hash
+- Re-sign with your private key
+- Update the version history
+
+**Files you CAN safely edit:**
+- Rendered `.html` files (not signed, regenerated by `polis render`)
+- Theme/template files
+- Configuration files
+
+### What Happens If You Change POLIS_BASE_URL Without Migrating
+
+The canonical URL of your content is **not stored in the file itself** - it's derived from `POLIS_BASE_URL + file_path`. This means:
+
+**What's in the frontmatter:**
+```yaml
+# Posts - NO URL field
+title: My Post
+published: 2026-01-26T12:00:00Z
+current-version: sha256:...
+signature: ...
+
+# Comments - in-reply-to points to PARENT's URL, not yours
+in-reply-to:
+  url: https://other-person.com/posts/their-post.md
+  root-post: https://other-person.com/posts/their-post.md
+```
+
+**If you change `POLIS_BASE_URL` without running `polis migrate`:**
+
+| What | Status | Why |
+|------|--------|-----|
+| Your signatures | ✅ Valid | URL not in signed content |
+| Your content hashes | ✅ Valid | URL not in file content |
+| Discovery service records | ❌ Broken | Still indexed by old URLs |
+| Others' links to your posts | ❌ Broken | Point to old domain |
+| Others' `in-reply-to` fields | ❌ Broken | Their comments reference your old URLs |
+| Your `blessed-comments.json` | ❌ Broken | Post URLs use old domain |
+
+**Bottom line:** Cryptographically valid, but operationally broken.
+
+**Why `polis migrate` exists:**
+1. Updates discovery service URL indexes
+2. Creates signed migration announcement for others to verify
+3. Proves key continuity (same private key controls both domains)
+4. Allows followers to update their local references
+
+Always use `polis migrate <new-domain>` when changing domains - don't just edit `POLIS_BASE_URL`.
 
 ## Terminal User Interface (polis-tui)
 

@@ -23,12 +23,12 @@ set -e
 # ============================================================================
 # Precedence (highest to lowest):
 #   1. Environment variables
-#   2. .env file
-#   3. .well-known/polis config section
+#   2. .env file in CLI directory (shared across all polis sites)
+#   3. .well-known/polis config section (per-site)
 #   4. Hardcoded defaults
 
 # Fixed constants (never configurable - required for discovery)
-VERSION="0.40.0"
+VERSION="0.41.0"
 WELL_KNOWN_DIR=".well-known"
 WELL_KNOWN_FILE="polis"
 
@@ -89,7 +89,6 @@ load_wellknown_config() {
     [ -z "${PUBLIC_INDEX+x}" ] && PUBLIC_INDEX=$(echo "$config_json" | jq -r '.files.public_index // empty')
     [ -z "${BLESSED_COMMENTS+x}" ] && BLESSED_COMMENTS=$(echo "$config_json" | jq -r '.files.blessed_comments // empty')
     [ -z "${FOLLOWING_INDEX+x}" ] && FOLLOWING_INDEX=$(echo "$config_json" | jq -r '.files.following_index // empty')
-    [ -z "${SNIPPETS_INDEX+x}" ] && SNIPPETS_INDEX=$(echo "$config_json" | jq -r '.files.snippets_index // empty')
 }
 
 # Apply hardcoded defaults for any unset variables
@@ -118,7 +117,6 @@ apply_defaults() {
     : "${PUBLIC_INDEX:=metadata/public.jsonl}"
     : "${BLESSED_COMMENTS:=metadata/blessed-comments.json}"
     : "${FOLLOWING_INDEX:=metadata/following.json}"
-    : "${SNIPPETS_INDEX:=metadata/snippets.jsonl}"
     : "${MANIFEST:=metadata/manifest.json}"
 
     # Notification files (private, in .polis/)
@@ -126,9 +124,24 @@ apply_defaults() {
     : "${NOTIFICATIONS_MANIFEST:=.polis/notifications-manifest.json}"
 }
 
+# Resolve CLI directory (follow symlinks)
+get_cli_dir() {
+    local script_path="${BASH_SOURCE[0]}"
+    while [ -L "$script_path" ]; do
+        local link_dir="$(cd "$(dirname "$script_path")" && pwd)"
+        script_path="$(readlink "$script_path")"
+        [[ "$script_path" != /* ]] && script_path="$link_dir/$script_path"
+    done
+    local script_dir="$(cd "$(dirname "$script_path")" && pwd)"
+    dirname "$script_dir"
+}
+
 # Main configuration initialization
 init_config() {
-    load_env_file ".env"
+    # Load .env from CLI directory (shared across all polis sites)
+    local cli_dir
+    cli_dir="$(get_cli_dir)"
+    load_env_file "$cli_dir/.env"
     load_wellknown_config
     apply_defaults
 }
@@ -234,7 +247,6 @@ cmd_init() {
     local custom_public_index=""
     local custom_blessed_comments=""
     local custom_following_index=""
-    local custom_snippets_index=""
     local custom_versions_dir=""
     local custom_site_title=""
     local auto_register=false
@@ -273,10 +285,6 @@ cmd_init() {
                 custom_following_index="$2"
                 shift 2
                 ;;
-            --snippets-index)
-                custom_snippets_index="$2"
-                shift 2
-                ;;
             --versions-dir)
                 custom_versions_dir="$2"
                 shift 2
@@ -304,7 +312,6 @@ cmd_init() {
     local public_index="${custom_public_index:-$PUBLIC_INDEX}"
     local blessed_comments="${custom_blessed_comments:-$BLESSED_COMMENTS}"
     local following_index="${custom_following_index:-$FOLLOWING_INDEX}"
-    local snippets_index="${custom_snippets_index:-$SNIPPETS_INDEX}"
     local versions_dir="${custom_versions_dir:-$VERSIONS_DIR_NAME}"
 
     # Derive metadata directory from file paths
@@ -360,8 +367,7 @@ cmd_init() {
     "files": {
       "public_index": "$public_index",
       "blessed_comments": "$blessed_comments",
-      "following_index": "$following_index",
-      "snippets_index": "$snippets_index"
+      "following_index": "$following_index"
     }
   }
 }
@@ -393,11 +399,6 @@ EOF
 EOF
     files_created+=("$following_index")
     success_human "Created $following_index"
-
-    # Create empty snippets.jsonl index
-    > "$snippets_index"
-    files_created+=("$snippets_index")
-    success_human "Created $snippets_index index"
 
     # Create initial manifest.json
     local manifest_path="$metadata_dir/manifest.json"
@@ -441,25 +442,6 @@ EOF
         success_human "Created .gitignore (excludes private key)"
     fi
 
-    # Copy .env.example to .env if .env doesn't exist
-    local env_created=false
-    if [ ! -f ".env" ]; then
-        local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-        local cli_dir="$(dirname "$script_dir")"
-        local env_example="$cli_dir/.env.example"
-
-        if [ -f "$env_example" ]; then
-            cp "$env_example" ".env"
-            files_created+=(".env")
-            env_created=true
-            success_human "Created .env from .env.example"
-            warn "Please update .env with your configuration values"
-        fi
-    fi
-
-    # Copy default themes from same directory as polis script
-    local themes_copied=()
-
     # Resolve the actual script location (follow symlinks)
     local script_path="${BASH_SOURCE[0]}"
     while [ -L "$script_path" ]; do
@@ -468,6 +450,27 @@ EOF
         [[ "$script_path" != /* ]] && script_path="$link_dir/$script_path"
     done
     local script_dir="$(cd "$(dirname "$script_path")" && pwd)"
+    local cli_dir="$(dirname "$script_dir")"
+
+    # Check for .env in CLI directory (shared across all polis sites)
+    local env_created=false
+    local cli_env="$cli_dir/.env"
+    local cli_env_example="$cli_dir/.env.example"
+
+    if [ ! -f "$cli_env" ]; then
+        if [ -f "$cli_env_example" ]; then
+            cp "$cli_env_example" "$cli_env"
+            env_created=true
+            success_human "Created .env from .env.example in $cli_dir"
+            warn "Please update $cli_env with your configuration values"
+        else
+            warn ".env not found in CLI directory: $cli_dir"
+            info_human "Copy from GitHub repo: cp <repo-path>/cli/.env.example $cli_env"
+        fi
+    fi
+
+    # Copy default themes from same directory as polis script
+    local themes_copied=()
     local source_themes_dir="$script_dir/themes"
 
     if [ -d "$source_themes_dir" ]; then
@@ -1025,7 +1028,7 @@ extract_author_from_wellknown() {
         error "Polis not initialized. Run 'polis init' first."
     fi
 
-    local author=$(grep -m 1 '"email"' "$WELL_KNOWN_DIR/polis" | sed 's/.*"email": *"\([^"]*\)".*/\1/')
+    local author=$(jq -r '.email // empty' "$WELL_KNOWN_DIR/polis" 2>/dev/null)
 
     if [ -z "$author" ]; then
         error "Could not extract author email from .well-known/polis"
@@ -2296,7 +2299,7 @@ rebuild_blessed_comments_full() {
         "${POLIS_BLESSING_REQUESTS_ENDPOINT}?in_reply_to_domain=${domain}&blessing_status=blessed" 2>/dev/null)
 
     # Initialize fresh blessed-comments.json
-    echo "{\"version\":\"$VERSION\",\"comments\":[]}" > "$BLESSED_COMMENTS"
+    jq -n --arg v "$VERSION" '{version: $v, comments: []}' > "$BLESSED_COMMENTS"
 
     # Check if response is valid JSON with requests
     local request_count=$(echo "$response" | jq -r '.count // 0' 2>/dev/null)
@@ -2573,68 +2576,6 @@ rebuild_index() {
     success "Rebuilt public.jsonl ($total_count entries: $post_count posts, $comment_count comments)"
 }
 
-# Rebuild snippets.jsonl index from all snippet files
-rebuild_snippets_index() {
-    info "Rebuilding snippets.jsonl index..."
-
-    # Check if jq is available
-    if ! command -v jq > /dev/null 2>&1; then
-        error "jq not found. Please install jq: sudo apt-get install jq (or brew install jq on macOS)"
-    fi
-
-    # Truncate the index file
-    > "$SNIPPETS_INDEX"
-
-    # Counter
-    local snippet_count=0
-
-    # Helper function to process a snippet file and append JSONL entry
-    process_snippet() {
-        local file="$1"
-        local filename=$(basename "$file")
-
-        # Skip hash snapshot files and files in versions directory
-        if [[ "$filename" =~ ^[a-f0-9]{6}-[a-f0-9]{6}\.(md|html)$ ]] || [[ "$file" =~ /$VERSIONS_DIR_NAME/ ]]; then
-            return
-        fi
-
-        # Extract frontmatter fields
-        local title=$(grep -m 1 '^title:' "$file" | sed 's/^title: *//')
-        local published=$(grep -m 1 '^published:' "$file" | sed 's/^published: *//')
-        local version=$(grep -m 1 '^current-version:' "$file" | sed 's/^current-version: *//')
-
-        # Skip if missing required fields
-        if [ -z "$title" ] || [ -z "$published" ] || [ -z "$version" ]; then
-            return
-        fi
-
-        jq -nc \
-            --arg type "snippet" \
-            --arg path "$file" \
-            --arg title "$title" \
-            --arg published "$published" \
-            --arg current_version "$version" \
-            '{
-                type: $type,
-                path: $path,
-                title: $title,
-                published: $published,
-                current_version: $current_version
-            }' >> "$SNIPPETS_INDEX"
-
-        snippet_count=$((snippet_count + 1))
-    }
-
-    # Process all markdown and html files in snippets/
-    if [ -d "$SNIPPETS_DIR" ]; then
-        while IFS= read -r -d '' file; do
-            process_snippet "$file"
-        done < <(find "$SNIPPETS_DIR" \( -name "*.md" -o -name "*.html" \) -type f -print0 | sort -z)
-    fi
-
-    success "Rebuilt snippets.jsonl ($snippet_count snippets)"
-}
-
 # Generate manifest.json from public.jsonl
 # Contains summary metadata for efficient discovery polling
 generate_manifest() {
@@ -2705,7 +2646,7 @@ generate_manifest() {
 # Used by publish/comment for incremental updates
 append_to_index() {
     local file_path="$1"
-    local entry_type="$2"  # "post", "comment", or "snippet"
+    local entry_type="$2"  # "post" or "comment"
 
     # Extract frontmatter fields
     local title=$(grep -m 1 '^title:' "$file_path" | sed 's/^title: *//')
@@ -2736,20 +2677,6 @@ append_to_index() {
                     version: ($reply_version // null)
                 }
             }' >> "$PUBLIC_INDEX"
-    elif [ "$entry_type" = "snippet" ]; then
-        jq -nc \
-            --arg type "snippet" \
-            --arg path "$file_path" \
-            --arg title "$title" \
-            --arg published "$published" \
-            --arg current_version "$current_version" \
-            '{
-                type: $type,
-                path: $path,
-                title: $title,
-                published: $published,
-                current_version: $current_version
-            }' >> "$SNIPPETS_INDEX"
     else
         jq -nc \
             --arg type "post" \
@@ -2961,7 +2888,7 @@ _internal_beseech_from_file() {
     # Get author info from .well-known/polis
     local author=""
     if [ -f "$WELL_KNOWN_DIR/polis" ]; then
-        author=$(grep -m 1 '"email"' "$WELL_KNOWN_DIR/polis" | sed 's/.*"email": *"\([^"]*\)".*/\1/')
+        author=$(jq -r '.email // empty' "$WELL_KNOWN_DIR/polis" 2>/dev/null)
     fi
 
     # Validation checks
@@ -3916,7 +3843,8 @@ cmd_republish() {
     # Auto-detect content type from path, fall back to frontmatter
     local content_type=""
     if [[ "$input_file" == "$SNIPPETS_DIR/"* ]] || [[ "$input_file" == snippets/* ]]; then
-        content_type="snippet"
+        # Snippets no longer require signing - just edit them directly
+        json_error "republish" "INVALID_INPUT" "Snippets don't require signing. Just edit the file directly."
     elif [[ "$input_file" == "$COMMENTS_DIR/"* ]] || [[ "$input_file" == comments/* ]]; then
         content_type="comment"
     elif [[ "$input_file" == "$POSTS_DIR/"* ]] || [[ "$input_file" == posts/* ]]; then
@@ -3927,9 +3855,7 @@ cmd_republish() {
         [ -z "$content_type" ] && content_type="post"
     fi
 
-    if [ "$content_type" = "snippet" ]; then
-        info_human "Republishing snippet: $title"
-    elif [ "$content_type" = "comment" ]; then
+    if [ "$content_type" = "comment" ]; then
         info_human "Republishing comment: $title"
     else
         info_human "Republishing post: $title"
@@ -4088,12 +4014,8 @@ signature: $signature
     # Clean up temp files
     rm -f "$temp_file" "$content_only" "$old_content"
 
-    # Rebuild appropriate index based on content type
-    if [ "$content_type" = "snippet" ]; then
-        rebuild_snippets_index
-    else
-        rebuild_index
-    fi
+    # Rebuild index
+    rebuild_index
 
     # Request blessing from discovery service if this is a comment
     if [ "$content_type" = "comment" ]; then
@@ -5900,237 +5822,6 @@ signature: $signature
 
 # ============================================================================
 # SNIPPET COMMAND
-# ============================================================================
-
-# Command: polis snippet <file>
-# Publishes a snippet (signed composable content fragment)
-cmd_snippet() {
-    # Parse command-specific flags first
-    local explicit_filename=""
-    local explicit_title=""
-    local positional_args=()
-
-    while [[ $# -gt 0 ]]; do
-        case $1 in
-            --filename)
-                explicit_filename="$2"
-                shift 2
-                ;;
-            --title)
-                explicit_title="$2"
-                shift 2
-                ;;
-            *)
-                positional_args+=("$1")
-                shift
-                ;;
-        esac
-    done
-
-    # Restore positional arguments
-    set -- "${positional_args[@]}"
-
-    local input_file="$1"
-
-    if [ -z "$input_file" ]; then
-        json_error "snippet" "INVALID_INPUT" "Usage: polis snippet <filename>\n       polis snippet - [--filename <name>] [--title <title>]"
-    fi
-
-    if [ ! -f "$KEYS_DIR/id_ed25519" ]; then
-        json_error "snippet" "INVALID_STATE" "Polis not initialized. Run 'polis init' first."
-    fi
-
-    # Check for stdin mode
-    local stdin_mode=false
-    local temp_stdin=""
-
-    if [ "$input_file" = "-" ]; then
-        stdin_mode=true
-
-        # Verify stdin is not a terminal (has actual content)
-        if [ -t 0 ]; then
-            json_error "snippet" "INVALID_INPUT" "No stdin content. Use: echo 'content' | polis snippet -"
-        fi
-
-        # Create temp file and read stdin
-        temp_stdin=$(mktemp)
-        cat > "$temp_stdin"
-
-        # Verify content
-        if [ ! -s "$temp_stdin" ]; then
-            rm -f "$temp_stdin"
-            json_error "snippet" "INVALID_INPUT" "Stdin content is empty"
-        fi
-
-        # Point input_file to temp file
-        input_file="$temp_stdin"
-
-        info_human "Reading content from stdin..."
-    else
-        # Regular file mode - check file exists
-        if [ ! -f "$input_file" ]; then
-            json_error "snippet" "FILE_NOT_FOUND" "File not found: $input_file"
-        fi
-    fi
-
-    # Ensure temp file cleanup on exit or error
-    cleanup_stdin() {
-        if [ -n "$temp_stdin" ] && [ -f "$temp_stdin" ]; then
-            rm -f "$temp_stdin"
-        fi
-    }
-    trap cleanup_stdin EXIT ERR
-
-    # Check if file already has frontmatter (already published)
-    if [ "$stdin_mode" = false ] && has_frontmatter "$input_file"; then
-        json_error "snippet" "INVALID_STATE" "File already published (has frontmatter). Use 'polis republish' to update it."
-    fi
-
-    # Store original file path for cleanup later
-    local original_file="$input_file"
-
-    # Determine target path within snippets directory
-    local target_path
-    if [ -n "$explicit_filename" ]; then
-        # Explicit filename takes precedence
-        target_path="$SNIPPETS_DIR/$explicit_filename"
-        # Ensure .md or .html extension
-        if [[ ! "$target_path" =~ \.(md|html)$ ]]; then
-            target_path="${target_path}.md"
-        fi
-    elif [ "$stdin_mode" = true ]; then
-        # Generate synthetic filename for stdin
-        local timestamp_filename=$(date +%Y%m%d-%H%M%S)
-        target_path="$SNIPPETS_DIR/stdin-${timestamp_filename}.md"
-    else
-        # Check if input is already under snippets directory
-        if [[ "$input_file" == "$SNIPPETS_DIR/"* ]]; then
-            target_path="$input_file"
-        else
-            # Use basename under snippets/
-            target_path="$SNIPPETS_DIR/$(basename "$input_file")"
-        fi
-    fi
-
-    # Create parent directories if needed
-    mkdir -p "$(dirname "$target_path")"
-
-    if [ "$stdin_mode" = true ]; then
-        info_human "Publishing snippet from stdin as $target_path..."
-    else
-        info_human "Publishing snippet $original_file..."
-    fi
-
-    # Extract or use explicit title
-    local title
-    if [ -n "$explicit_title" ]; then
-        title="$explicit_title"
-    else
-        title=$(extract_title "$input_file")
-        # If stdin and title is temp filename fallback, use target_path instead
-        if [ "$stdin_mode" = true ] && [[ "$title" =~ ^tmp\. ]]; then
-            title=$(basename "$target_path" | sed 's/\.[^.]*$//' | sed 's/-/ /g' | \
-                    awk '{for(i=1;i<=NF;i++)sub(/./,toupper(substr($i,1,1)),$i)}1')
-        fi
-    fi
-    info_human "Extracted title: $title"
-
-    # Get current timestamp
-    local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-
-    # Read original content
-    local content=$(cat "$input_file")
-
-    # Hash the canonicalized content for consistent verification
-    local content_hash=$(hash_content_canonical "$input_file")
-    local hash_short="${content_hash:0:6}-${content_hash: -6}"
-
-    info_human "Content hash: sha256:$content_hash"
-    info_human "Short hash: $hash_short"
-
-    # Create frontmatter (without signature first)
-    local frontmatter_template="---
-title: $title
-published: $timestamp
-generator: polis-cli/$VERSION
-current-version: sha256:$content_hash
-version-history:
-  - sha256:$content_hash ($timestamp)
----"
-
-    # Create temporary file with frontmatter + content (for signing)
-    local temp_file=$(mktemp)
-    echo "$frontmatter_template" > "$temp_file"
-    echo "" >> "$temp_file"
-    cat "$input_file" >> "$temp_file"
-
-    # Sign the file
-    info_human "Signing file..."
-    local signature=$(sign_file "$temp_file")
-
-    # Create final frontmatter with signature
-    local frontmatter="---
-title: $title
-published: $timestamp
-generator: polis-cli/$VERSION
-current-version: sha256:$content_hash
-version-history:
-  - sha256:$content_hash ($timestamp)
-signature: $signature
----"
-
-    # Write canonical file
-    echo "$frontmatter" > "$target_path"
-    echo "" >> "$target_path"
-    cat "$input_file" >> "$target_path"
-    success_human "Created snippet: $target_path"
-
-    # Initialize version history with full content
-    initialize_version_history "$target_path" "$content_hash" "$timestamp" "$content"
-    local versions_file=$(get_versions_file_path "$target_path")
-    success_human "Created versions file: $versions_file"
-
-    # Clean up temp file
-    rm -f "$temp_file"
-
-    # Handle cleanup based on mode
-    if [ "$stdin_mode" = true ]; then
-        success_human "Published snippet from stdin to $target_path"
-    else
-        # Remove original file if it's not already in the snippets directory
-        local target_abs=$(realpath "$target_path" 2>/dev/null || readlink -f "$target_path" 2>/dev/null || echo "$target_path")
-        local input_abs=$(realpath "$input_file" 2>/dev/null || readlink -f "$input_file" 2>/dev/null || echo "$input_file")
-        if [ "$input_abs" != "$target_abs" ]; then
-            rm -f "$original_file"
-            success_human "Moved original file into snippets/"
-        fi
-    fi
-
-    # Append to snippets.jsonl index
-    append_to_index "$target_path" "snippet"
-
-    # Output results
-    if [ "$JSON_MODE" = true ]; then
-        local result=$(jq -n \
-            --arg path "$target_path" \
-            --arg hash "sha256:$content_hash" \
-            --arg timestamp "$timestamp" \
-            --arg sig "$signature" \
-            '{
-                file_path: $path,
-                content_hash: $hash,
-                timestamp: $timestamp,
-                signature: $sig
-            }')
-        json_success "snippet" "$result"
-    else
-        success "Snippet published!"
-        echo ""
-        info "Canonical: $target_path"
-        info "Versions:  $versions_file"
-    fi
-}
-
 # ============================================================================
 # DOMAIN MIGRATION COMMAND
 # ============================================================================
@@ -8925,6 +8616,13 @@ cmd_render() {
         json_error "render" "INVALID_STATE" "Polis not initialized. Run 'polis init' first."
     fi
 
+    # Validate POLIS_BASE_URL is set (required for canonical URLs)
+    if [ -z "$POLIS_BASE_URL" ]; then
+        local cli_dir
+        cli_dir="$(get_cli_dir)"
+        json_error "render" "MISSING_CONFIG" "POLIS_BASE_URL is not set. Configure it in $cli_dir/.env or set it as an environment variable."
+    fi
+
     # Validate manifest JSON
     validate_manifest || exit 1
 
@@ -9094,9 +8792,6 @@ main() {
         comment)
             cmd_comment "$@"
             ;;
-        snippet)
-            cmd_snippet "$@"
-            ;;
         preview)
             cmd_preview "$@"
             ;;
@@ -9176,8 +8871,6 @@ main() {
             echo "  polis post -                    Post from stdin (use --filename, --title for options)"
             echo "  polis comment <file> [url]      Create a comment on a post"
             echo "  polis comment - <url>           Comment from stdin (use --filename, --title for options)"
-            echo "  polis snippet <file>            Publish a reusable template snippet"
-            echo "  polis snippet -                 Snippet from stdin (use --filename, --title for options)"
             echo "  polis republish <file>          Update an already-published file (auto-detects type)"
             echo "  polis preview <url>             Preview a post or comment at a URL with signature verification"
             echo "  polis extract <file> <hash>     Reconstruct a specific version of a file"

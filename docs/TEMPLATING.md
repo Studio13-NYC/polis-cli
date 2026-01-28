@@ -274,7 +274,7 @@ Use `{{#section}}...{{/section}}` for loops:
 | Variable | Description | Example |
 |----------|-------------|---------|
 | `{{site_url}}` | Base URL from `POLIS_BASE_URL` | `https://example.com` |
-| `{{site_title}}` | From `manifest.json` or domain fallback | `My Polis Site` |
+| `{{site_title}}` | From `.well-known/polis` or domain fallback | `My Polis Site` |
 | `{{year}}` | Current year (for copyright) | `2026` |
 
 ### Post and Comment Templates
@@ -383,14 +383,15 @@ The theme system reads site information from `metadata/manifest.json`:
 
 ```json
 {
-  "version": "0.27.0",
+  "version": "0.42.0",
   "active_theme": "turbo",
   "last_published": "2026-01-14T00:00:00Z",
   "post_count": 5,
-  "comment_count": 3,
-  "site_title": "My Polis Site"
+  "comment_count": 3
 }
 ```
+
+Note: `site_title` is stored in `.well-known/polis`, not in `manifest.json`.
 
 Set the site title during initialization: `polis init --site-title "My Site"`
 

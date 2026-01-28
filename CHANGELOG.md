@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.42.0] - 2026-01-28
+
+### Changed
+- **Site title storage location** - Moved from `manifest.json` to `.well-known/polis` for semantic consistency
+  - Identity metadata now lives with the identity file
+  - Remote author attribution fetches `.well-known/polis` instead of `manifest.json`
+  - Existing sites should add `site_title` to their `.well-known/polis` file
+  - Documentation updated across USAGE.md, TEMPLATING.md, and GLOSSARY.md
+
+- **`.env` file lookup order** - Simplified to two locations
+  - Current working directory (`.env`) for per-site configuration
+  - Home directory (`~/.polis/.env`) for shared configuration across sites
+  - Per-site config takes precedence over shared config
+
+### Fixed
+- **`polis render` error message** - Now shows correct `.env` lookup paths in error output
+
 ## [0.41.0] - 2026-01-26
 
 ### Removed

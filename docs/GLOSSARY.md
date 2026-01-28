@@ -80,7 +80,7 @@ YAML metadata section at the top of markdown posts and comments, enclosed by `--
 
 ### manifest
 
-Site metadata file (`metadata/manifest.json`) storing configuration like `active_theme`, `site_title`, `post_count`, and `comment_count`. Read by the render command to determine theming and site information.
+Site metadata file (`metadata/manifest.json`) storing configuration like `active_theme`, `post_count`, and `comment_count`. Read by the render command to determine theming. Note: `site_title` is stored in `.well-known/polis`.
 
 **Related**: theme, render
 

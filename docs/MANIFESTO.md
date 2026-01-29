@@ -1,146 +1,129 @@
-# Polis: The Social Network for the Open Web
+# Polis: A Social Layer for the Open Web
 
----
+## The Consensus Position
 
-## The Thesis
-
-Every attempt to "fix" social media has made the same mistake: competing with platforms on their terms. Build a better Twitter. A more decentralized Facebook. A less toxic Instagram.
-
-Polis asks a different question: **What if social networking didn't require a network at all?**
-
-The open web already exists. Billions of pages, accessible to anyone with a browser. The infrastructure is there. What's missing is the social layer—the discovery, the conversation, the sense of community that platforms captured and enclosed.
-
-Polis doesn't build a new network. It adds a social layer to the web that already exists. Your content stays on your domain. Your identity is your URL. The "platform" is just a coordination point that helps people find each other.  All of this made to feel either like a CLI or a creator platform depending on how you want it to work.
-
-The architecture scales from blogging tool to Instagram clone and everything in between.
-
----
-
-## Kingdoms Need Walls
-
-Platform economics have a gravity that pulls everything toward extraction:
+Social media platforms are walled gardens. Your content, your audience, your identity—all held at the pleasure of a company that can change the rules, alter the algorithm, or disappear entirely.
 
 - **Substack** takes 10% and owns the subscriber list—you're a tenant, not an owner
 - **Medium** shows competitor content below your articles—your readers are their product
 - **Twitter/X** can vaporize your account and audience with no recourse
 - **LinkedIn** charges you to reach followers you already have
 
-The "alternatives" accept the premise that you need *someone's* infrastructure. Mastodon requires Rails + PostgreSQL + Redis. Nostr scatters your content across relay servers you don't control. Bluesky promises decentralization while running a centralized service.
-
-**They're all building better cages.** Polis asks why you need a cage at all.
-
-The infrastructure for publishing is already free and permanent: static file hosting. GitHub Pages. Vercel. Cloudflare. Your own server. Content that exists as files on your domain cannot be deplatformed, rate-limited, or algorithmically suppressed. It's just... there. On the web. Forever.
+We need a better meeting place.
 
 ---
 
-## What Polis Actually Is
+## Where Previous Attempts Went Wrong
 
-On the surface: a tool for publishing signed markdown files to your domain.
+Most decentralization efforts started from the question: "How do we build Twitter/Facebook, but decentralized?"
 
-Underneath: **a protocol for making the open web social.**
+This framing begs for complex architectures based on federation protocols and instance selection.
 
-Every Polis site exposes content indexes and metadata in standard formats. This transforms static websites into nodes in a social graph that humans *or* AI can traverse, query, and reason about.
+The result: systems that are difficult to explain, challenging to configure and deploy, confusing to join, and not useful until you've already convinced your friends to switch.  It's just a different kind of lock-in.
 
-**The primitives are deliberately simple:**
+Polis asks a different question.
 
-| What | How | Why It Matters |
-|------|-----|----------------|
+---
+
+## A Different Starting Question
+
+What if social didn't require a platform?
+
+Not "how do I claim my social space" but **"how do we gather without a third party dictating the terms?"**
+
+This framing changes the possibilities:
+
+- A private group of five people sharing links and commentary? That works.
+- A solo writer publishing essays and fielding responses? Same primitives.
+- A community that wants shared ownership, no single authority? Also possible.
+- A commons that nobody owns? The architecture supports it.
+
+The key shift: Polis' primitives don't have an agenda. They can be assembled into any shape. The system is agnostic to governance—it just provides the building blocks for gathering and conversation. What you do with them is up to the people involved, not the platform.
+
+---
+
+## The Architecture That Follows
+
+**Self-hostable by default.** No instance to choose, no federation to configure. The software runs wherever you want it to run—from Vercel to your own server to a managed server or whitelabeled app. Content that exists as files on your domain cannot be deplatformed, rate-limited, or algorithmically suppressed. It's just there. On the web.
+
+**Composable primitives.** Posts, comments, identity, discovery—each is a separable concern. Use what you need. The same pieces work for someone running a private group and someone building a public forum.
+
+**Plain text and well-known structures.** Markdown files, predictable paths, signed content. No proprietary formats, no API required to read your own data.
+
+| Primitive | Implementation | Why It Matters |
+|-----------|----------------|----------------|
 | **Content** | Markdown + cryptographic signatures | Files, not database records. Impossible to lock in. |
-| **Identity** | Your domain | `alice.com`, not `npub1x7fq...` or `@alice@mastodon.social` |
+| **Identity** | Your domain + private key | `alice.com`, not `npub1x7fq...` or `@alice@mastodon.social` |
 | **Hosting** | Static files | GitHub Pages, Vercel, your own nginx. Already free. |
 | **Discovery** | Coordination service + AI | A thin layer, not a platform |
 
 The magic isn't in any single piece—it's in what emerges when you combine them.
 
-**This is social networking without a social network.**
+---
 
-Want full CLI control and self-hosting?  No problem.  Prefer if Polis feels like Twitter?  Same.
+## How the Social Part Works
+
+"But wait, am I just going to be screaming into the void?  How do people find me?"  Polis' **Discovery Service** is a layer of metadata management. The Discovery Service doesn't store content.  It stores metadata about the content on the network to enable connection and discovery.
+
+Most users will rely on the canonical Discovery Service. Some communities will run their own. Some users may use none at all. Nothing breaks. The Discovery Service improves the experience but the experience doesn't depend on it.
+
+"Ugh.  But public content == endless spam."  Nope.  With Polis' **blessing model** your comments publish to your server.  The original post's author can amplify them (or not) but the comment lives on.
+
+Conversations aren't censored. They're curated.
+
+"What if I don't want all of my content to be public?"  You control your infrastructure, so you control access. Don't list something in your public metadata and it's unlisted. Use server rules to restrict access. Put an authentication layer in front. Encrypt content for specific recipients.
+
+The internet already solved these problems.  Polis isn't trying to re-invent solutions.
 
 ---
 
-## "But Wait—How Does the Social Part Work?"
+## Seven Experience Levels, One Model
 
-The immediate question: if everyone publishes to their own domain, how do comments, sharing, and discovery happen?
+Polis defines [seven experience levels](https://github.com/vdibart/polis-cli/blob/main/docs/EXPERIENCE-PRINCIPLES.md), from CLI power user to casual content creator. At each layer, Polis presents a natural system interface with an underlying guarantee: moving between layers (e.g. from managed hosting to self-hosting) or within layers (e.g. from one managed host to another) is frictionless.
 
-Polis' Discovery Service is a federated layer of metadata management.  It does not store content, it stores the minimal information about the content to enable connection, discovery, and analysis of content that is shared across the network.
-
-Most users will rely on the canonical Discovery Service.  Some communities will opt to run their own Discovery Service.  Some users may decide to use no Discovery Service at all.  Nothing breaks.  The Discovery Service improves the experience but the experience doesn't rely on it.
-
-**What about private or premium content?** You control your domain, so you control access. The spectrum is natural: don't list something in your public metadata and it's unlisted. Use `.htaccess` or server rules to restrict access. Put an application layer in front for authentication. Encrypt content for specific recipients. These aren't Polis features—they're standard web capabilities that work because your content is on infrastructure you control.
-
-Polis isn't trying to re-invent anything.  It's trying to restore what has already been invented to make the open web fun again.
+This is not a policy or a promise. This is the design.
 
 ---
 
 ## Where This Goes
 
-Today, Polis looks like a blogging tool. But the primitives peer into the future: conversations across domains, reputation as cryptographic history you own, AI agents navigating the social graph on your behalf, community moderation through shared blocklists and curated discovery.
+Today, Polis looks like a publishing tool. But the primitives point somewhere:
 
-What if the extractive, centralized internet isn't inevitable—just the result of constraints that no longer apply?
-
-**If the primitives work, the implications compound:**
-
-- Publishing becomes signing files to your domain. No platform needed.
-- Following becomes a list of URLs. No algorithm decides what you see.
-- Conversation becomes linked posts across domains. No one owns the thread.
-- Reputation becomes your cryptographic history. No platform can grant or revoke it.
+- **Publishing** becomes signing files to your domain. No platform needed.
+- **Following** becomes a list of URLs. No algorithm decides what you see.
+- **Conversation** becomes linked posts across domains. No one owns the thread.
+- **Reputation** becomes your cryptographic history. No platform can grant or revoke it.
 
 Taken to its logical end, this inverts the structure of the internet. Instead of platforms owning your content and identity, you own them—and platforms (if they exist at all) compete to provide services on top of what you control.
 
-**That's the long-term vision. Not a better social network, but the end of social networks as a category.**
+That's the long-term vision. Not a better social network, but the end of social networks as a category.
 
 ---
 
-## The End of Spam: The Blessing Model
+## An Emergent Benefit
 
-Comments on platforms face a trilemma: allow spam, require heavy-handed censorship, or disable comments entirely. Polis sidesteps this with **blessing**—anyone can comment by publishing on their domain, but you choose which comments to amplify to your audience. Unblessed comments still exist publicly; they're just not promoted.
+It turns out that the same properties that make content portable and governance-agnostic—structured data, plain text, predictable locations—also make it friendly for AI agents.
 
-**Comments aren't censored. They're curated.**
+Most platforms are actively hostile to automated access. Polis content is readable by anything that can fetch a URL and parse markdown.
 
----
+This isn't a bet on any particular AI future. It's a consequence of building for simplicity and openness.
 
-## Seven Experience Levels, One Ownership Model
-
-Polis defines [Seven Experience Levels](EXPERIENCE-PRINCIPLES.md) from CLI power user to casual content creator.  At each layer Polis presents a natural, thoughtful interface with the underlying guarantee that moving between the layers (e.g. from managed hosting to self-hosting) or within layers (e.g. move from one managed hosting service to another) is completely frictionless.
-
-**This is not a policy, this is the design.**
-
----
-
-## Why Now
-
-The conditions that made platforms necessary are disappearing:
-
-**AI eliminates the discovery problem.** Platforms existed because browsing distributed content was tedious. AI changes this—it can traverse, filter, and summarize content across domains as easily as querying a database. The convenience moat is gone.
-
-**Hosting became free and permanent.** GitHub Pages. Vercel. Cloudflare Pages. Static file hosting costs nothing, requires no maintenance, and will outlive any VC-funded startup.
-
-**Platform trust is collapsing.** Musk's Twitter. Meta's pivots. TikTok bans. LinkedIn's pay-to-reach model. People now understand viscerally that platforms are not neutral infrastructure—they're businesses that will eventually optimize against user interests.
-
----
-
-## Competitive Position
-
-Others got pieces right—Nostr's cryptography, Mastodon's federation, Bluesky's protocol ambition—but all still require specialized infrastructure, clients, or trust in specific services. Polis uses the web itself: your content is HTML accessible to any browser, your identity is a domain name meaningful to humans, and self-hosting means uploading files, not running servers.
-
-The goal isn't to win users from Twitter or Mastodon. It's to make the open web social again—and let people realize they don't need platforms at all.
+The conditions that made platforms necessary are also disappearing: hosting became free and permanent, platform trust is collapsing, and discovery no longer requires a centralized feed. The convenience moat is eroding.
 
 ---
 
 ## Business Model: Open Core
 
-**The line is clear:** Everything below the ownership bar is free and open. Above that bar, paid services provide convenience.
+The line is clear: everything below the ownership bar is free and open. Above that bar, paid services provide convenience.
 
 **Always free:**
-- CLI tool, protocol spec, data format
-- Desktop and simple web interfaces
-- Ability to export, self-host, switch providers
+- access to your content
+- baseline tools (CLI / webapp), protocol spec, data format
+- Ability to crawl content, switch providers
 
 **Potentially paid:**
 - Managed hosting and domain provisioning
-- Real-time data access
-- Advanced analytics and scheduling
-- Priority support and onboarding
+- Real-time data firehose, advanced analytics
 - Specialized discovery services
 
 **The test:** Can a technical user do this for free? If yes, the paid version is convenience, not lock-in.
@@ -153,8 +136,8 @@ Polis is built lean by design—one person and AI, minimal infrastructure, no ex
 
 What it needs is people who care about this problem:
 
-- **Early adopters** who'll tolerate CLI rough edges because they understand what ownership means
+- **Early adopters** who'll tolerate rough edges because they understand what's at stake
 - **Builders** who see the primitives and want to create clients, tools, or discovery services
 - **Critics** who can stress-test the model and find where it breaks
 
-The goal has never been to compete with Twitter on scale. It's to prove that social networking can work without platforms—and to build the infrastructure so that when people are ready to leave, there's somewhere real to go.
+The goal has never been to compete with Twitter on scale. It's to prove that social can work without platforms—and to build the infrastructure so that when people are ready to leave, there's somewhere real to go.

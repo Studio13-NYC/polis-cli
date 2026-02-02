@@ -1,7 +1,11 @@
 <!--
     Polis Theme: Zane - Comment Page Template
 
-    Snippets loaded by this template: none
+    Snippets loaded by this template:
+    - theme:blessed-comment - Blessed comment block (theme: snippets/blessed-comment.html)
+
+    To override a theme snippet, create a global snippet with the same name
+    and change the "theme:" prefix to use the global version instead.
 -->
 <!DOCTYPE html>
 <html lang="en">
@@ -45,6 +49,20 @@
             </div>
         </div>
     </article>
+
+    <!-- Replies (Blessed Comments on this Comment) -->
+    <section class="comments">
+        <div class="container">
+            <div class="comments-header">
+                <h2 class="comments-title">Replies ({{blessed_count}})</h2>
+            </div>
+            <div class="comments-list">
+{{#blessed_comments}}
+                {{> theme:blessed-comment}}
+{{/blessed_comments}}
+            </div>
+        </div>
+    </section>
 
     <!-- Footer -->
     <footer class="site-footer">

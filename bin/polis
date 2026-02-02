@@ -28,7 +28,7 @@ set -e
 #   4. Hardcoded defaults
 
 # Fixed constants (never configurable - required for discovery)
-VERSION="0.42.0"
+VERSION="0.43.0"
 WELL_KNOWN_DIR=".well-known"
 WELL_KNOWN_FILE="polis"
 
@@ -333,6 +333,11 @@ cmd_init() {
 
     info_human "Generating Ed25519 keypair..."
     ssh-keygen -t ed25519 -f "$keys_dir/id_ed25519" -N "" -C "polis@$(hostname)" > /dev/null 2>&1
+
+    # Set explicit permissions for security (private key readable only by owner)
+    chmod 600 "$keys_dir/id_ed25519"
+    chmod 644 "$keys_dir/id_ed25519.pub"
+
     success_human "Generated Ed25519 keypair at $keys_dir/"
 
     # Get public key for metadata
@@ -594,6 +599,25 @@ validate_manifest() {
     return 0
 }
 
+# Validate .well-known/polis JSON syntax
+validate_wellknown() {
+    if [ ! -f "$WELL_KNOWN_DIR/polis" ]; then
+        error ".well-known/polis not found"
+        error "Run 'polis init' to create a new site."
+        return 1
+    fi
+
+    local jq_error
+    if ! jq_error=$(jq empty "$WELL_KNOWN_DIR/polis" 2>&1); then
+        error "Invalid JSON in .well-known/polis"
+        error "JSON parse error: $jq_error"
+        error "Please fix the syntax error and try again."
+        return 1
+    fi
+
+    return 0
+}
+
 # Extract version history lines
 extract_version_history() {
     local file="$1"
@@ -621,12 +645,16 @@ extract_title() {
     echo "$title"
 }
 
-# Canonicalize content by trimming trailing whitespace/newlines
+# Canonicalize content by trimming leading/trailing whitespace/newlines
 # This ensures consistent signing/hashing regardless of editor or transfer differences
 # Result always ends with exactly one newline
+# IMPORTANT: Must match webapp (publish.go) and validator (parser.js) behavior
 canonicalize_content() {
     local content="$1"
     local trimmed
+    # First strip leading empty lines (match webapp's TrimLeft and validator's /^\n+/)
+    # sed '/./,$!d' prints from first non-empty line to end
+    content=$(printf '%s' "$content" | sed '/./,$!d')
     # Remove trailing whitespace from each line, then remove trailing empty lines
     # Finally add exactly one newline at the end
     # Note: /^$/ matches empty lines, the pattern accumulates trailing empties and deletes at EOF
@@ -898,9 +926,14 @@ _reconstruct_version_backward() {
     # Get current version hash from versions file
     local current_hash=$(grep "^# CURRENT_HASH=" "$versions_file" | sed 's/^# CURRENT_HASH=//')
 
-    # Extract current content (without frontmatter)
+    # Extract current content (without frontmatter), then canonicalize it
+    # This is critical: patches in .versions were created against canonical content,
+    # so we must canonicalize before applying reverse patches
     local temp_current=$(mktemp)
-    extract_content_without_frontmatter "$canonical_file" > "$temp_current"
+    local temp_raw=$(mktemp)
+    extract_content_without_frontmatter "$canonical_file" > "$temp_raw"
+    canonicalize_file "$temp_raw" > "$temp_current"
+    rm -f "$temp_raw"
 
     # Walk backward through version chain
     local current_version="$current_hash"
@@ -930,7 +963,8 @@ _reconstruct_version_backward() {
         echo "$diff_content" > "$temp_diff"
 
         local temp_patched=$(mktemp)
-        if patch -R -s -o "$temp_patched" "$temp_work" "$temp_diff" 2>/dev/null; then
+        # Suppress both stdout and stderr - patch writes "hunk FAILED" to stdout
+        if patch -R -s -o "$temp_patched" "$temp_work" "$temp_diff" > /dev/null 2>&1; then
             cp "$temp_patched" "$temp_work"
             rm -f "$temp_patched" "$temp_diff"
         else
@@ -978,6 +1012,7 @@ _reconstruct_version_forward() {
     done
 
     # First version in chain is base - extract its full content
+    # Note: awk's print adds a newline after each line
     local base_hash="${version_chain[0]}"
     local temp_work=$(mktemp)
     extract_full_content_for_version "$versions_file" "$base_hash" > "$temp_work"
@@ -997,12 +1032,23 @@ _reconstruct_version_forward() {
         echo "$diff_content" > "$temp_diff"
 
         local temp_patched=$(mktemp)
-        if patch -s -o "$temp_patched" "$temp_work" "$temp_diff" 2>/dev/null; then
+        # Try patching with current content (which has trailing newline from awk)
+        # If that fails, try stripping the trailing newline (for old diffs created
+        # before StripFrontmatter was fixed to preserve trailing newlines)
+        if patch -s -o "$temp_patched" "$temp_work" "$temp_diff" > /dev/null 2>&1; then
             cp "$temp_patched" "$temp_work"
             rm -f "$temp_patched" "$temp_diff"
         else
-            rm -f "$temp_work" "$temp_patched" "$temp_diff"
-            error "Failed to apply forward patch for version ${version_hash:0:13}..."
+            # Try without trailing newline (for legacy diffs)
+            local temp_no_newline=$(mktemp)
+            perl -pe 'chomp if eof' "$temp_work" > "$temp_no_newline"
+            if patch -s -o "$temp_patched" "$temp_no_newline" "$temp_diff" > /dev/null 2>&1; then
+                cp "$temp_patched" "$temp_work"
+                rm -f "$temp_patched" "$temp_diff" "$temp_no_newline"
+            else
+                rm -f "$temp_work" "$temp_patched" "$temp_diff" "$temp_no_newline"
+                error "Failed to apply forward patch for version ${version_hash:0:13}..."
+            fi
         fi
     done
 
@@ -1046,6 +1092,18 @@ extract_domain_from_url() {
     # ${domain%%/*} removes everything from the first / onwards
     domain="${domain%%/*}"
     echo "$domain"
+}
+
+# Normalize a URL to use .md extension instead of .html
+# Polis stores all content URLs with .md extension in the database
+# This ensures consistency regardless of input format
+normalize_url_to_md() {
+    local url="$1"
+    if [[ "$url" == *.html ]]; then
+        echo "${url%.html}.md"
+    else
+        echo "$url"
+    fi
 }
 
 # Check if a URL is a comment (vs a post)
@@ -3394,6 +3452,10 @@ cmd_comment() {
         fi
     fi
 
+    # Normalize URL to always use .md extension
+    # Discovery service stores all URLs with .md, so we normalize here for consistency
+    reply_to_url=$(normalize_url_to_md "$reply_to_url")
+
     if [ "$JSON_MODE" = false ]; then
         echo ""
     fi
@@ -3413,6 +3475,8 @@ cmd_comment() {
             warn_human "Using immediate parent URL as root_post (may cause issues)."
             root_post="$reply_to_url"
         else
+            # Normalize root_post as well (in case discovery service returned .html)
+            root_post=$(normalize_url_to_md "$root_post")
             info_human "Root post: $root_post"
         fi
     else
@@ -3862,21 +3926,53 @@ cmd_republish() {
     old_hash="${old_hash#sha256:}"
 
     # Extract NEW content without frontmatter (user has edited the file)
+    # Then canonicalize it - this ensures consistent hashing and diff generation
     local content_only=$(mktemp)
-    extract_content_without_frontmatter "$input_file" > "$content_only"
+    local content_raw=$(mktemp)
+    extract_content_without_frontmatter "$input_file" > "$content_raw"
+    canonicalize_file "$content_raw" > "$content_only"
+    rm -f "$content_raw"
 
     # Create temp file for old content (will be filled from .versions file)
     local old_content=$(mktemp)
 
-    # Hash the new content (canonical for consistent verification)
-    local new_hash=$(hash_content_canonical "$content_only")
+    # Hash the canonical content
+    local new_hash=$(hash_content "$content_only")
     local hash_short="${new_hash:0:6}-${new_hash: -6}"
 
     info_human "New content hash: sha256:$new_hash"
     info_human "Short hash: $hash_short"
 
+    # Extract in-reply-to section if this is a comment (needed for URL normalization check)
+    local in_reply_to=""
+    local in_reply_to_original=""
+    local urls_need_normalization=false
+    if [ "$content_type" = "comment" ]; then
+        in_reply_to_original=$(extract_in_reply_to "$input_file")
+        if [ -z "$in_reply_to_original" ]; then
+            error "Comment file missing in-reply-to section"
+        fi
+        # Normalize URLs in in_reply_to section (.html -> .md)
+        in_reply_to=$(echo "$in_reply_to_original" | while IFS= read -r line; do
+            if [[ "$line" =~ ^[[:space:]]+(url|root-post):[[:space:]]*(.*\.html)$ ]]; then
+                # Normalize .html to .md
+                local key="${BASH_REMATCH[1]}"
+                local url="${BASH_REMATCH[2]}"
+                echo "  ${key}: ${url%.html}.md"
+            else
+                echo "$line"
+            fi
+        done)
+        # Check if normalization changed anything
+        if [ "$in_reply_to" != "$in_reply_to_original" ]; then
+            urls_need_normalization=true
+            info_human "Normalizing URLs from .html to .md"
+        fi
+    fi
+
     # Check if content actually changed (comparing canonical hashes)
-    if [ "$new_hash" = "$old_hash" ]; then
+    # Also proceed if URLs need normalization
+    if [ "$new_hash" = "$old_hash" ] && [ "$urls_need_normalization" = false ]; then
         rm -f "$content_only" "$old_content"
         if [ "$JSON_MODE" = true ]; then
             json_success "republish" '{"unchanged": true, "message": "No changes detected - content hash unchanged"}'
@@ -3889,23 +3985,17 @@ cmd_republish() {
     # Extract existing version history
     local version_history=$(extract_version_history "$input_file")
 
-    # Extract in-reply-to section if this is a comment
-    local in_reply_to=""
-    if [ "$content_type" = "comment" ]; then
-        in_reply_to=$(extract_in_reply_to "$input_file")
-        if [ -z "$in_reply_to" ]; then
-            error "Comment file missing in-reply-to section"
-        fi
-    fi
-
     # Get directory and filename
     local file_dir=$(dirname "$input_file")
     local base_filename=$(basename "$input_file")
 
-    # Build new version history (old entries + new entry)
-    # Only add newline separator if there are existing entries
+    # Build new version history (old entries + new entry if content changed)
+    # If only URLs changed (not content), keep existing version history
     local version_history_new
-    if [ -z "$version_history" ]; then
+    if [ "$new_hash" = "$old_hash" ]; then
+        # Content unchanged, only URLs need normalization - keep existing history
+        version_history_new="$version_history"
+    elif [ -z "$version_history" ]; then
         version_history_new="  - sha256:$new_hash ($timestamp)"
     else
         version_history_new="$version_history"$'\n'"  - sha256:$new_hash ($timestamp)"
@@ -3938,9 +4028,11 @@ $version_history_new
     fi
 
     # Create temporary file with frontmatter + content (for signing)
-    # Note: content_only already includes the blank line separator after frontmatter
+    # Note: content_only is now canonical (no leading blank line), so we add
+    # a blank line after frontmatter to match the final file format
     local temp_file=$(mktemp)
     echo "$frontmatter_template" > "$temp_file"
+    echo "" >> "$temp_file"
     cat "$content_only" >> "$temp_file"
 
     # Sign the file
@@ -3992,9 +4084,10 @@ signature: $signature
     fi
 
     # Write updated canonical file
-    # Note: content_only already includes the blank line separator after frontmatter
-    # (from extract_content_without_frontmatter), so we don't add another one here
+    # Note: content_only is now canonical (no leading blank line), so we add
+    # a blank line after frontmatter for readability
     echo "$frontmatter" > "$input_file"
+    echo "" >> "$input_file"
     cat "$content_only" >> "$input_file"
     success_human "Updated canonical file: $input_file"
 
@@ -8388,8 +8481,8 @@ render_file() {
 
     # Skip if output is newer than input (unless force)
     if [ "$force" != "true" ] && [ -f "$output_file" ] && [ "$output_file" -nt "$input_file" ]; then
-        # For posts, also check if blessed-comments.json is newer (new comments to render)
-        if [ "$type" = "post" ] && [ -f "$BLESSED_COMMENTS" ] && [ "$BLESSED_COMMENTS" -nt "$output_file" ]; then
+        # Also check if blessed-comments.json is newer (new comments to render)
+        if [ -f "$BLESSED_COMMENTS" ] && [ "$BLESSED_COMMENTS" -nt "$output_file" ]; then
             : # Don't skip - blessed comments may have changed
         else
             return 1  # Skipped
@@ -8463,9 +8556,9 @@ render_file() {
     local template="${TEMPLATES[$type]}"
     [ -z "$template" ] && template="${TEMPLATES[post]}"
 
-    # Handle blessed comments count for posts
+    # Handle blessed comments count (for posts and comments with replies)
     local blessed_count=0
-    if [ "$type" = "post" ] && [ -f "$BLESSED_COMMENTS" ]; then
+    if [ -f "$BLESSED_COMMENTS" ]; then
         local url_md="${url%.html}.md"
         local url_html="${url%.md}.html"
         blessed_count=$(jq --arg url "$url" --arg url_md "$url_md" --arg url_html "$url_html" \
@@ -8604,10 +8697,8 @@ cmd_render() {
         esac
     done
 
-    # Check initialization
-    if [ ! -f "$WELL_KNOWN_DIR/polis" ]; then
-        json_error "render" "INVALID_STATE" "Polis not initialized. Run 'polis init' first."
-    fi
+    # Validate .well-known/polis exists and has valid JSON
+    validate_wellknown || exit 1
 
     # Validate POLIS_BASE_URL is set (required for canonical URLs)
     if [ -z "$POLIS_BASE_URL" ]; then

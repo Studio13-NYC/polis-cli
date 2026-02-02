@@ -640,6 +640,7 @@ polis render --force
 6. Copies theme CSS to `styles.css` at site root
 7. Generates an `index.html` listing all posts
 8. Skips files where HTML is newer than markdown (unless `--force`)
+9. **Note:** Remote blessed comments are cached. If a comment author updates their comment, use `--force` to fetch the latest content.
 
 **Requires:** pandoc (install with `apt install pandoc` or `brew install pandoc`)
 

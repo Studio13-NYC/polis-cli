@@ -459,6 +459,14 @@ Verify that:
 
 Run `polis blessing sync` to update blessed comments from the discovery service.
 
+### Blessed comments showing stale content
+
+Remote blessed comments are fetched when a post is rendered, but caching may show outdated content if:
+- The comment author updated their comment after you last rendered
+- Your post's HTML is already up-to-date based on local file timestamps
+
+Use `polis render --force` to re-fetch all remote blessed comments.
+
 ### Styling not applied
 
 1. Check that `styles.css` exists at your site root

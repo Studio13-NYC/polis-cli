@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.43.0] - 2026-02-01
+
+### Fixed
+
+- **URL extension normalization** - Standardized URL handling across CLI and discovery service to use `.md` extensions consistently. Both `.html` and `.md` URLs are now accepted as input and automatically normalized. This affects `polis comment`, `polis republish`, and discovery service endpoints.
+
+- **`polis render` JSON validation** - Now validates `.well-known/polis` JSON syntax before rendering and reports specific parse errors from jq. Previously, malformed JSON was silently ignored due to error suppression.
+
+- **Auto-blessing reliability** - Fixed two issues preventing comments from being auto-blessed:
+  - Email fetch no longer blocks auto-blessing when post author's `.well-known/polis` lacks an `email` field (uses domain as fallback)
+  - www subdomain normalization now works correctly (following `https://www.example.com` matches comments from `https://example.com` and vice versa)
+
+- **Nested comments rendering** - Fixed comments on comments (replies to replies) not appearing in rendered output:
+  - Render freshness check now includes `blessed-comments.json` changes
+  - Comment templates now include blessed comments section to display replies
+  - All three built-in themes updated (sols, turbo, zane)
+
+### Documentation
+
+- Added blessed comment caching behavior note to TEMPLATING.md explaining that `--force` is required to fetch updated remote blessed comments
+
 ## [0.42.0] - 2026-01-28
 
 ### Changed

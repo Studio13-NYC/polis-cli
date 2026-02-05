@@ -1,7 +1,7 @@
 # Checksums require maintainer approval
-bin/polis.sha256 @vdibart
-bin/polis-tutorial.sha256 @vdibart
+cli-bash/polis.sha256 @vdibart
+cli-bash/polis-tutorial.sha256 @vdibart
 
 # Main CLI scripts require maintainer approval
-bin/polis @vdibart
-bin/polis-tutorial @vdibart
+cli-bash/polis @vdibart
+cli-bash/polis-tutorial @vdibart

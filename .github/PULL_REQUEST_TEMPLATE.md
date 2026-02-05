@@ -26,7 +26,7 @@ Describe how you tested these changes:
 - [ ] My code follows the project's code style (see CONTRIBUTING.md)
 - [ ] I have updated documentation if needed
 - [ ] I have updated the CHANGELOG.md if this is a user-facing change
-- [ ] I have updated checksum files if I modified `cli/bin/polis` or `cli/bin/polis-tutorial`
+- [ ] I have updated checksum files if I modified `cli-bash/polis` or `cli-bash/polis-tutorial`
 - [ ] My changes don't introduce new warnings or errors
 
 ## Screenshots (if applicable)

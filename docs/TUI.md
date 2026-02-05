@@ -1,5 +1,7 @@
 # Terminal User Interface (polis-tui)
 
+> **DEPRECATED**: The Terminal UI is deprecated as of v0.46.0. Use `polis-full serve` instead for an interactive web-based interface. The TUI code remains available for existing users but will not receive new features.
+
 For users who prefer a menu-based interface, polis includes a Terminal UI that wraps the CLI.
 
 ## Features

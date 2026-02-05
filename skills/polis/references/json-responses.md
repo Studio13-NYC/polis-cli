@@ -452,16 +452,16 @@ Fields depend on which flags were used (`--posts`, `--comments`, `--notification
 ### Extract specific fields with jq
 ```bash
 # Get content hash from publish
-./cli/bin/polis --json post post.md | jq -r '.data.content_hash'
+./cli-bash/polis --json post post.md | jq -r '.data.content_hash'
 
 # Get pending request count
-./cli/bin/polis --json blessing requests | jq -r '.data.count'
+./cli-bash/polis --json blessing requests | jq -r '.data.count'
 
 # List all request IDs
-./cli/bin/polis --json blessing requests | jq -r '.data.requests[].id'
+./cli-bash/polis --json blessing requests | jq -r '.data.requests[].id'
 
 # Check for error
-result=$(./cli/bin/polis --json post test.md 2>&1)
+result=$(./cli-bash/polis --json post test.md 2>&1)
 if echo "$result" | jq -e '.status == "error"' > /dev/null; then
   echo "Error: $(echo "$result" | jq -r '.error.message')"
 fi

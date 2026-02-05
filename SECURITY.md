@@ -33,8 +33,8 @@ Include the following in your report:
 ### Scope
 
 This security policy applies to:
-- The `polis` CLI script (`cli/bin/polis`)
-- The `polis-tutorial` script (`cli/bin/polis-tutorial`)
+- The `polis` CLI script (`cli-bash/polis`)
+- The `polis-tutorial` script (`cli-bash/polis-tutorial`)
 - Associated configuration and metadata files
 
 ### Out of Scope
@@ -47,7 +47,7 @@ This security policy applies to:
 
 1. **Verify downloads**: Always verify the SHA256 checksum after downloading
    ```bash
-   cd cli/bin
+   cd cli-bash
    sha256sum -c polis.sha256
    ```
 

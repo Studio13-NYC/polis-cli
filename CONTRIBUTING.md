@@ -23,12 +23,12 @@ Thank you for your interest in contributing to the Polis CLI! This document prov
 
 2. Make the CLI executable:
    ```bash
-   chmod +x bin/polis
+   chmod +x cli-bash/polis
    ```
 
 3. Add to your PATH for testing:
    ```bash
-   export PATH="$(pwd)/bin:$PATH"
+   export PATH="$(pwd)/cli-bash:$PATH"
    ```
 
 ## How to Contribute
@@ -147,7 +147,7 @@ polis --json <command> | jq .  # Should produce valid JSON
 
 ## Pull Request Process
 
-1. Ensure your code passes `shellcheck bin/polis`
+1. Ensure your code passes `shellcheck cli-bash/polis`
 2. Update documentation if you've changed functionality
 3. Add entries to CHANGELOG.md for notable changes
 4. PRs require at least one approving review before merge

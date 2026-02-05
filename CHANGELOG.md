@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.46.0] - 2026-02-05
+
+### Changed
+
+- **Directory restructure**: `bin/` renamed to `cli-bash/` for consistency with private repo
+  - Bash scripts now at `cli-bash/polis`, `cli-bash/polis-tui`, etc.
+  - Tests moved to `cli-bash/tests/`
+  - Update PATH: `export PATH="$PATH:$(pwd)/polis-cli/cli-bash"`
+
+### Deprecated
+
+- **polis-tui**: Terminal UI is deprecated in favor of webapp (`polis-full serve`)
+  - Code remains in place for existing users
+  - No new features will be added
+  - Use `polis-full serve` for interactive site management
+
 ## [0.45.0] - 2026-02-05
 
 ### Milestone: Go CLI Full Feature Parity
@@ -31,8 +47,8 @@ recommended implementation.
 ### Changed
 
 - Go CLI is now the **primary/recommended** implementation
-- Bash CLI (`bin/polis`) is now the reference implementation (feature frozen)
-- SHA256 checksums for bash scripts moved to `bin/` directory
+- Bash CLI (`cli-bash/polis`) is now the reference implementation (feature frozen)
+- SHA256 checksums for bash scripts in `cli-bash/` directory
 
 ### Notes
 

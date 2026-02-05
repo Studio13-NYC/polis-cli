@@ -131,8 +131,6 @@ git push                        # To GitHub Pages, Netlify, etc.
 
 ## Going deeper
 
-**Interactive mode** — `polis-tui` (Bash) provides a menu-driven dashboard with keyboard navigation, git integration, and your $EDITOR for writing posts.
-
 **Local preview** — Use `polis-full serve` to preview your site locally before publishing.
 
 **Scripting** — All commands support `--json` for machine-readable output. Pipe content directly, automate blessing workflows, integrate with other tools.
@@ -152,7 +150,7 @@ The original Bash CLI remains available and fully functional:
 # macOS: brew install openssh jq curl pandoc git
 # Ubuntu: sudo apt-get install openssh-client jq curl pandoc git
 
-export PATH="$PATH:$(pwd)/polis-cli/bin"
+export PATH="$PATH:$(pwd)/polis-cli/cli-bash"
 polis version
 ```
 
@@ -162,7 +160,7 @@ polis version
 | Dependencies | None | bash, jq, curl, ssh |
 | Platforms | Linux, macOS, Windows | Linux, macOS |
 | Size | ~9 MB | ~320 KB |
-| TUI mode | Coming soon | Yes (`polis-tui`) |
+| TUI mode | Use `polis-full serve` | Deprecated |
 
 ---
 

@@ -5,9 +5,11 @@ project_name: polis
 before:
   hooks:
     - go mod tidy -C cli-go
+    - go mod tidy -C webapp/localhost
 
 builds:
-  - id: polis-go
+  # CLI-only binary (~9 MB)
+  - id: polis
     dir: cli-go
     main: ./cmd/polis
     binary: polis
@@ -26,8 +28,51 @@ builds:
     ldflags:
       - -s -w -X main.Version={{.Version}}
 
+  # Webapp-only binary (~11 MB)
+  - id: polis-server
+    dir: webapp/localhost
+    main: ./cmd/server
+    binary: polis-server
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w -X main.Version={{.Version}}
+
+  # Bundled binary: CLI + serve command (~12 MB)
+  - id: polis-full
+    dir: webapp/localhost
+    main: ./cmd/polis-full
+    binary: polis-full
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w -X main.Version={{.Version}}
+
 archives:
+  # CLI-only archives
   - id: polis-archives
+    builds:
+      - polis
     formats:
       - tar.gz
     name_template: "{{ .ProjectName }}-{{ .Os }}-{{ .Arch }}"
@@ -37,6 +82,34 @@ archives:
           - zip
     files:
       - none*  # Binary only, no extra files
+
+  # Webapp-only archives
+  - id: polis-server-archives
+    builds:
+      - polis-server
+    formats:
+      - tar.gz
+    name_template: "{{ .ProjectName }}-server-{{ .Os }}-{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    files:
+      - none*
+
+  # Bundled archives
+  - id: polis-full-archives
+    builds:
+      - polis-full
+    formats:
+      - tar.gz
+    name_template: "{{ .ProjectName }}-full-{{ .Os }}-{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    files:
+      - none*
 
 checksum:
   name_template: 'checksums.txt'
@@ -50,7 +123,15 @@ release:
   prerelease: auto
   mode: replace
   header: |
-    ## Polis CLI {{ .Tag }}
+    ## Polis v{{ .Tag }}
+
+    ### Three Distribution Targets
+
+    | Binary | Description | Size |
+    |--------|-------------|------|
+    | `polis` | CLI-only (recommended) | ~9 MB |
+    | `polis-server` | Web UI only | ~11 MB |
+    | `polis-full` | CLI + `serve` command | ~12 MB |
 
     ### Installation
 
@@ -59,7 +140,7 @@ release:
     curl -fsSL https://raw.githubusercontent.com/vdibart/polis-cli/main/scripts/install.sh | bash
     ```
 
-    **Manual download:** Choose your platform below.
+    **Manual download:** Choose your platform and binary type below.
 
 changelog:
   disable: true  # We manage CHANGELOG.md manually

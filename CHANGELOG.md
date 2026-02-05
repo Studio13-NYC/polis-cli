@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.45.0] - 2026-02-05
+
+### Milestone: Go CLI Full Feature Parity
+
+The Go CLI reaches complete feature parity with the Bash CLI and is now the
+recommended implementation.
+
+### Added
+
+- **Go CLI v0.45.0** - All 27 commands from Bash CLI now implemented
+  - New packages: clone, following, index, migrate, notification, remote, verify, version
+  - JSON output mode (`--json` flag) for all commands
+  - Data directory override (`--data-dir` flag)
+
+- **Three distribution targets**
+  - `polis` - CLI-only (~9 MB) - recommended for most users
+  - `polis-server` - Web UI only (~11 MB)
+  - `polis-full` - Bundled CLI + serve command (~12 MB)
+
+- **Webapp** - Browser-based site management UI
+  - Local HTTP server for site preview and management
+  - Embedded web assets for zero-dependency deployment
+
+### Changed
+
+- Go CLI is now the **primary/recommended** implementation
+- Bash CLI (`bin/polis`) is now the reference implementation (feature frozen)
+- SHA256 checksums for bash scripts moved to `bin/` directory
+
+### Notes
+
+- The `serve` command requires `polis-full` binary
+- Bash CLI remains fully functional for existing users
+- Windows support now available via Go CLI
+
 ## [0.44.0] - 2026-02-04
 
 ### Added

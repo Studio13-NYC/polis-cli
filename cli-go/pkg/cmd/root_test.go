@@ -25,16 +25,27 @@ func TestPrintUsage(t *testing.T) {
 	// Verify essential commands are listed
 	expectedCommands := []string{
 		"init",
-		"validate",
 		"render",
-		"publish",
+		"post",
 		"republish",
 		"comment",
+		"preview",
+		"extract",
 		"blessing",
+		"follow",
+		"unfollow",
+		"discover",
+		"notifications",
 		"register",
 		"unregister",
+		"migrate",
+		"clone",
+		"rebuild",
+		"index",
 		"version",
-		"help",
+		"about",
+		"rotate-key",
+		"serve",
 	}
 
 	for _, cmd := range expectedCommands {

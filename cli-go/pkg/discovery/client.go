@@ -633,3 +633,307 @@ func MakeSiteRegistrationCanonicalJSON(action, domain string) ([]byte, error) {
 		Domain:  domain,
 	})
 }
+
+// MigrationRecord represents a domain migration record from the discovery service.
+type MigrationRecord struct {
+	OldDomain  string `json:"old_domain"`
+	NewDomain  string `json:"new_domain"`
+	MigratedAt string `json:"migrated_at"`
+	PublicKey  string `json:"public_key"`
+}
+
+// MigrationResponse is the response from the migrations query endpoint.
+type MigrationResponse struct {
+	Count      int               `json:"count"`
+	Migrations []MigrationRecord `json:"migrations"`
+}
+
+// QueryMigrations queries the discovery service for domain migrations.
+func (c *Client) QueryMigrations(domains []string) (*MigrationResponse, error) {
+	endpoint := fmt.Sprintf("%s/migrations?domains=%s", c.BaseURL, joinDomains(domains))
+
+	httpReq, err := http.NewRequest("GET", endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	httpReq.Header.Set("Authorization", "Bearer "+c.APIKey)
+
+	resp, err := c.HTTPClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("request failed with status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var result MigrationResponse
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	return &result, nil
+}
+
+// joinDomains joins domain strings with commas for URL query.
+func joinDomains(domains []string) string {
+	result := ""
+	for i, d := range domains {
+		if i > 0 {
+			result += ","
+		}
+		result += d
+	}
+	return result
+}
+
+// Comment represents a comment from the discovery service.
+type Comment struct {
+	ID             int    `json:"id"`
+	CommentURL     string `json:"comment_url"`
+	CommentVersion string `json:"comment_version"`
+	InReplyTo      string `json:"in_reply_to"`
+	RootPost       string `json:"root_post"`
+	Author         string `json:"author"`
+	Timestamp      string `json:"timestamp"`
+	BlessingStatus string `json:"blessing_status"`
+	BlessedAt      string `json:"blessed_at,omitempty"`
+	BlessedBy      string `json:"blessed_by,omitempty"`
+}
+
+// GetCommentsByAuthor fetches comments by author email with optional status filter.
+func (c *Client) GetCommentsByAuthor(authorEmail, status string) ([]Comment, error) {
+	endpoint := fmt.Sprintf("%s/comments?author=%s", c.BaseURL, authorEmail)
+	if status != "" {
+		endpoint += "&status=" + status
+	}
+
+	httpReq, err := http.NewRequest("GET", endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	httpReq.Header.Set("Authorization", "Bearer "+c.APIKey)
+
+	resp, err := c.HTTPClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("request failed with status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var result struct {
+		Comments []Comment `json:"comments"`
+	}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	return result.Comments, nil
+}
+
+// GetCommentByURL fetches a comment by its URL.
+func (c *Client) GetCommentByURL(commentURL string) (*Comment, error) {
+	endpoint := fmt.Sprintf("%s/comments?url=%s", c.BaseURL, commentURL)
+
+	httpReq, err := http.NewRequest("GET", endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	httpReq.Header.Set("Authorization", "Bearer "+c.APIKey)
+
+	resp, err := c.HTTPClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("request failed with status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var result struct {
+		Comments []Comment `json:"comments"`
+	}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if len(result.Comments) == 0 {
+		return nil, fmt.Errorf("comment not found")
+	}
+
+	return &result.Comments[0], nil
+}
+
+// GetBlessedComments fetches blessed comments for a domain.
+func (c *Client) GetBlessedComments(domain string) ([]Comment, error) {
+	endpoint := fmt.Sprintf("%s/comments?in_reply_to_domain=%s&status=blessed", c.BaseURL, domain)
+
+	httpReq, err := http.NewRequest("GET", endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	httpReq.Header.Set("Authorization", "Bearer "+c.APIKey)
+
+	resp, err := c.HTTPClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("request failed with status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var result struct {
+		Comments []Comment `json:"comments"`
+	}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	return result.Comments, nil
+}
+
+// VersionCheckResponse is the response from the polis-version endpoint.
+type VersionCheckResponse struct {
+	Latest           string `json:"latest"`
+	UpgradeAvailable bool   `json:"upgrade_available"`
+	ReleasedAt       string `json:"released_at,omitempty"`
+	DownloadURL      string `json:"download_url,omitempty"`
+}
+
+// CheckVersion checks for CLI updates.
+func (c *Client) CheckVersion(currentVersion string) (*VersionCheckResponse, error) {
+	endpoint := fmt.Sprintf("%s/polis-version?current=%s", c.BaseURL, currentVersion)
+
+	httpReq, err := http.NewRequest("GET", endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	resp, err := c.HTTPClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("request failed with status %d", resp.StatusCode)
+	}
+
+	var result VersionCheckResponse
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	return &result, nil
+}
+
+// migrationPayload is the canonical payload for domain migration signing.
+type migrationPayload struct {
+	Version   int    `json:"version"`
+	Action    string `json:"action"`
+	OldDomain string `json:"old_domain"`
+	NewDomain string `json:"new_domain"`
+}
+
+// MigrationRegisterRequest is the request to register a domain migration.
+type MigrationRegisterRequest struct {
+	Version        int    `json:"version"`
+	Action         string `json:"action"`
+	OldDomain      string `json:"old_domain"`
+	NewDomain      string `json:"new_domain"`
+	OwnerSignature string `json:"owner_signature"`
+}
+
+// RegisterMigration registers a domain migration with the discovery service.
+func (c *Client) RegisterMigration(oldDomain, newDomain string, privateKey []byte) error {
+	endpoint := c.BaseURL + "/migrations-register"
+
+	// Create canonical payload for signing
+	canonicalPayload := migrationPayload{
+		Version:   1,
+		Action:    "migrate",
+		OldDomain: oldDomain,
+		NewDomain: newDomain,
+	}
+	canonicalJSON, err := json.Marshal(canonicalPayload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal canonical payload: %w", err)
+	}
+
+	// Sign the canonical payload
+	signature, err := signing.SignContent(canonicalJSON, privateKey)
+	if err != nil {
+		return fmt.Errorf("failed to sign payload: %w", err)
+	}
+
+	// Create the full request
+	req := MigrationRegisterRequest{
+		Version:        1,
+		Action:         "migrate",
+		OldDomain:      oldDomain,
+		NewDomain:      newDomain,
+		OwnerSignature: signature,
+	}
+
+	body, err := json.Marshal(req)
+	if err != nil {
+		return fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	httpReq, err := http.NewRequest("POST", endpoint, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+c.APIKey)
+
+	resp, err := c.HTTPClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("migration registration failed with status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	return nil
+}

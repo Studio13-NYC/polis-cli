@@ -55,20 +55,62 @@ func Execute(args []string) {
 		handleValidate(cmdArgs)
 	case "render":
 		handleRender(cmdArgs)
-	case "publish":
+	case "post":
 		handlePublish(cmdArgs)
 	case "republish":
 		handleRepublish(cmdArgs)
 	case "comment":
 		handleComment(cmdArgs)
+	case "preview":
+		handlePreview(cmdArgs)
+	case "extract":
+		handleExtract(cmdArgs)
+	case "index":
+		handleIndex(cmdArgs)
+	case "about":
+		handleAbout(cmdArgs)
+	case "follow":
+		handleFollow(cmdArgs)
+	case "unfollow":
+		handleUnfollow(cmdArgs)
+	case "discover":
+		handleDiscover(cmdArgs)
 	case "blessing":
 		handleBlessing(cmdArgs)
+	case "rebuild":
+		handleRebuild(cmdArgs)
+	case "migrate":
+		handleMigrate(cmdArgs)
+	case "migrations":
+		if len(cmdArgs) > 0 && cmdArgs[0] == "apply" {
+			handleMigrationsApply(cmdArgs[1:])
+		} else {
+			exitError("Unknown migrations subcommand. Use: polis migrations apply")
+		}
+	case "rotate-key":
+		handleRotateKey(cmdArgs)
+	case "notifications":
+		handleNotifications(cmdArgs)
+	case "clone":
+		handleClone(cmdArgs)
 	case "register":
 		handleRegister(cmdArgs)
 	case "unregister":
 		handleUnregister(cmdArgs)
+	case "serve":
+		handleServe(cmdArgs)
 	case "version", "--version", "-v":
-		fmt.Printf("polis version %s\n", Version)
+		if jsonOutput {
+			outputJSON(map[string]interface{}{
+				"status":  "success",
+				"command": "version",
+				"data": map[string]interface{}{
+					"version": Version,
+				},
+			})
+		} else {
+			fmt.Printf("polis %s\n", Version)
+		}
 	case "help", "--help", "-h":
 		printUsage()
 	default:
@@ -79,45 +121,75 @@ func Execute(args []string) {
 }
 
 func printUsage() {
-	fmt.Print(`Polis - Decentralized Social Network CLI (Go)
+	fmt.Print(`Polis - Decentralized Social Network CLI
 
 Usage:
-  polis [global-flags] <command> [options]
-
-Commands:
-  init                Initialize a new polis site
-  validate            Validate site configuration
-  render [--force]    Render markdown posts and comments to HTML
-  publish <file>      Publish a new post
-  republish <path>    Update an existing post
-  comment <subcommand> Manage comments (draft, sign, list, sync)
-  blessing <subcommand> Manage blessings (requests, grant, deny)
-  register            Register site/post with discovery service
-  unregister          Unregister from discovery service
-  version             Show version information
-  help                Show this help message
+  polis [--json] <command> [options]
 
 Global Flags:
-  --data-dir <path>   Site data directory (default: current directory)
-  --json              Output results in JSON format
+  --json                          Output results in JSON format
+  --data-dir <path>               Site data directory (default: current directory)
 
-Comment Subcommands:
-  comment draft <url>   Create a comment draft
-  comment sign <id>     Sign a pending comment
-  comment list [status] List comments (drafts, pending, blessed, denied)
-  comment sync          Sync pending comments with discovery service
+Commands related to creating or viewing content:
+  polis post <file>               Create a new post
+  polis comment <file> [url]      Create a comment on a post
+  polis republish <file>          Update an already-published file
+  polis preview <url>             Preview a post or comment with signature verification
+  polis extract <file> <hash>     Reconstruct a specific version of a file
 
-Blessing Subcommands:
-  blessing requests     List pending blessing requests on your posts
-  blessing grant <ver>  Grant a blessing
-  blessing deny <ver>   Deny a blessing
+Commands related to requesting, reviewing, or granting blessings:
+  polis blessing requests         List pending blessing requests
+  polis blessing grant <hash>     Grant a blessing request by content hash
+  polis blessing deny <hash>      Deny a blessing request by content hash
+  polis blessing beseech <hash>   Re-request blessing by content hash
+  polis blessing sync             Sync auto-blessed comments from discovery service
+
+Commands related to following or unfollowing an author:
+  polis follow <author-url>       Follow an author (auto-bless their comments)
+  polis unfollow <author-url>     Unfollow an author
+
+Commands related to content discovery:
+  polis discover                  Check followed authors for new content
+  polis discover --author <url>   Check a specific author
+  polis discover --since <date>   Show items since date
+
+Commands related to notifications:
+  polis notifications             List unread notifications
+  polis notifications list        List notifications (--type <types>, --all)
+  polis notifications read <id>   Mark notification as read (--all for all)
+  polis notifications dismiss <id> Dismiss notification
+  polis notifications sync        Sync notifications from discovery service
+  polis notifications config      Configure preferences
+
+Commands related to site administration:
+  polis register                  Register site with discovery service
+  polis unregister [--force]      Unregister site
+  polis render [--force]          Render markdown to HTML
+  polis migrate <new-domain>      Migrate content to a new domain
+  polis migrations apply          Apply domain migrations to local files
+
+Commands related to cloning remote polis sites:
+  polis clone <url> [dir]         Clone a public polis site
+  polis clone <url> --full        Re-download all content
+  polis clone <url> --diff        Only download new/changed content
+
+Commands related to local configuration:
+  polis init [options]            Initialize Polis directory structure
+  polis rebuild --posts|--comments|--notifications|--all
+                                  Rebuild indexes and reset state
+  polis index                     View index
+  polis version                   Print CLI version
+  polis about                     Show site, versions, config info
+  polis rotate-key                Generate new keypair and re-sign content
+  polis serve                     Start local web server (bundled binary only)
 
 Examples:
   polis init
-  polis render --force
-  polis publish post.md
-  polis comment draft https://example.com/posts/hello.md
+  polis post my-post.md
+  polis comment my-comment.md https://example.com/posts/hello.md
+  polis preview https://example.com/posts/hello.md
   polis blessing requests
+  polis discover
 `)
 }
 

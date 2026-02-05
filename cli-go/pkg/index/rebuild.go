@@ -1,0 +1,287 @@
+// Package index provides index rebuilding functionality.
+package index
+
+import (
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+)
+
+// PostEntry represents a post entry in public.jsonl.
+type PostEntry struct {
+	Type      string `json:"type"`
+	Title     string `json:"title"`
+	URL       string `json:"url"`
+	Published string `json:"published"`
+	Hash      string `json:"hash"`
+}
+
+// RebuildOptions configures what to rebuild.
+type RebuildOptions struct {
+	Posts         bool
+	Comments      bool
+	Notifications bool
+	All           bool
+}
+
+// RebuildResult contains the results of a rebuild operation.
+type RebuildResult struct {
+	PostsRebuilt         int `json:"posts_rebuilt"`
+	CommentsRebuilt      int `json:"comments_rebuilt"`
+	NotificationsCleared int `json:"notifications_cleared"`
+}
+
+// RebuildIndex rebuilds the public.jsonl index from posts directory.
+func RebuildIndex(dataDir, baseURL string, opts RebuildOptions) (*RebuildResult, error) {
+	result := &RebuildResult{}
+
+	if opts.All || opts.Posts {
+		count, err := rebuildPostsIndex(dataDir, baseURL)
+		if err != nil {
+			return nil, fmt.Errorf("failed to rebuild posts index: %w", err)
+		}
+		result.PostsRebuilt = count
+	}
+
+	if opts.All || opts.Comments {
+		count, err := rebuildCommentsIndex(dataDir)
+		if err != nil {
+			return nil, fmt.Errorf("failed to rebuild comments index: %w", err)
+		}
+		result.CommentsRebuilt = count
+	}
+
+	if opts.All || opts.Notifications {
+		count, err := clearNotifications(dataDir)
+		if err != nil {
+			return nil, fmt.Errorf("failed to clear notifications: %w", err)
+		}
+		result.NotificationsCleared = count
+	}
+
+	// Regenerate manifest
+	if err := regenerateManifest(dataDir); err != nil {
+		return nil, fmt.Errorf("failed to regenerate manifest: %w", err)
+	}
+
+	return result, nil
+}
+
+// rebuildPostsIndex rebuilds the public.jsonl from posts.
+func rebuildPostsIndex(dataDir, baseURL string) (int, error) {
+	postsDir := filepath.Join(dataDir, "posts")
+	indexPath := filepath.Join(dataDir, "metadata", "public.jsonl")
+
+	// Ensure metadata directory exists
+	if err := os.MkdirAll(filepath.Dir(indexPath), 0755); err != nil {
+		return 0, err
+	}
+
+	// Find all markdown files
+	var entries []PostEntry
+	err := filepath.Walk(postsDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil // Skip errors
+		}
+		if info.IsDir() {
+			// Skip .versions directories
+			if info.Name() == ".versions" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".md") {
+			return nil
+		}
+
+		entry, err := buildPostEntry(path, dataDir, baseURL)
+		if err != nil {
+			return nil // Skip files that can't be parsed
+		}
+		entries = append(entries, entry)
+		return nil
+	})
+
+	if err != nil {
+		return 0, err
+	}
+
+	// Sort by published date (newest first)
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Published > entries[j].Published
+	})
+
+	// Write index file
+	file, err := os.Create(indexPath)
+	if err != nil {
+		return 0, err
+	}
+	defer file.Close()
+
+	for _, entry := range entries {
+		data, err := json.Marshal(entry)
+		if err != nil {
+			continue
+		}
+		file.WriteString(string(data) + "\n")
+	}
+
+	return len(entries), nil
+}
+
+// buildPostEntry creates a PostEntry from a markdown file.
+func buildPostEntry(path, dataDir, baseURL string) (PostEntry, error) {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return PostEntry{}, err
+	}
+
+	fm, body := parseFrontmatter(string(content))
+
+	// Calculate relative path for URL
+	relPath, _ := filepath.Rel(dataDir, path)
+	url := baseURL + "/" + relPath
+
+	// Calculate hash
+	hash := sha256.Sum256([]byte(canonicalizeContent(body)))
+
+	return PostEntry{
+		Type:      "post",
+		Title:     fm["title"],
+		URL:       url,
+		Published: fm["published"],
+		Hash:      fmt.Sprintf("sha256:%x", hash),
+	}, nil
+}
+
+// rebuildCommentsIndex rebuilds blessed-comments.json.
+func rebuildCommentsIndex(dataDir string) (int, error) {
+	blessedPath := filepath.Join(dataDir, "metadata", "blessed-comments.json")
+
+	// For now, just ensure the file exists with empty comments
+	// A full rebuild would need to query the discovery service
+	if _, err := os.Stat(blessedPath); os.IsNotExist(err) {
+		data := map[string]interface{}{
+			"version":  "0.45.0",
+			"comments": []interface{}{},
+		}
+		jsonData, _ := json.MarshalIndent(data, "", "  ")
+		if err := os.WriteFile(blessedPath, append(jsonData, '\n'), 0644); err != nil {
+			return 0, err
+		}
+	}
+
+	return 0, nil
+}
+
+// clearNotifications clears the notifications file.
+func clearNotifications(dataDir string) (int, error) {
+	notifPath := filepath.Join(dataDir, ".polis", "notifications.jsonl")
+
+	// Count existing notifications
+	count := 0
+	if data, err := os.ReadFile(notifPath); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			if strings.TrimSpace(line) != "" {
+				count++
+			}
+		}
+	}
+
+	// Clear the file
+	if err := os.MkdirAll(filepath.Dir(notifPath), 0755); err != nil {
+		return 0, err
+	}
+	if err := os.WriteFile(notifPath, []byte{}, 0644); err != nil {
+		return 0, err
+	}
+
+	return count, nil
+}
+
+// regenerateManifest updates the manifest.json file.
+func regenerateManifest(dataDir string) error {
+	manifestPath := filepath.Join(dataDir, "metadata", "manifest.json")
+
+	// Count posts
+	postCount := 0
+	postsDir := filepath.Join(dataDir, "posts")
+	filepath.Walk(postsDir, func(path string, info os.FileInfo, err error) error {
+		if err == nil && !info.IsDir() && strings.HasSuffix(path, ".md") && !strings.Contains(path, ".versions") {
+			postCount++
+		}
+		return nil
+	})
+
+	// Count comments
+	commentCount := 0
+	commentsDir := filepath.Join(dataDir, "comments")
+	filepath.Walk(commentsDir, func(path string, info os.FileInfo, err error) error {
+		if err == nil && !info.IsDir() && strings.HasSuffix(path, ".md") && !strings.Contains(path, ".versions") {
+			commentCount++
+		}
+		return nil
+	})
+
+	manifest := map[string]interface{}{
+		"version":        "0.45.0",
+		"last_published": time.Now().UTC().Format("2006-01-02T15:04:05Z"),
+		"post_count":     postCount,
+		"comment_count":  commentCount,
+	}
+
+	data, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(manifestPath, append(data, '\n'), 0644)
+}
+
+// parseFrontmatter extracts frontmatter fields from content.
+func parseFrontmatter(content string) (map[string]string, string) {
+	fm := make(map[string]string)
+	lines := strings.Split(content, "\n")
+
+	if len(lines) == 0 || strings.TrimSpace(lines[0]) != "---" {
+		return fm, content
+	}
+
+	var bodyStart int
+	for i := 1; i < len(lines); i++ {
+		if strings.TrimSpace(lines[i]) == "---" {
+			bodyStart = i + 1
+			break
+		}
+		if idx := strings.Index(lines[i], ":"); idx > 0 {
+			key := strings.TrimSpace(lines[i][:idx])
+			value := strings.TrimSpace(lines[i][idx+1:])
+			fm[key] = value
+		}
+	}
+
+	body := ""
+	if bodyStart < len(lines) {
+		body = strings.Join(lines[bodyStart:], "\n")
+	}
+
+	return fm, body
+}
+
+// canonicalizeContent normalizes content for hashing.
+func canonicalizeContent(content string) string {
+	content = strings.TrimLeft(content, "\n")
+	lines := strings.Split(content, "\n")
+	for i := range lines {
+		lines[i] = strings.TrimRight(lines[i], " \t")
+	}
+	for len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return strings.Join(lines, "\n") + "\n"
+}

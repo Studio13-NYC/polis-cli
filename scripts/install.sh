@@ -1,0 +1,74 @@
+#!/bin/bash
+# Polis CLI Installer
+# Usage: curl -fsSL https://raw.githubusercontent.com/vdibart/polis-cli/main/scripts/install.sh | bash
+
+set -e
+
+REPO="vdibart/polis-cli"
+INSTALL_DIR="${POLIS_INSTALL_DIR:-$HOME/.local/bin}"
+
+detect_platform() {
+    local os arch
+    os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+    arch="$(uname -m)"
+
+    case "$os" in
+        linux) os="linux" ;;
+        darwin) os="darwin" ;;
+        mingw*|msys*|cygwin*) os="windows" ;;
+        *) echo "Unsupported OS: $os" >&2; exit 1 ;;
+    esac
+
+    case "$arch" in
+        x86_64|amd64) arch="amd64" ;;
+        arm64|aarch64) arch="arm64" ;;
+        *) echo "Unsupported architecture: $arch" >&2; exit 1 ;;
+    esac
+
+    echo "${os}-${arch}"
+}
+
+get_latest_version() {
+    curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | \
+        grep '"tag_name"' | sed -E 's/.*"v?([^"]+)".*/\1/'
+}
+
+main() {
+    local platform version archive_name download_url ext
+
+    platform="$(detect_platform)"
+    version="${POLIS_VERSION:-$(get_latest_version)}"
+
+    echo "[polis] Installing v${version} for ${platform}..."
+
+    ext="tar.gz"
+    [[ "$platform" == *"windows"* ]] && ext="zip"
+
+    archive_name="polis-${platform}.${ext}"
+    download_url="https://github.com/${REPO}/releases/download/v${version}/${archive_name}"
+
+    mkdir -p "$INSTALL_DIR"
+    cd "$INSTALL_DIR"
+
+    echo "[polis] Downloading..."
+    curl -fsSL "$download_url" -o "$archive_name"
+
+    echo "[polis] Extracting..."
+    if [[ "$ext" == "zip" ]]; then
+        unzip -o "$archive_name"
+    else
+        tar xzf "$archive_name"
+    fi
+    rm "$archive_name"
+    chmod +x polis
+
+    echo "[polis] Installed to ${INSTALL_DIR}/polis"
+
+    if ! echo "$PATH" | grep -q "$INSTALL_DIR"; then
+        echo ""
+        echo "Add to your shell profile:"
+        echo "  export PATH=\"\$PATH:$INSTALL_DIR\""
+    fi
+}
+
+main "$@"

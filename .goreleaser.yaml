@@ -1,0 +1,65 @@
+version: 2
+
+project_name: polis
+
+before:
+  hooks:
+    - go mod tidy -C cli-go
+
+builds:
+  - id: polis-go
+    dir: cli-go
+    main: ./cmd/polis
+    binary: polis
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w -X main.Version={{.Version}}
+
+archives:
+  - id: polis-archives
+    formats:
+      - tar.gz
+    name_template: "{{ .ProjectName }}-{{ .Os }}-{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    files:
+      - none*  # Binary only, no extra files
+
+checksum:
+  name_template: 'checksums.txt'
+  algorithm: sha256
+
+release:
+  github:
+    owner: vdibart
+    name: polis-cli
+  draft: false
+  prerelease: auto
+  mode: replace
+  header: |
+    ## Polis CLI {{ .Tag }}
+
+    ### Installation
+
+    **Quick install (Linux/macOS):**
+    ```bash
+    curl -fsSL https://raw.githubusercontent.com/vdibart/polis-cli/main/scripts/install.sh | bash
+    ```
+
+    **Manual download:** Choose your platform below.
+
+changelog:
+  disable: true  # We manage CHANGELOG.md manually

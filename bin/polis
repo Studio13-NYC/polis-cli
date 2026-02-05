@@ -28,7 +28,7 @@ set -e
 #   4. Hardcoded defaults
 
 # Fixed constants (never configurable - required for discovery)
-VERSION="0.43.0"
+VERSION="0.44.0"
 WELL_KNOWN_DIR=".well-known"
 WELL_KNOWN_FILE="polis"
 
@@ -151,6 +151,11 @@ NC='\033[0m' # No Color
 
 # JSON output mode flag
 JSON_MODE=false
+
+# Render markers flag (for snippet editing in browser mode)
+# When true (default), snippet content is wrapped with HTML markers
+# Use --no-markers flag with render command to disable
+RENDER_MARKERS=true
 
 # Helper function for colored output
 info() {
@@ -432,17 +437,50 @@ EOF
     success_human "Created $manifest_path"
 
     # Create .gitignore if it doesn't exist
-    local private_key_path="$keys_dir/id_ed25519"
     if [ ! -f ".gitignore" ]; then
-        cat > ".gitignore" << EOF
+        cat > ".gitignore" << 'EOF'
+# Polis configuration and secrets
 .polis/
-/themes
-/polis
-/polis-tui
-.env*
+.env
+
+# Local theme customizations (optional - remove if you want to track themes)
+themes/
+
+# Logs
+logs/
+*.log
+
+# Polis executables (if copied locally)
+polis
+polis-tui
+polis-tutorial
+polis-upgrade
+polis-server
 EOF
         files_created+=(".gitignore")
-        success_human "Created .gitignore (excludes private key)"
+        success_human "Created .gitignore"
+    fi
+
+    # Create .env.example template if it doesn't exist
+    if [ ! -f ".env.example" ]; then
+        cat > ".env.example" << 'EOF'
+# Polis Discovery Service Configuration
+# Copy this file to .env and fill in your values:
+#   cp .env.example .env
+#
+# The .env file is gitignored and should contain your actual credentials.
+
+# Discovery service URL (default shown below)
+DISCOVERY_SERVICE_URL=https://ltfpezriiaqvjupxbttw.supabase.co/functions/v1
+
+# Your discovery service API key (required for publishing)
+DISCOVERY_SERVICE_KEY=your-api-key-here
+
+# Optional: Your site's public URL (used for generating links)
+# POLIS_BASE_URL=https://yoursite.com
+EOF
+        files_created+=(".env.example")
+        success_human "Created .env.example template"
     fi
 
     # Resolve the actual script location (follow symlinks)
@@ -455,21 +493,15 @@ EOF
     local script_dir="$(cd "$(dirname "$script_path")" && pwd)"
     local cli_dir="$(dirname "$script_dir")"
 
-    # Check for .env in CLI directory (shared across all polis sites)
+    # Check for .env in site directory
     local env_created=false
-    local cli_env="$cli_dir/.env"
-    local cli_env_example="$cli_dir/.env.example"
-
-    if [ ! -f "$cli_env" ]; then
-        if [ -f "$cli_env_example" ]; then
-            cp "$cli_env_example" "$cli_env"
-            env_created=true
-            success_human "Created .env from .env.example in $cli_dir"
-            warn "Please update $cli_env with your configuration values"
-        else
-            warn ".env not found in CLI directory: $cli_dir"
-            info_human "Copy from GitHub repo: cp <repo-path>/cli/.env.example $cli_env"
+    if [ ! -f ".env" ]; then
+        if [ -f ".env.example" ]; then
+            info_human "To configure discovery service, copy and edit .env.example:"
+            info_human "  cp .env.example .env"
         fi
+    else
+        env_created=true
     fi
 
     # Copy default themes from same directory as polis script
@@ -8127,8 +8159,63 @@ load_snippet() {
     echo "$content"
 }
 
+# Resolve snippet path and return the file path (for marker generation)
+# Uses same logic as load_snippet but only returns the path
+# Arguments:
+#   $1 - Snippet path (e.g., "about", "theme:header", "footer.html")
+# Outputs: <source>:<file_path> where source is "global", "theme", or "notfound"
+resolve_snippet_path() {
+    local snippet_path="$1"
+
+    # Parse tier prefix (global: or theme:)
+    local tier_mode="global_first"
+    local base_path="$snippet_path"
+
+    if [[ "$snippet_path" == global:* ]]; then
+        tier_mode="global_first"
+        base_path="${snippet_path#global:}"
+    elif [[ "$snippet_path" == theme:* ]]; then
+        tier_mode="theme_first"
+        base_path="${snippet_path#theme:}"
+    fi
+
+    # Check for explicit extension (.md or .html)
+    local has_explicit_extension=false
+    if [[ "$base_path" == *.md ]] || [[ "$base_path" == *.html ]]; then
+        has_explicit_extension=true
+    fi
+
+    local snippet_file=""
+    local source="notfound"
+    local theme_snippets_dir="$THEMES_DIR/$ACTIVE_THEME/snippets"
+
+    # Resolve based on tier mode
+    if [ "$tier_mode" = "theme_first" ]; then
+        # Theme-first: check theme snippets, then global
+        if [ -n "$ACTIVE_THEME" ] && [ -d "$theme_snippets_dir" ]; then
+            snippet_file=$(resolve_snippet_in_dir "$theme_snippets_dir" "$base_path" "$has_explicit_extension")
+            [ -n "$snippet_file" ] && source="theme"
+        fi
+        if [ -z "$snippet_file" ]; then
+            snippet_file=$(resolve_snippet_in_dir "$SNIPPETS_DIR" "$base_path" "$has_explicit_extension")
+            [ -n "$snippet_file" ] && source="global"
+        fi
+    else
+        # Global-first (default): check global snippets, then theme
+        snippet_file=$(resolve_snippet_in_dir "$SNIPPETS_DIR" "$base_path" "$has_explicit_extension")
+        [ -n "$snippet_file" ] && source="global"
+        if [ -z "$snippet_file" ] && [ -n "$ACTIVE_THEME" ] && [ -d "$theme_snippets_dir" ]; then
+            snippet_file=$(resolve_snippet_in_dir "$theme_snippets_dir" "$base_path" "$has_explicit_extension")
+            [ -n "$snippet_file" ] && source="theme"
+        fi
+    fi
+
+    echo "${source}:${snippet_file}"
+}
+
 # Render all {{> path}} partial includes in content
 # Recursively processes snippets that include other snippets
+# When RENDER_MARKERS=true, wraps snippet content with HTML markers for browser editing
 # Arguments:
 #   $1 - Content containing {{> path}} patterns
 #   $2 - Optional context JSON for variable substitution
@@ -8163,6 +8250,20 @@ render_partials() {
         # Trim whitespace from path
         snippet_path=$(echo "$snippet_path" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
 
+        # Resolve snippet path to get source and file location
+        local resolved
+        resolved=$(resolve_snippet_path "$snippet_path")
+        local snippet_source="${resolved%%:*}"
+        local snippet_file="${resolved#*:}"
+
+        # Extract base path (strip tier prefix like "theme:" or "global:" if present)
+        local base_path="$snippet_path"
+        if [[ "$snippet_path" == global:* ]]; then
+            base_path="${snippet_path#global:}"
+        elif [[ "$snippet_path" == theme:* ]]; then
+            base_path="${snippet_path#theme:}"
+        fi
+
         # Load and render the snippet
         local snippet_content
         snippet_content=$(load_snippet "$snippet_path" "$context")
@@ -8170,6 +8271,17 @@ render_partials() {
         # Recursively render any partials in the loaded snippet
         if [ -n "$snippet_content" ]; then
             snippet_content=$(render_partials "$snippet_content" "$context" $((depth + 1)))
+        fi
+
+        # Wrap with markers if enabled and snippet was found
+        if [ "$RENDER_MARKERS" = true ] && [ "$snippet_source" != "notfound" ] && [ -n "$snippet_content" ]; then
+            # Create a unique identifier combining source and base path (without tier prefix)
+            local marker_id="${snippet_source}:${base_path}"
+            # Build the marked content with HTML comments and hidden span for DOM anchoring
+            snippet_content="<!-- POLIS-SNIPPET-START: ${marker_id} path=${base_path} -->
+<span class=\"polis-snippet-boundary\" data-snippet=\"${marker_id}\" data-path=\"${base_path}\" data-source=\"${snippet_source}\" hidden></span>
+${snippet_content}
+<!-- POLIS-SNIPPET-END: ${marker_id} -->"
         fi
 
         # Escape the snippet content for bash replacement
@@ -8691,8 +8803,12 @@ cmd_render() {
                 force=true
                 shift
                 ;;
+            --no-markers)
+                RENDER_MARKERS=false
+                shift
+                ;;
             *)
-                json_error "render" "INVALID_INPUT" "Unknown option: $1. Use: polis render [--force]"
+                json_error "render" "INVALID_INPUT" "Unknown option: $1. Use: polis render [--force] [--no-markers]"
                 ;;
         esac
     done
@@ -8736,6 +8852,7 @@ cmd_render() {
     info_human "Comments dir: $COMMENTS_DIR"
     info_human "Blessed comments file: $BLESSED_COMMENTS"
     info_human "Active theme: $ACTIVE_THEME"
+    info_human "Snippet markers: $RENDER_MARKERS"
 
     # Show blessed-comments.json summary
     if [ -f "$BLESSED_COMMENTS" ]; then

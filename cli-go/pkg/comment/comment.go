@@ -1,0 +1,918 @@
+// Package comment provides comment management for polis.
+package comment
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"time"
+
+	"github.com/vdibart/polis-cli/cli-go/pkg/metadata"
+	"github.com/vdibart/polis-cli/cli-go/pkg/signing"
+	polisurl "github.com/vdibart/polis-cli/cli-go/pkg/url"
+)
+
+const (
+	// Generator identifier for comment frontmatter
+	Generator = "polis-webapp/0.1.0"
+
+	// Comment status directories
+	StatusDrafts  = "drafts"
+	StatusPending = "pending"
+	StatusBlessed = "blessed"
+	StatusDenied  = "denied"
+)
+
+// getCommentDir returns the base directory for comments of a given status.
+// Private statuses (drafts, pending, denied) go to .polis/comments/
+// Blessed comments go to public comments/ (with YYYYMMDD date structure)
+func getCommentDir(dataDir, status string) string {
+	if status == StatusBlessed {
+		return filepath.Join(dataDir, "comments")
+	}
+	return filepath.Join(dataDir, ".polis", "comments", status)
+}
+
+// getBlessedCommentPath returns the path for a blessed comment with date-based structure.
+// Format: comments/YYYYMMDD/comment-id.md
+func getBlessedCommentPath(dataDir, commentID string, timestamp time.Time) string {
+	dateDir := timestamp.Format("20060102")
+	return filepath.Join(dataDir, "comments", dateDir, commentID+".md")
+}
+
+// getCommentPath returns the full path for a comment file based on status.
+// For blessed comments, it returns the date-based path.
+// For other statuses, it returns the flat path in .polis/comments/<status>/.
+func getCommentPath(dataDir, commentID, status string) string {
+	if status == StatusBlessed {
+		// For blessed, we need to search the date directories
+		// This is a fallback - caller should use getBlessedCommentPath when timestamp is known
+		return filepath.Join(dataDir, "comments")
+	}
+	return filepath.Join(dataDir, ".polis", "comments", status, commentID+".md")
+}
+
+// CommentDraft represents a comment draft before signing.
+type CommentDraft struct {
+	ID        string `json:"id"`
+	Title     string `json:"title,omitempty"` // Comment title (extracted from first heading or auto-generated)
+	InReplyTo string `json:"in_reply_to"`
+	RootPost  string `json:"root_post,omitempty"`
+	Content   string `json:"content"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at,omitempty"`
+}
+
+// CommentMeta represents metadata for a signed comment.
+// Uses CLI-compatible field names for interoperability.
+type CommentMeta struct {
+	ID               string   `json:"id"`
+	Title            string   `json:"title,omitempty"`          // Comment title
+	CommentURL       string   `json:"comment_url"`              // Full URL to comment file
+	CommentVersion   string   `json:"comment_version"`          // current-version in frontmatter
+	InReplyTo        string   `json:"in_reply_to"`              // in-reply-to.url in frontmatter
+	InReplyToVersion string   `json:"in_reply_to_version,omitempty"`
+	RootPost         string   `json:"root_post"`                // in-reply-to.root-post in frontmatter
+	Author           string   `json:"author"`                   // Derived from site, not in frontmatter
+	Timestamp        string   `json:"timestamp"`                // published in frontmatter
+	Updated          string   `json:"updated,omitempty"`
+	Status           string   `json:"status"`
+	VersionHistory   []string `json:"version_history,omitempty"`
+}
+
+// SignedComment represents a fully signed comment ready for blessing request.
+type SignedComment struct {
+	Meta      *CommentMeta `json:"meta"`
+	Content   string       `json:"content"`
+	Signature string       `json:"signature"`
+}
+
+// GenerateCommentID generates a unique comment ID from the target post and timestamp.
+func GenerateCommentID(inReplyTo string, timestamp time.Time) string {
+	// Extract domain and slug from in_reply_to URL
+	// e.g., https://alice.polis.site/posts/20260127/hello-world.md
+	parts := strings.Split(inReplyTo, "/")
+	domain := ""
+	slug := ""
+
+	for i, part := range parts {
+		if strings.Contains(part, ".polis.") || strings.Contains(part, ".polis-") {
+			domain = strings.Split(part, ".")[0] // Extract subdomain
+		}
+		if part == "posts" && i+2 < len(parts) {
+			slug = strings.TrimSuffix(parts[len(parts)-1], ".md")
+		}
+	}
+
+	if domain == "" {
+		domain = "unknown"
+	}
+	if slug == "" {
+		slug = "post"
+	}
+
+	dateStr := timestamp.Format("20060102")
+	return fmt.Sprintf("%s-%s-%s", domain, slug, dateStr)
+}
+
+// SaveDraft saves a comment draft to the private drafts directory.
+func SaveDraft(dataDir string, draft *CommentDraft) error {
+	// Normalize URLs to .md format (defense-in-depth)
+	draft.InReplyTo = polisurl.NormalizeToMD(draft.InReplyTo)
+	draft.RootPost = polisurl.NormalizeToMD(draft.RootPost)
+
+	draftsDir := filepath.Join(dataDir, ".polis", "comments", StatusDrafts)
+	if err := os.MkdirAll(draftsDir, 0755); err != nil {
+		return fmt.Errorf("failed to create drafts directory: %w", err)
+	}
+
+	if draft.ID == "" {
+		draft.ID = GenerateCommentID(draft.InReplyTo, time.Now().UTC())
+	}
+
+	if draft.CreatedAt == "" {
+		draft.CreatedAt = time.Now().UTC().Format("2006-01-02T15:04:05Z")
+	}
+	draft.UpdatedAt = time.Now().UTC().Format("2006-01-02T15:04:05Z")
+
+	// If no root_post specified, use in_reply_to as root
+	if draft.RootPost == "" {
+		draft.RootPost = draft.InReplyTo
+	}
+
+	// Save as markdown with simple frontmatter
+	content := fmt.Sprintf(`---
+in_reply_to: %s
+root_post: %s
+created_at: %s
+updated_at: %s
+---
+
+%s`, draft.InReplyTo, draft.RootPost, draft.CreatedAt, draft.UpdatedAt, draft.Content)
+
+	draftPath := filepath.Join(draftsDir, draft.ID+".md")
+	if err := os.WriteFile(draftPath, []byte(content), 0644); err != nil {
+		return fmt.Errorf("failed to save draft: %w", err)
+	}
+
+	return nil
+}
+
+// LoadDraft loads a comment draft by ID.
+func LoadDraft(dataDir, id string) (*CommentDraft, error) {
+	draftPath := filepath.Join(dataDir, ".polis", "comments", StatusDrafts, id+".md")
+	data, err := os.ReadFile(draftPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read draft: %w", err)
+	}
+
+	draft := &CommentDraft{ID: id}
+
+	// Parse frontmatter
+	fm := ParseFrontmatter(string(data))
+	draft.InReplyTo = fm["in_reply_to"]
+	draft.RootPost = fm["root_post"]
+	draft.CreatedAt = fm["created_at"]
+	draft.UpdatedAt = fm["updated_at"]
+
+	// Extract content (after frontmatter)
+	draft.Content = StripFrontmatter(string(data))
+
+	return draft, nil
+}
+
+// ListDrafts returns all comment drafts.
+func ListDrafts(dataDir string) ([]*CommentDraft, error) {
+	draftsDir := filepath.Join(dataDir, ".polis", "comments", StatusDrafts)
+	entries, err := os.ReadDir(draftsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []*CommentDraft{}, nil
+		}
+		return nil, fmt.Errorf("failed to read drafts directory: %w", err)
+	}
+
+	var drafts []*CommentDraft
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
+			continue
+		}
+		id := strings.TrimSuffix(entry.Name(), ".md")
+		draft, err := LoadDraft(dataDir, id)
+		if err != nil {
+			continue // Skip invalid drafts
+		}
+		drafts = append(drafts, draft)
+	}
+
+	return drafts, nil
+}
+
+// DeleteDraft removes a comment draft.
+func DeleteDraft(dataDir, id string) error {
+	draftPath := filepath.Join(dataDir, ".polis", "comments", StatusDrafts, id+".md")
+	if err := os.Remove(draftPath); err != nil {
+		return fmt.Errorf("failed to delete draft: %w", err)
+	}
+	return nil
+}
+
+// SignComment signs a draft and moves it to pending status.
+// Uses CLI-compatible frontmatter format with nested in-reply-to structure.
+func SignComment(dataDir string, draft *CommentDraft, authorEmail, siteURL string, privateKey []byte) (*SignedComment, error) {
+	// Normalize URLs to .md format (defense-in-depth)
+	draft.InReplyTo = polisurl.NormalizeToMD(draft.InReplyTo)
+	draft.RootPost = polisurl.NormalizeToMD(draft.RootPost)
+
+	if draft.InReplyTo == "" {
+		return nil, fmt.Errorf("in_reply_to is required")
+	}
+
+	timestamp := time.Now().UTC()
+
+	// Generate comment ID and URL
+	commentID := draft.ID
+	if commentID == "" {
+		commentID = GenerateCommentID(draft.InReplyTo, timestamp)
+	}
+	dateDir := timestamp.Format("20060102")
+	commentURL := fmt.Sprintf("%s/comments/%s/%s.md", strings.TrimSuffix(siteURL, "/"), dateDir, commentID)
+
+	// Generate title (from first heading or auto-generate)
+	title := draft.Title
+	if title == "" {
+		title = extractTitleFromContent(draft.Content)
+	}
+	if title == "" {
+		// Auto-generate title from target post
+		title = fmt.Sprintf("Re: %s", extractSlugFromURL(draft.InReplyTo))
+	}
+
+	// Canonicalize content
+	content := CanonicalizeContent(draft.Content)
+
+	// Compute hash of canonicalized body (validator strips leading newlines)
+	hash := HashContent([]byte(content))
+	timestampStr := timestamp.Format("2006-01-02T15:04:05Z")
+
+	// Root post defaults to in_reply_to if not specified
+	rootPost := draft.RootPost
+	if rootPost == "" {
+		rootPost = draft.InReplyTo
+	}
+
+	// Build CLI-compatible frontmatter (without signature first)
+	// CLI format uses nested in-reply-to with url and root-post
+	unsignedFrontmatter := fmt.Sprintf(`---
+title: %s
+type: comment
+published: %s
+generator: %s
+in-reply-to:
+  url: %s
+  root-post: %s
+current-version: sha256:%s
+version-history:
+  - sha256:%s (%s)
+---`,
+		escapeYAMLTitle(title),
+		timestampStr,
+		Generator,
+		draft.InReplyTo,
+		rootPost,
+		hash,
+		hash,
+		timestampStr,
+	)
+
+	// Canonicalize full content for signing (matches CLI behavior)
+	fullUnsignedContent := unsignedFrontmatter + "\n\n" + content
+	canonicalizedForSigning := CanonicalizeContent(fullUnsignedContent)
+
+	// Sign the content
+	signature, err := signing.SignContent([]byte(canonicalizedForSigning), privateKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to sign comment: %w", err)
+	}
+
+	// Extract base64 signature
+	sigBase64 := extractSignatureBase64(signature)
+
+	// Build final content with signature
+	finalFrontmatter := fmt.Sprintf(`---
+title: %s
+type: comment
+published: %s
+author: %s
+generator: %s
+in-reply-to:
+  url: %s
+  root-post: %s
+current-version: sha256:%s
+version-history:
+  - sha256:%s (%s)
+signature: %s
+---`,
+		escapeYAMLTitle(title),
+		timestampStr,
+		authorEmail,
+		Generator,
+		draft.InReplyTo,
+		rootPost,
+		hash,
+		hash,
+		timestampStr,
+		sigBase64,
+	)
+
+	finalContent := finalFrontmatter + "\n\n" + content
+
+	// Create pending directory (private)
+	pendingDir := filepath.Join(dataDir, ".polis", "comments", StatusPending)
+	if err := os.MkdirAll(pendingDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create pending directory: %w", err)
+	}
+
+	// Write to pending
+	pendingPath := filepath.Join(pendingDir, commentID+".md")
+	if err := os.WriteFile(pendingPath, []byte(finalContent), 0644); err != nil {
+		return nil, fmt.Errorf("failed to write pending comment: %w", err)
+	}
+
+	// Delete draft
+	if draft.ID != "" {
+		_ = DeleteDraft(dataDir, draft.ID)
+	}
+
+	meta := &CommentMeta{
+		ID:             commentID,
+		Title:          title,
+		CommentURL:     commentURL,
+		CommentVersion: "sha256:" + hash,
+		InReplyTo:      draft.InReplyTo,
+		RootPost:       rootPost,
+		Author:         authorEmail,
+		Timestamp:      timestampStr,
+		Status:         StatusPending,
+		VersionHistory: []string{fmt.Sprintf("sha256:%s (%s)", hash, timestampStr)},
+	}
+
+	return &SignedComment{
+		Meta:      meta,
+		Content:   content,
+		Signature: signature,
+	}, nil
+}
+
+// MoveComment moves a comment between status directories.
+// When moving to blessed status, uses date-based directory structure (comments/YYYY/MM/).
+// Other statuses use .polis/comments/<status>/.
+// When moving to blessed, also adds the comment to public.jsonl for CLI compatibility.
+func MoveComment(dataDir, commentID, fromStatus, toStatus string) error {
+	// Determine source path
+	var fromPath string
+	if fromStatus == StatusBlessed {
+		// Need to find the blessed comment in date directories
+		found, foundPath := findBlessedComment(dataDir, commentID)
+		if !found {
+			return fmt.Errorf("comment not found: %s", commentID)
+		}
+		fromPath = foundPath
+	} else {
+		fromPath = filepath.Join(dataDir, ".polis", "comments", fromStatus, commentID+".md")
+	}
+
+	// Read source file
+	data, err := os.ReadFile(fromPath)
+	if err != nil {
+		return fmt.Errorf("failed to read comment: %w", err)
+	}
+
+	content := string(data)
+	fm := ParseFrontmatter(content)
+
+	// Determine destination path
+	var toPath string
+	var relativePath string // For public.jsonl entry
+	if toStatus == StatusBlessed {
+		// Extract timestamp from frontmatter to determine date directory
+		timestamp := time.Now().UTC()
+		// Try CLI format first (published), then webapp format (timestamp)
+		if ts := fm["published"]; ts != "" {
+			if parsed, err := time.Parse("2006-01-02T15:04:05Z", ts); err == nil {
+				timestamp = parsed
+			}
+		} else if ts := fm["timestamp"]; ts != "" {
+			if parsed, err := time.Parse("2006-01-02T15:04:05Z", ts); err == nil {
+				timestamp = parsed
+			}
+		}
+		dateDir := timestamp.Format("20060102")
+		toDir := filepath.Join(dataDir, "comments", dateDir)
+		if err := os.MkdirAll(toDir, 0755); err != nil {
+			return fmt.Errorf("failed to create directory: %w", err)
+		}
+		toPath = filepath.Join(toDir, commentID+".md")
+		relativePath = filepath.Join("comments", dateDir, commentID+".md")
+	} else {
+		toDir := filepath.Join(dataDir, ".polis", "comments", toStatus)
+		if err := os.MkdirAll(toDir, 0755); err != nil {
+			return fmt.Errorf("failed to create directory: %w", err)
+		}
+		toPath = filepath.Join(toDir, commentID+".md")
+	}
+
+	// Write to destination
+	if err := os.WriteFile(toPath, data, 0644); err != nil {
+		return fmt.Errorf("failed to write comment: %w", err)
+	}
+
+	// Remove source
+	if err := os.Remove(fromPath); err != nil {
+		return fmt.Errorf("failed to remove source comment: %w", err)
+	}
+
+	// When moving to blessed, add to public.jsonl for CLI compatibility
+	if toStatus == StatusBlessed {
+		// Parse nested in-reply-to structure
+		inReplyToURL, _ := ParseNestedInReplyTo(content)
+		// Fall back to flat field if not found
+		if inReplyToURL == "" {
+			inReplyToURL = fm["in_reply_to"]
+		}
+
+		// Get timestamp (CLI format or webapp format)
+		published := fm["published"]
+		if published == "" {
+			published = fm["timestamp"]
+		}
+
+		// Get version (CLI format or webapp format)
+		version := fm["current-version"]
+		if version == "" {
+			version = fm["comment_version"]
+		}
+
+		// Add to public.jsonl
+		if err := metadata.AppendCommentToIndex(
+			dataDir,
+			relativePath,
+			fm["title"],
+			published,
+			version,
+			inReplyToURL,
+		); err != nil {
+			// Log but don't fail - the comment is already blessed
+			// This is a best-effort index update
+			_ = err
+		}
+	}
+
+	return nil
+}
+
+// findBlessedComment searches for a blessed comment in the date-based directory structure.
+// Structure: comments/YYYYMMDD/comment-id.md
+func findBlessedComment(dataDir, commentID string) (bool, string) {
+	commentsDir := filepath.Join(dataDir, "comments")
+
+	// Walk through date directories (YYYYMMDD format)
+	dateDirs, err := os.ReadDir(commentsDir)
+	if err != nil {
+		return false, ""
+	}
+
+	for _, dateDir := range dateDirs {
+		if !dateDir.IsDir() {
+			continue
+		}
+		commentPath := filepath.Join(commentsDir, dateDir.Name(), commentID+".md")
+		if _, err := os.Stat(commentPath); err == nil {
+			return true, commentPath
+		}
+	}
+
+	return false, ""
+}
+
+// ListComments returns comments with a specific status.
+// For blessed status, searches the date-based public comments directory.
+// For other statuses, searches the private .polis/comments/<status>/ directory.
+// Parses CLI-compatible frontmatter format.
+func ListComments(dataDir, status string) ([]*CommentMeta, error) {
+	if status == StatusBlessed {
+		return listBlessedComments(dataDir)
+	}
+
+	commentsDir := filepath.Join(dataDir, ".polis", "comments", status)
+	entries, err := os.ReadDir(commentsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []*CommentMeta{}, nil
+		}
+		return nil, fmt.Errorf("failed to read comments directory: %w", err)
+	}
+
+	var comments []*CommentMeta
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
+			continue
+		}
+
+		commentPath := filepath.Join(commentsDir, entry.Name())
+		data, err := os.ReadFile(commentPath)
+		if err != nil {
+			continue
+		}
+
+		content := string(data)
+		fm := ParseFrontmatter(content)
+
+		// Parse nested in-reply-to structure (CLI format)
+		inReplyToURL, rootPost := ParseNestedInReplyTo(content)
+
+		// Fall back to flat fields if nested not found (backwards compat)
+		if inReplyToURL == "" {
+			inReplyToURL = fm["in_reply_to"]
+		}
+		if rootPost == "" {
+			rootPost = fm["root_post"]
+		}
+
+		// Use CLI field names, fall back to webapp field names
+		timestamp := fm["published"]
+		if timestamp == "" {
+			timestamp = fm["timestamp"]
+		}
+		version := fm["current-version"]
+		if version == "" {
+			version = fm["comment_version"]
+		}
+
+		meta := &CommentMeta{
+			ID:             strings.TrimSuffix(entry.Name(), ".md"),
+			Title:          fm["title"],
+			CommentURL:     fm["comment_url"], // May be empty for CLI-created comments
+			CommentVersion: version,
+			InReplyTo:      inReplyToURL,
+			RootPost:       rootPost,
+			Author:         fm["author"],
+			Timestamp:      timestamp,
+			Updated:        fm["updated"],
+			Status:         status,
+		}
+		comments = append(comments, meta)
+	}
+
+	return comments, nil
+}
+
+// listBlessedComments walks the date-based directory structure to find all blessed comments.
+// Structure: comments/YYYYMMDD/comment-id.md
+// Parses CLI-compatible frontmatter format.
+func listBlessedComments(dataDir string) ([]*CommentMeta, error) {
+	var comments []*CommentMeta
+	commentsDir := filepath.Join(dataDir, "comments")
+
+	// Walk through date directories (YYYYMMDD format)
+	dateDirs, err := os.ReadDir(commentsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []*CommentMeta{}, nil
+		}
+		return nil, fmt.Errorf("failed to read comments directory: %w", err)
+	}
+
+	for _, dateDir := range dateDirs {
+		if !dateDir.IsDir() {
+			continue
+		}
+		datePath := filepath.Join(commentsDir, dateDir.Name())
+
+		// List comment files in this date directory
+		files, err := os.ReadDir(datePath)
+		if err != nil {
+			continue
+		}
+
+		for _, file := range files {
+			if file.IsDir() || !strings.HasSuffix(file.Name(), ".md") {
+				continue
+			}
+
+			commentPath := filepath.Join(datePath, file.Name())
+			data, err := os.ReadFile(commentPath)
+			if err != nil {
+				continue
+			}
+
+			content := string(data)
+			fm := ParseFrontmatter(content)
+
+			// Parse nested in-reply-to structure (CLI format)
+			inReplyToURL, rootPost := ParseNestedInReplyTo(content)
+
+			// Fall back to flat fields if nested not found (backwards compat)
+			if inReplyToURL == "" {
+				inReplyToURL = fm["in_reply_to"]
+			}
+			if rootPost == "" {
+				rootPost = fm["root_post"]
+			}
+
+			// Use CLI field names, fall back to webapp field names
+			timestamp := fm["published"]
+			if timestamp == "" {
+				timestamp = fm["timestamp"]
+			}
+			version := fm["current-version"]
+			if version == "" {
+				version = fm["comment_version"]
+			}
+
+			meta := &CommentMeta{
+				ID:             strings.TrimSuffix(file.Name(), ".md"),
+				Title:          fm["title"],
+				CommentURL:     fm["comment_url"], // May be empty for CLI-created comments
+				CommentVersion: version,
+				InReplyTo:      inReplyToURL,
+				RootPost:       rootPost,
+				Author:         fm["author"],
+				Timestamp:      timestamp,
+				Updated:        fm["updated"],
+				Status:         StatusBlessed,
+			}
+			comments = append(comments, meta)
+		}
+	}
+
+	return comments, nil
+}
+
+// GetComment retrieves a specific comment by ID and status.
+// For blessed status, searches the date-based public directory.
+// For other statuses, uses the private .polis/comments/<status>/ directory.
+// Parses CLI-compatible frontmatter format.
+func GetComment(dataDir, commentID, status string) (*SignedComment, error) {
+	var commentPath string
+
+	if status == StatusBlessed {
+		found, foundPath := findBlessedComment(dataDir, commentID)
+		if !found {
+			return nil, fmt.Errorf("comment not found: %s", commentID)
+		}
+		commentPath = foundPath
+	} else {
+		commentPath = filepath.Join(dataDir, ".polis", "comments", status, commentID+".md")
+	}
+
+	data, err := os.ReadFile(commentPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read comment: %w", err)
+	}
+
+	fileContent := string(data)
+	fm := ParseFrontmatter(fileContent)
+	content := StripFrontmatter(fileContent)
+
+	// Parse nested in-reply-to structure (CLI format)
+	inReplyToURL, rootPost := ParseNestedInReplyTo(fileContent)
+
+	// Fall back to flat fields if nested not found (backwards compat)
+	if inReplyToURL == "" {
+		inReplyToURL = fm["in_reply_to"]
+	}
+	if rootPost == "" {
+		rootPost = fm["root_post"]
+	}
+
+	// Use CLI field names, fall back to webapp field names
+	timestamp := fm["published"]
+	if timestamp == "" {
+		timestamp = fm["timestamp"]
+	}
+	version := fm["current-version"]
+	if version == "" {
+		version = fm["comment_version"]
+	}
+
+	meta := &CommentMeta{
+		ID:             commentID,
+		Title:          fm["title"],
+		CommentURL:     fm["comment_url"], // May be empty for CLI-created comments
+		CommentVersion: version,
+		InReplyTo:      inReplyToURL,
+		RootPost:       rootPost,
+		Author:         fm["author"],
+		Timestamp:      timestamp,
+		Updated:        fm["updated"],
+		Status:         status,
+	}
+
+	return &SignedComment{
+		Meta:      meta,
+		Content:   content,
+		Signature: fm["signature"],
+	}, nil
+}
+
+// ParseFrontmatter extracts frontmatter fields from content.
+func ParseFrontmatter(content string) map[string]string {
+	result := make(map[string]string)
+	content = strings.TrimSpace(content)
+	if !strings.HasPrefix(content, "---") {
+		return result
+	}
+
+	// Find frontmatter block
+	re := regexp.MustCompile(`(?s)^---\n(.*?)\n---`)
+	matches := re.FindStringSubmatch(content)
+	if len(matches) < 2 {
+		return result
+	}
+
+	// Parse simple key: value pairs
+	lines := strings.Split(matches[1], "\n")
+	for _, line := range lines {
+		if strings.HasPrefix(line, "  ") || strings.HasPrefix(line, "\t") {
+			continue // Skip nested items
+		}
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) == 2 {
+			key := strings.TrimSpace(parts[0])
+			value := strings.TrimSpace(parts[1])
+			result[key] = value
+		}
+	}
+
+	return result
+}
+
+// StripFrontmatter removes frontmatter from content.
+func StripFrontmatter(content string) string {
+	content = strings.TrimSpace(content)
+	if !strings.HasPrefix(content, "---") {
+		return content
+	}
+
+	re := regexp.MustCompile(`(?s)^---\n.*?\n---\n*`)
+	return strings.TrimSpace(re.ReplaceAllString(content, ""))
+}
+
+// CanonicalizeContent normalizes content for consistent hashing.
+// Strips leading empty lines, removes trailing whitespace from lines,
+// and ensures single trailing newline.
+// This matches the validator's canonicalizeContent function.
+func CanonicalizeContent(content string) string {
+	// Normalize line endings to LF (remove any CR characters)
+	content = strings.ReplaceAll(content, "\r\n", "\n")
+	content = strings.ReplaceAll(content, "\r", "\n")
+
+	// Strip leading empty lines (matches validator's .replace(/^\n+/, ''))
+	content = strings.TrimLeft(content, "\n")
+
+	lines := strings.Split(content, "\n")
+
+	// Trim trailing whitespace from each line (including \r, space, tab)
+	for i, line := range lines {
+		lines[i] = strings.TrimRight(line, " \t\r")
+	}
+
+	// Remove trailing empty lines
+	for len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+
+	// Join and ensure single trailing newline
+	result := strings.Join(lines, "\n")
+	if result != "" {
+		result += "\n"
+	}
+
+	return result
+}
+
+// HashContent computes SHA256 hash of content.
+func HashContent(content []byte) string {
+	hash := sha256.Sum256(content)
+	return hex.EncodeToString(hash[:])
+}
+
+// extractSignatureBase64 extracts the base64 content from an SSH signature.
+func extractSignatureBase64(sig string) string {
+	lines := strings.Split(sig, "\n")
+	var base64Lines []string
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "-----") {
+			continue
+		}
+		base64Lines = append(base64Lines, line)
+	}
+	return strings.Join(base64Lines, "")
+}
+
+// ToJSON serializes CommentMeta to JSON.
+func (m *CommentMeta) ToJSON() ([]byte, error) {
+	return json.Marshal(m)
+}
+
+// CommentMetaFromJSON deserializes CommentMeta from JSON.
+func CommentMetaFromJSON(data []byte) (*CommentMeta, error) {
+	var meta CommentMeta
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return nil, err
+	}
+	return &meta, nil
+}
+
+// extractTitleFromContent extracts title from first markdown heading.
+func extractTitleFromContent(content string) string {
+	lines := strings.Split(content, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "# ") {
+			return strings.TrimPrefix(line, "# ")
+		}
+	}
+	return ""
+}
+
+// extractSlugFromURL extracts the slug (filename without extension) from a URL.
+func extractSlugFromURL(url string) string {
+	parts := strings.Split(url, "/")
+	if len(parts) == 0 {
+		return "post"
+	}
+	filename := parts[len(parts)-1]
+	return strings.TrimSuffix(filename, ".md")
+}
+
+// escapeYAMLTitle escapes a title for YAML frontmatter (CLI-compatible).
+// Only quotes when truly necessary (contains colons, newlines, or special chars).
+func escapeYAMLTitle(s string) string {
+	needsQuoting := false
+	if strings.HasPrefix(s, " ") || strings.HasSuffix(s, " ") {
+		needsQuoting = true
+	} else if strings.Contains(s, ": ") || strings.HasSuffix(s, ":") {
+		needsQuoting = true
+	} else if strings.Contains(s, "\n") {
+		needsQuoting = true
+	} else if strings.Contains(s, "\"") {
+		needsQuoting = true
+	} else if len(s) > 0 {
+		firstChar := s[0]
+		if firstChar == '*' || firstChar == '&' || firstChar == '!' ||
+			firstChar == '|' || firstChar == '>' || firstChar == '@' ||
+			firstChar == '`' || firstChar == '#' {
+			needsQuoting = true
+		}
+	}
+	if needsQuoting {
+		escaped := strings.ReplaceAll(s, "\"", "\\\"")
+		return fmt.Sprintf("\"%s\"", escaped)
+	}
+	return s
+}
+
+// ParseNestedInReplyTo extracts url and root-post from nested in-reply-to structure.
+// CLI format:
+//
+//	in-reply-to:
+//	  url: https://...
+//	  root-post: https://...
+func ParseNestedInReplyTo(content string) (url, rootPost string) {
+	lines := strings.Split(content, "\n")
+	inReplyToSection := false
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		// Check if we're entering in-reply-to section
+		if strings.HasPrefix(line, "in-reply-to:") && !strings.HasPrefix(line, "  ") {
+			inReplyToSection = true
+			continue
+		}
+
+		// Check if we've left the in-reply-to section (new top-level field)
+		if inReplyToSection && !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") && trimmed != "" {
+			break
+		}
+
+		// Parse nested fields
+		if inReplyToSection {
+			if strings.HasPrefix(trimmed, "url:") {
+				url = strings.TrimSpace(strings.TrimPrefix(trimmed, "url:"))
+			} else if strings.HasPrefix(trimmed, "root-post:") {
+				rootPost = strings.TrimSpace(strings.TrimPrefix(trimmed, "root-post:"))
+			}
+		}
+	}
+
+	return url, rootPost
+}

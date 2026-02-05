@@ -41,26 +41,54 @@ Works with GitHub Pages, Vercel, Netlify, or any static host.
 
 ---
 
-## Quick start
+## Installation
 
-### Prerequisites
+### Pre-built Binary (Recommended)
 
 ```bash
-# macOS
-brew install openssh jq curl pandoc git
+# Linux/macOS one-liner
+curl -fsSL https://raw.githubusercontent.com/vdibart/polis-cli/main/scripts/install.sh | bash
 
-# Ubuntu/Debian
-sudo apt-get install openssh-client jq curl pandoc git
+# Or download from GitHub Releases
+# https://github.com/vdibart/polis-cli/releases
 ```
 
-### Install
+### Build from Source
 
 ```bash
+git clone https://github.com/vdibart/polis-cli.git
+cd polis-cli
+make build
+./cli-go/polis version
+```
+
+### Bash CLI (Original)
+
+The original bash implementation works on any system with bash, jq, and curl:
+
+```bash
+# Prerequisites
+# macOS: brew install openssh jq curl pandoc git
+# Ubuntu: sudo apt-get install openssh-client jq curl pandoc git
+
 git clone https://github.com/vdibart/polis-cli.git
 export PATH="$PATH:$(pwd)/polis-cli/bin"
 ```
 
-### Initialize and publish
+### Comparison
+
+| | Bash CLI | Go CLI |
+|---|---|---|
+| Dependencies | bash, jq, curl, ssh | None |
+| Platforms | Linux, macOS | Linux, macOS, Windows |
+| Size | ~320 KB | ~9 MB |
+| TUI mode | Yes | Coming soon |
+
+---
+
+## Quick start
+
+### Initialize and publish (using bash CLI)
 
 ```bash
 mkdir my-site && cd my-site

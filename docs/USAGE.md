@@ -619,7 +619,7 @@ Are you sure you want to unregister example.com? (type 'yes' to confirm)
 
 **JSON mode:** Skips interactive confirmation automatically.
 
-### `polis render [--force]`
+### `polis render [--force] [--no-markers]`
 
 Render markdown posts and comments to static HTML files using pandoc.
 
@@ -629,6 +629,9 @@ polis render
 
 # Force re-render all files
 polis render --force
+
+# Render without snippet markers (for production/clean HTML)
+polis render --no-markers
 ```
 
 **What it does:**
@@ -711,6 +714,38 @@ This enables:
 - Verification that the HTML matches the signed source
 - Extraction of original markdown from rendered HTML
 - Debugging template issues by comparing source to output
+
+#### Snippet Markers
+
+By default, `polis render` injects hidden markers around snippet content to enable in-browser snippet editing in the webapp. Each snippet inclusion (`{{> snippet-name}}`) is wrapped with:
+
+```html
+<!-- POLIS-SNIPPET-START: global:snippet-name path=snippets/snippet-name.html -->
+<span class="polis-snippet-boundary" data-snippet="global:snippet-name"
+      data-path="snippets/snippet-name.html" data-source="global" hidden></span>
+<!-- actual snippet content -->
+<!-- POLIS-SNIPPET-END: global:snippet-name -->
+```
+
+**Marker behavior:**
+- The hidden `<span>` provides a DOM anchor for JavaScript without affecting layout
+- `data-snippet` contains the snippet identifier (source:name format)
+- `data-path` contains the file path for API calls
+- `data-source` indicates "global" (from `snippets/`) or "theme" (from theme)
+- Nested snippets each get their own markers, creating a hierarchy
+
+**Disabling markers:**
+
+For production deployments or when you want clean HTML without markers:
+
+```bash
+polis render --no-markers
+```
+
+This is useful for:
+- Production builds where markers are unnecessary
+- Debugging template output without extra HTML
+- Compatibility with strict HTML validators
 
 **JSON mode:** See [JSON-MODE.md](JSON-MODE.md) for response format.
 

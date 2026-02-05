@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.44.0] - 2026-02-04
+
+### Added
+
+- **[Go CLI] Initial release (v0.1.0)** - Native Go implementation of the polis CLI
+  - Zero external dependencies - single binary for Linux, macOS, and Windows
+  - Cross-platform support: linux/darwin/windows on amd64/arm64
+  - Core commands implemented: `init`, `post`, `comment`, `render`, `register`, `validate`, `blessing` (requests/grant/deny), `version`
+  - Same data formats and file structures as bash CLI for full compatibility
+  - Available via GitHub Releases or build from source with `make build`
+  - Install script: `curl -fsSL https://raw.githubusercontent.com/vdibart/polis-cli/main/scripts/install.sh | bash`
+
+### Changed
+
+- **`polis init` improvements** - Enhanced `.gitignore` and added `.env.example` template
+  - `.gitignore` now excludes more files: `.env`, `logs/`, polis executables, `themes/`
+  - New `.env.example` template created during init with documented configuration options
+  - Clearer setup guidance for new users
+
+- **`polis render --no-markers` flag** - Disable snippet markers in rendered HTML
+  - By default, `polis render` injects hidden markers around snippet content for browser-based editing
+  - Use `--no-markers` for production builds or clean HTML output
+  - Useful for strict HTML validators or when markers are unnecessary
+
 ## [0.43.0] - 2026-02-01
 
 ### Fixed

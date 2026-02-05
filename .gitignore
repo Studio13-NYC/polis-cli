@@ -58,3 +58,14 @@ Thumbs.db
 
 # Keep example file
 !.env.example
+
+# Go build artifacts
+cli-go/polis
+cli-go/polis.exe
+
+# Goreleaser output (already covered by dist/ above but being explicit)
+# dist/
+
+# Go workspace (if using go.work)
+go.work
+go.work.sum

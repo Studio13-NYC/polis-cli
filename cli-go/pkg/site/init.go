@@ -15,31 +15,82 @@ import (
 // InitOptions contains options for initializing a new polis site.
 type InitOptions struct {
 	SiteTitle string // Optional site title
-	Author    string // Optional author name
-	Email     string // Optional author email
-	BaseURL   string // Optional base URL (e.g., https://alice.polis.pub)
+	Version   string // CLI version (e.g. "0.47.0") for metadata files
+	// Custom directory paths (empty = use defaults)
+	KeysDir     string
+	PostsDir    string
+	CommentsDir string
+	SnippetsDir string
+	ThemesDir   string
+	VersionsDir string
+	// Custom file paths (empty = use defaults)
+	PublicIndex     string
+	BlessedComments string
+	FollowingIndex  string
+}
+
+// applyDefaults fills in default values for any empty fields.
+func (o *InitOptions) applyDefaults() {
+	if o.Version == "" {
+		o.Version = "dev"
+	}
+	if o.KeysDir == "" {
+		o.KeysDir = ".polis/keys"
+	}
+	if o.PostsDir == "" {
+		o.PostsDir = "posts"
+	}
+	if o.CommentsDir == "" {
+		o.CommentsDir = "comments"
+	}
+	if o.SnippetsDir == "" {
+		o.SnippetsDir = "snippets"
+	}
+	if o.ThemesDir == "" {
+		o.ThemesDir = ".polis/themes"
+	}
+	if o.VersionsDir == "" {
+		o.VersionsDir = ".versions"
+	}
+	if o.PublicIndex == "" {
+		o.PublicIndex = "metadata/public.jsonl"
+	}
+	if o.BlessedComments == "" {
+		o.BlessedComments = "metadata/blessed-comments.json"
+	}
+	if o.FollowingIndex == "" {
+		o.FollowingIndex = "metadata/following.json"
+	}
 }
 
 // InitResult contains the result of site initialization.
 type InitResult struct {
-	Success   bool   `json:"success"`
-	SiteDir   string `json:"site_dir"`
-	PublicKey string `json:"public_key"`
-	Error     string `json:"error,omitempty"`
+	Success      bool     `json:"success"`
+	SiteDir      string   `json:"site_dir"`
+	PublicKey     string   `json:"public_key"`
+	DirsCreated  []string `json:"directories_created,omitempty"`
+	FilesCreated []string `json:"files_created,omitempty"`
+	KeyPaths     struct {
+		Private string `json:"private"`
+		Public  string `json:"public"`
+	} `json:"key_paths"`
+	Error string `json:"error,omitempty"`
 }
 
 // Init creates a new polis site in the given directory.
 // This function has no webapp dependencies and can be used by CLI tools.
 // It will NOT overwrite existing keys or .well-known/polis - this is a safety feature.
 func Init(siteDir string, opts InitOptions) (*InitResult, error) {
+	opts.applyDefaults()
+
 	result := &InitResult{
 		Success: false,
 		SiteDir: siteDir,
 	}
 
 	// SAFETY: Check if keys already exist - refuse to overwrite
-	privKeyPath := filepath.Join(siteDir, ".polis", "keys", "id_ed25519")
-	pubKeyPath := filepath.Join(siteDir, ".polis", "keys", "id_ed25519.pub")
+	privKeyPath := filepath.Join(siteDir, opts.KeysDir, "id_ed25519")
+	pubKeyPath := filepath.Join(siteDir, opts.KeysDir, "id_ed25519.pub")
 	wellKnownPath := filepath.Join(siteDir, ".well-known", "polis")
 
 	if _, err := os.Stat(privKeyPath); err == nil {
@@ -52,30 +103,40 @@ func Init(siteDir string, opts InitOptions) (*InitResult, error) {
 		return nil, fmt.Errorf(".well-known/polis already exists at %s - refusing to overwrite", wellKnownPath)
 	}
 
+	// Derive metadata dir from the public index path
+	metadataDir := filepath.Dir(filepath.Join(siteDir, opts.PublicIndex))
+
 	// Create directory structure (matches CLI's init behavior)
 	dirs := []string{
 		siteDir,
 		// Private directories (matches CLI)
 		filepath.Join(siteDir, ".polis"),
-		filepath.Join(siteDir, ".polis", "keys"),
-		filepath.Join(siteDir, ".polis", "themes"),
-		filepath.Join(siteDir, ".polis", "drafts"),
+		filepath.Join(siteDir, opts.KeysDir),
+		filepath.Join(siteDir, opts.ThemesDir),
+		filepath.Join(siteDir, ".polis", "posts", "drafts"),
 		filepath.Join(siteDir, ".polis", "comments", "drafts"),
 		filepath.Join(siteDir, ".polis", "comments", "pending"),
 		filepath.Join(siteDir, ".polis", "comments", "denied"),
 		// Public directories (matches CLI)
 		filepath.Join(siteDir, ".well-known"),
-		filepath.Join(siteDir, "posts"),
-		filepath.Join(siteDir, "comments"),
-		filepath.Join(siteDir, "snippets"),
-		filepath.Join(siteDir, "metadata"),
+		filepath.Join(siteDir, opts.PostsDir),
+		filepath.Join(siteDir, opts.CommentsDir),
+		filepath.Join(siteDir, opts.SnippetsDir),
+		metadataDir,
 	}
 
+	var dirsCreated []string
 	for _, dir := range dirs {
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			return nil, fmt.Errorf("failed to create directory %s: %w", dir, err)
 		}
+		// Track relative path for result
+		rel, _ := filepath.Rel(siteDir, dir)
+		if rel != "." {
+			dirsCreated = append(dirsCreated, rel)
+		}
 	}
+	result.DirsCreated = dirsCreated
 
 	// Generate keypair
 	privKey, pubKey, err := signing.GenerateKeypair()
@@ -91,21 +152,18 @@ func Init(siteDir string, opts InitOptions) (*InitResult, error) {
 		return nil, fmt.Errorf("failed to write public key: %w", err)
 	}
 
+	result.KeyPaths.Private = opts.KeysDir + "/id_ed25519"
+	result.KeyPaths.Public = opts.KeysDir + "/id_ed25519.pub"
+
 	// Create .well-known/polis
 	setupTime := time.Now().UTC()
 
-	// Get author/email from options or fall back to git config
-	author := opts.Author
-	if author == "" {
-		author = getGitConfig("user.name")
-	}
-	email := opts.Email
-	if email == "" {
-		email = getGitConfig("user.email")
-	}
+	// Get author/email from git config
+	author := getGitConfig("user.name")
+	email := getGitConfig("user.email")
 
 	wk := &WellKnown{
-		Version:   "0.1.0",
+		Version:   opts.Version,
 		Author:    author,
 		Email:     email,
 		PublicKey: strings.TrimSpace(string(pubKey)),
@@ -113,21 +171,19 @@ func Init(siteDir string, opts InitOptions) (*InitResult, error) {
 		Created:   setupTime.Format(time.RFC3339),
 		Config: &WellKnownConfig{
 			Directories: WellKnownDirectories{
-				Keys:     ".polis/keys",
-				Posts:    "posts",
-				Comments: "comments",
-				Snippets: "snippets",
-				Themes:   ".polis/themes",
-				Versions: ".versions", // Directory name only; path constructed at runtime
+				Keys:     opts.KeysDir,
+				Posts:    opts.PostsDir,
+				Comments: opts.CommentsDir,
+				Snippets: opts.SnippetsDir,
+				Themes:   opts.ThemesDir,
+				Versions: opts.VersionsDir,
 			},
 			Files: WellKnownFiles{
-				PublicIndex:     "metadata/public.jsonl",
-				BlessedComments: "metadata/blessed-comments.json",
-				FollowingIndex:  "metadata/following.json",
+				PublicIndex:     opts.PublicIndex,
+				BlessedComments: opts.BlessedComments,
+				FollowingIndex:  opts.FollowingIndex,
 			},
 		},
-		// Note: base_url is NOT stored in .well-known/polis
-		// Use POLIS_BASE_URL env var instead (matches bash CLI behavior)
 	}
 
 	if err := SaveWellKnown(siteDir, wk); err != nil {
@@ -135,9 +191,33 @@ func Init(siteDir string, opts InitOptions) (*InitResult, error) {
 	}
 
 	// Create metadata files (matches CLI initialization)
-	if err := initMetadataFiles(siteDir); err != nil {
+	var filesCreated []string
+	if err := initMetadataFiles(siteDir, opts.Version, opts, &filesCreated); err != nil {
 		return nil, fmt.Errorf("failed to create metadata files: %w", err)
 	}
+
+	// Create webapp-config.json with webapp-specific defaults only.
+	// Discovery credentials (DISCOVERY_SERVICE_URL/KEY) belong in .env
+	// and are loaded at runtime by the webapp's LoadEnv().
+	webappConfigPath := filepath.Join(siteDir, ".polis", "webapp-config.json")
+	if _, err := os.Stat(webappConfigPath); os.IsNotExist(err) {
+		webappConfig := map[string]interface{}{
+			"setup_at":         setupTime.Format(time.RFC3339),
+			"view_mode":        "browser",
+			"show_frontmatter": false,
+		}
+		data, _ := json.MarshalIndent(webappConfig, "", "  ")
+		data = append(data, '\n')
+		if err := os.WriteFile(webappConfigPath, data, 0644); err != nil {
+			return nil, fmt.Errorf("failed to create webapp-config.json: %w", err)
+		}
+		filesCreated = append(filesCreated, ".polis/webapp-config.json")
+	}
+
+	// Add well-known and key files to the list
+	filesCreated = append(filesCreated, ".well-known/polis")
+	filesCreated = append(filesCreated, result.KeyPaths.Private, result.KeyPaths.Public)
+	result.FilesCreated = filesCreated
 
 	// Create .gitignore (matches CLI format)
 	if err := initGitignore(siteDir); err != nil {
@@ -151,14 +231,15 @@ func Init(siteDir string, opts InitOptions) (*InitResult, error) {
 }
 
 // initMetadataFiles creates the initial metadata files.
-func initMetadataFiles(siteDir string) error {
-	metadataDir := filepath.Join(siteDir, "metadata")
+func initMetadataFiles(siteDir, version string, opts InitOptions, filesCreated *[]string) error {
+	// Derive metadata dir from the public index path
+	metadataDir := filepath.Dir(filepath.Join(siteDir, opts.PublicIndex))
 
-	// Create manifest.json if it doesn't exist
+	// Create manifest.json in the metadata dir
 	manifestPath := filepath.Join(metadataDir, "manifest.json")
 	if _, err := os.Stat(manifestPath); os.IsNotExist(err) {
 		manifest := map[string]interface{}{
-			"version":        "1.0",
+			"version":        version,
 			"last_published": "",
 			"post_count":     0,
 			"comment_count":  0,
@@ -167,40 +248,54 @@ func initMetadataFiles(siteDir string) error {
 		if err := os.WriteFile(manifestPath, data, 0644); err != nil {
 			return err
 		}
+		rel, _ := filepath.Rel(siteDir, manifestPath)
+		*filesCreated = append(*filesCreated, rel)
 	}
 
-	// Create following.json if it doesn't exist
-	followingPath := filepath.Join(metadataDir, "following.json")
+	// Create following index
+	followingPath := filepath.Join(siteDir, opts.FollowingIndex)
+	if err := os.MkdirAll(filepath.Dir(followingPath), 0755); err != nil {
+		return err
+	}
 	if _, err := os.Stat(followingPath); os.IsNotExist(err) {
 		following := map[string]interface{}{
-			"version":   "1.0",
+			"version":   version,
 			"following": []interface{}{},
 		}
 		data, _ := json.MarshalIndent(following, "", "  ")
 		if err := os.WriteFile(followingPath, data, 0644); err != nil {
 			return err
 		}
+		*filesCreated = append(*filesCreated, opts.FollowingIndex)
 	}
 
-	// Create blessed-comments.json if it doesn't exist
-	blessedPath := filepath.Join(metadataDir, "blessed-comments.json")
+	// Create blessed comments
+	blessedPath := filepath.Join(siteDir, opts.BlessedComments)
+	if err := os.MkdirAll(filepath.Dir(blessedPath), 0755); err != nil {
+		return err
+	}
 	if _, err := os.Stat(blessedPath); os.IsNotExist(err) {
 		blessed := map[string]interface{}{
-			"version":  "1.0",
+			"version":  version,
 			"comments": []interface{}{},
 		}
 		data, _ := json.MarshalIndent(blessed, "", "  ")
 		if err := os.WriteFile(blessedPath, data, 0644); err != nil {
 			return err
 		}
+		*filesCreated = append(*filesCreated, opts.BlessedComments)
 	}
 
-	// Create empty public.jsonl if it doesn't exist
-	publicPath := filepath.Join(metadataDir, "public.jsonl")
+	// Create empty public index
+	publicPath := filepath.Join(siteDir, opts.PublicIndex)
+	if err := os.MkdirAll(filepath.Dir(publicPath), 0755); err != nil {
+		return err
+	}
 	if _, err := os.Stat(publicPath); os.IsNotExist(err) {
 		if err := os.WriteFile(publicPath, []byte{}, 0644); err != nil {
 			return err
 		}
+		*filesCreated = append(*filesCreated, opts.PublicIndex)
 	}
 
 	return nil

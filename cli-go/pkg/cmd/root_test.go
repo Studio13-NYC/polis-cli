@@ -61,6 +61,22 @@ func TestPrintUsage(t *testing.T) {
 	if !strings.Contains(output, "--json") {
 		t.Error("Expected usage to mention --json flag")
 	}
+
+	// Verify init options are listed
+	initOptions := []string{
+		"--site-title",
+		"--register",
+		"--keys-dir",
+		"--posts-dir",
+		"--comments-dir",
+		"--snippets-dir",
+		"--versions-dir",
+	}
+	for _, opt := range initOptions {
+		if !strings.Contains(output, opt) {
+			t.Errorf("Expected usage to contain init option %q", opt)
+		}
+	}
 }
 
 func TestVersion(t *testing.T) {

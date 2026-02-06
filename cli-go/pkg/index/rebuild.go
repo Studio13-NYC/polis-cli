@@ -10,6 +10,9 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/vdibart/polis-cli/cli-go/pkg/discovery"
+	"github.com/vdibart/polis-cli/cli-go/pkg/metadata"
 )
 
 // PostEntry represents a post entry in public.jsonl.
@@ -27,6 +30,10 @@ type RebuildOptions struct {
 	Comments      bool
 	Notifications bool
 	All           bool
+	// Discovery service params for blessed comments rebuild
+	DiscoveryURL string
+	DiscoveryKey string
+	BaseURL      string // Site base URL (e.g., https://alice.polis.pub)
 }
 
 // RebuildResult contains the results of a rebuild operation.
@@ -49,7 +56,7 @@ func RebuildIndex(dataDir, baseURL string, opts RebuildOptions) (*RebuildResult,
 	}
 
 	if opts.All || opts.Comments {
-		count, err := rebuildCommentsIndex(dataDir)
+		count, err := rebuildCommentsIndex(dataDir, opts)
 		if err != nil {
 			return nil, fmt.Errorf("failed to rebuild comments index: %w", err)
 		}
@@ -159,19 +166,71 @@ func buildPostEntry(path, dataDir, baseURL string) (PostEntry, error) {
 	}, nil
 }
 
-// rebuildCommentsIndex rebuilds blessed-comments.json.
-func rebuildCommentsIndex(dataDir string) (int, error) {
-	blessedPath := filepath.Join(dataDir, "metadata", "blessed-comments.json")
+// rebuildCommentsIndex rebuilds blessed-comments.json from the discovery service.
+// Falls back to an empty file if discovery is not configured.
+func rebuildCommentsIndex(dataDir string, opts RebuildOptions) (int, error) {
+	metadataDir := filepath.Join(dataDir, "metadata")
+	if err := os.MkdirAll(metadataDir, 0755); err != nil {
+		return 0, err
+	}
 
-	// For now, just ensure the file exists with empty comments
-	// A full rebuild would need to query the discovery service
-	if _, err := os.Stat(blessedPath); os.IsNotExist(err) {
-		data := map[string]interface{}{
-			"version":  "0.45.0",
-			"comments": []interface{}{},
+	// If discovery is configured, fetch blessed comments
+	if opts.DiscoveryURL != "" && opts.DiscoveryKey != "" && opts.BaseURL != "" {
+		client := discovery.NewClient(opts.DiscoveryURL, opts.DiscoveryKey)
+
+		// Extract domain from base URL
+		domain := opts.BaseURL
+		domain = strings.TrimPrefix(domain, "https://")
+		domain = strings.TrimPrefix(domain, "http://")
+		domain = strings.TrimSuffix(domain, "/")
+
+		comments, err := client.GetBlessedComments(domain)
+		if err == nil && len(comments) > 0 {
+			// Build fresh blessed-comments.json
+			bc := &metadata.BlessedComments{
+				Version:  "0.45.0",
+				Comments: []metadata.PostComments{},
+			}
+
+			// Group by post
+			postMap := make(map[string][]metadata.BlessedComment)
+			for _, c := range comments {
+				postPath := c.InReplyTo
+				// Extract relative path
+				if idx := strings.Index(postPath, "/posts/"); idx >= 0 {
+					postPath = postPath[idx+1:]
+				}
+				postMap[postPath] = append(postMap[postPath], metadata.BlessedComment{
+					URL:       c.CommentURL,
+					Version:   c.CommentVersion,
+					BlessedAt: c.BlessedAt,
+				})
+			}
+
+			for post, blessed := range postMap {
+				bc.Comments = append(bc.Comments, metadata.PostComments{
+					Post:    post,
+					Blessed: blessed,
+				})
+			}
+
+			if err := metadata.SaveBlessedComments(dataDir, bc); err != nil {
+				return 0, err
+			}
+
+			return len(comments), nil
 		}
-		jsonData, _ := json.MarshalIndent(data, "", "  ")
-		if err := os.WriteFile(blessedPath, append(jsonData, '\n'), 0644); err != nil {
+		// If fetch fails, fall through to empty file
+	}
+
+	// No discovery or fetch failed - ensure file exists with empty comments
+	blessedPath := filepath.Join(metadataDir, "blessed-comments.json")
+	if _, err := os.Stat(blessedPath); os.IsNotExist(err) {
+		bc := &metadata.BlessedComments{
+			Version:  "0.45.0",
+			Comments: []metadata.PostComments{},
+		}
+		if err := metadata.SaveBlessedComments(dataDir, bc); err != nil {
 			return 0, err
 		}
 	}

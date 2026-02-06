@@ -30,8 +30,10 @@ _polis() {
         'render:Render markdown to HTML (--force, --init-templates)'
         'republish:Update an already-published file'
         'rotate-key:Generate new keypair and re-sign content (--delete-old-key)'
+        'serve:Start local web server (bundled binary only, -d/--data-dir)'
         'unfollow:Unfollow an author (--announce to broadcast)'
         'unregister:Unregister site from discovery service (--force to skip confirmation)'
+        'validate:Validate site structure (--json)'
         'version:Print CLI version'
     )
 
@@ -225,6 +227,14 @@ _polis() {
                     _arguments \
                         '--json[Output in JSON format]' \
                         ':new-domain:'
+                    ;;
+                serve)
+                    _arguments \
+                        '-d[Polis site directory]:directory:_files -/' \
+                        '--data-dir[Polis site directory]:directory:_files -/'
+                    ;;
+                validate)
+                    _arguments '--json[Output in JSON format]'
                     ;;
                 about|version|index|register)
                     _arguments '--json[Output in JSON format]'

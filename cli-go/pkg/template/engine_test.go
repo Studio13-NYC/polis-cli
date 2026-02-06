@@ -95,6 +95,65 @@ func TestBlessedCommentsSection(t *testing.T) {
 	}
 }
 
+func TestCommentsSection(t *testing.T) {
+	engine := New(Config{})
+	ctx := NewRenderContext()
+	ctx.Comments = []CommentData{
+		{URL: "/comments/1.html", TargetAuthor: "alice.com", PublishedHuman: "January 1, 2026", Preview: "Great post!"},
+	}
+
+	template := `{{#comments}}<span>{{target_author}}</span> {{preview}}{{/comments}}`
+
+	result, err := engine.Render(template, ctx)
+	if err != nil {
+		t.Fatalf("Render failed: %v", err)
+	}
+
+	if !strings.Contains(result, "<span>alice.com</span> Great post!") {
+		t.Errorf("Expected comment variables substituted, got: %s", result)
+	}
+}
+
+func TestCommentsSectionViaPartial(t *testing.T) {
+	// Regression test: comment loop variables must resolve through partials.
+	// The index template uses {{> theme:comment-item}} inside {{#comments}},
+	// so target_author and preview must be available after partial expansion.
+	tempDir := t.TempDir()
+	themeDir := filepath.Join(tempDir, ".polis", "themes", "turbo", "snippets")
+	os.MkdirAll(themeDir, 0755)
+	os.WriteFile(filepath.Join(themeDir, "comment-item.html"), []byte(
+		`<span class="author">{{target_author}}</span> <span class="preview">{{preview}}</span>`), 0644)
+
+	engine := New(Config{
+		DataDir:     tempDir,
+		ActiveTheme: "turbo",
+	})
+	ctx := NewRenderContext()
+	ctx.Comments = []CommentData{
+		{URL: "/c/1.html", TargetAuthor: "bob.example.com", PublishedHuman: "Feb 6, 2026", Preview: "Nice work"},
+	}
+
+	template := `{{#comments}}{{> theme:comment-item}}{{/comments}}`
+
+	result, err := engine.Render(template, ctx)
+	if err != nil {
+		t.Fatalf("Render failed: %v", err)
+	}
+
+	if strings.Contains(result, "{{target_author}}") {
+		t.Errorf("target_author was not substituted: %s", result)
+	}
+	if strings.Contains(result, "{{preview}}") {
+		t.Errorf("preview was not substituted: %s", result)
+	}
+	if !strings.Contains(result, "bob.example.com") {
+		t.Errorf("Expected target_author value, got: %s", result)
+	}
+	if !strings.Contains(result, "Nice work") {
+		t.Errorf("Expected preview value, got: %s", result)
+	}
+}
+
 func TestPartialLoading(t *testing.T) {
 	// Create temp directory with snippets
 	tempDir := t.TempDir()

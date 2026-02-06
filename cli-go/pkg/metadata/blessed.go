@@ -7,8 +7,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
+
+// Version is set at startup by the cmd package.
+var Version = "dev"
 
 const (
 	// BlessedCommentsFilename is the name of the blessed comments index file.
@@ -117,7 +121,7 @@ func AddBlessedComment(siteDir string, postPath string, comment BlessedComment) 
 		// If file doesn't exist, create new structure
 		if errors.Is(err, os.ErrNotExist) {
 			bc = &BlessedComments{
-				Version:  "0.42.0",
+				Version:  Version,
 				Comments: []PostComments{},
 			}
 		} else {
@@ -189,6 +193,7 @@ func RemoveBlessedComment(siteDir string, commentURL string) error {
 }
 
 // GetBlessedCommentsForPost returns all blessed comments for a specific post.
+// Uses flexible path matching: tries exact match, .md/.html swap, and URL-to-path extraction.
 func GetBlessedCommentsForPost(siteDir string, postPath string) ([]BlessedComment, error) {
 	bc, err := LoadBlessedComments(siteDir)
 	if err != nil {
@@ -199,12 +204,46 @@ func GetBlessedCommentsForPost(siteDir string, postPath string) ([]BlessedCommen
 	}
 
 	for _, pc := range bc.Comments {
-		if pc.Post == postPath {
+		if matchesPostPath(pc.Post, postPath) {
 			return pc.Blessed, nil
 		}
 	}
 
 	return []BlessedComment{}, nil
+}
+
+// matchesPostPath checks if two post paths refer to the same post.
+// Handles exact match, .md/.html extension swaps, and full URL vs relative path.
+func matchesPostPath(stored, query string) bool {
+	if stored == query {
+		return true
+	}
+
+	// Try .md <-> .html swap
+	storedBase := strings.TrimSuffix(strings.TrimSuffix(stored, ".md"), ".html")
+	queryBase := strings.TrimSuffix(strings.TrimSuffix(query, ".md"), ".html")
+	if storedBase == queryBase {
+		return true
+	}
+
+	// Try extracting relative path from full URL
+	// e.g., "https://alice.polis.pub/posts/20260101/hello.md" matches "posts/20260101/hello.md"
+	extractPath := func(s string) string {
+		if idx := strings.Index(s, "/posts/"); idx >= 0 {
+			return s[idx+1:]
+		}
+		return s
+	}
+	storedRel := extractPath(stored)
+	queryRel := extractPath(query)
+	if storedRel == queryRel {
+		return true
+	}
+
+	// Compare without extensions after extraction
+	storedRelBase := strings.TrimSuffix(strings.TrimSuffix(storedRel, ".md"), ".html")
+	queryRelBase := strings.TrimSuffix(strings.TrimSuffix(queryRel, ".md"), ".html")
+	return storedRelBase == queryRelBase
 }
 
 // IsBlessedComment checks if a comment URL is in the blessed index.

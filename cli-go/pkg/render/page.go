@@ -41,9 +41,11 @@ type RenderStats struct {
 func NewPageRenderer(cfg PageConfig) (*PageRenderer, error) {
 	// Load active theme
 	themeName, err := theme.GetActiveTheme(cfg.DataDir)
-	if err != nil {
-		// Default to turbo if no theme set
-		themeName = "turbo"
+	if err != nil || themeName == "" {
+		themeName, err = theme.SelectRandomTheme(cfg.DataDir, cfg.CLIThemesDir)
+		if err != nil {
+			return nil, fmt.Errorf("no theme available: %w", err)
+		}
 	}
 
 	// Load templates
@@ -232,8 +234,17 @@ func (r *PageRenderer) RenderAll(force bool) (*RenderStats, error) {
 	// Find all posts
 	postsDir := filepath.Join(r.config.DataDir, "posts")
 	if err := filepath.Walk(postsDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() || !strings.HasSuffix(path, ".md") {
+		if err != nil {
 			return err
+		}
+		if info.IsDir() {
+			if info.Name() == ".versions" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".md") {
+			return nil
 		}
 
 		relPath, _ := filepath.Rel(r.config.DataDir, path)
@@ -255,8 +266,17 @@ func (r *PageRenderer) RenderAll(force bool) (*RenderStats, error) {
 	// Find all comments
 	commentsDir := filepath.Join(r.config.DataDir, "comments")
 	if err := filepath.Walk(commentsDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() || !strings.HasSuffix(path, ".md") {
+		if err != nil {
 			return err
+		}
+		if info.IsDir() {
+			if info.Name() == ".versions" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".md") {
+			return nil
 		}
 
 		relPath, _ := filepath.Rel(r.config.DataDir, path)
@@ -343,18 +363,55 @@ func (r *PageRenderer) loadBlessedCommentsForPost(postPath string) ([]template.B
 	var results []template.BlessedCommentData
 
 	for _, comment := range comments {
-		// TODO: Actually load comment content from URL
-		// For now, create placeholder with available info
+		// Try to load local comment content
+		content := r.loadLocalCommentContent(comment.URL)
+
 		results = append(results, template.BlessedCommentData{
 			URL:            comment.URL,
 			AuthorName:     extractDomain(comment.URL),
 			Published:      comment.BlessedAt,
 			PublishedHuman: template.FormatHumanDate(comment.BlessedAt),
-			Content:        "", // Would need to fetch from URL
+			Content:        content,
 		})
 	}
 
 	return results, nil
+}
+
+// loadLocalCommentContent tries to resolve a comment URL to a local file and load its content.
+// Returns rendered HTML content if found, empty string otherwise.
+func (r *PageRenderer) loadLocalCommentContent(commentURL string) string {
+	// Try to extract relative path from URL (e.g., comments/20260101/id.md)
+	relPath := ""
+	if idx := strings.Index(commentURL, "/comments/"); idx >= 0 {
+		relPath = commentURL[idx+1:] // "comments/..."
+	} else if strings.HasPrefix(commentURL, "comments/") {
+		relPath = commentURL
+	}
+
+	if relPath == "" {
+		return ""
+	}
+
+	// Ensure .md extension
+	if !strings.HasSuffix(relPath, ".md") {
+		relPath = strings.TrimSuffix(relPath, ".html") + ".md"
+	}
+
+	// Read the local file
+	fullPath := filepath.Join(r.config.DataDir, relPath)
+	data, err := os.ReadFile(fullPath)
+	if err != nil {
+		return ""
+	}
+
+	// Strip frontmatter and render markdown
+	body := stripFrontmatter(string(data))
+	html, err := MarkdownToHTML(body)
+	if err != nil {
+		return body // Return raw text if rendering fails
+	}
+	return html
 }
 
 // getSiteTitle returns the site title from .well-known/polis.

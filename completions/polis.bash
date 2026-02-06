@@ -13,8 +13,8 @@ _polis_completion() {
     # All top-level commands
     local commands="about blessing clone comment discover extract follow
         index init migrate migrations notifications post preview
-        rebuild register render republish rotate-key unfollow
-        unregister version"
+        rebuild register render republish rotate-key serve unfollow
+        unregister validate version"
 
     # Subcommands for specific commands
     local blessing_subcommands="beseech deny grant requests sync"
@@ -38,6 +38,8 @@ _polis_completion() {
     local rotate_key_opts="--delete-old-key --json"
     local post_opts="--filename --title --json"
     local comment_opts="--filename --title --json"
+    local serve_opts="--data-dir -d"
+    local validate_opts="--json"
 
     # Global options
     local global_opts="--json --help"
@@ -155,6 +157,12 @@ _polis_completion() {
                     if [[ "$cur" == -* ]]; then
                         COMPREPLY=($(compgen -W "--json" -- "$cur"))
                     fi
+                    ;;
+                serve)
+                    [[ "$cur" == -* ]] && COMPREPLY=($(compgen -W "$serve_opts" -- "$cur"))
+                    ;;
+                validate)
+                    [[ "$cur" == -* ]] && COMPREPLY=($(compgen -W "$validate_opts" -- "$cur"))
                     ;;
                 about|version|index|register)
                     [[ "$cur" == -* ]] && COMPREPLY=($(compgen -W "--json" -- "$cur"))

@@ -59,13 +59,13 @@ func validateContentPath(path string) error {
 	}
 
 	// Must start with an allowed prefix (including html versions)
-	allowedPrefixes := []string{"posts/", "comments/", ".polis/drafts/"}
+	allowedPrefixes := []string{"posts/", "comments/", ".polis/posts/drafts/", ".polis/drafts/"}
 	for _, prefix := range allowedPrefixes {
 		if strings.HasPrefix(path, prefix) {
 			return nil
 		}
 	}
-	return fmt.Errorf("invalid path: must be a root .md/.html file or under posts/, comments/, or .polis/drafts/")
+	return fmt.Errorf("invalid path: must be a root .md/.html file or under posts/, comments/, or .polis/posts/drafts/")
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -132,9 +132,6 @@ func (s *Server) handleInit(w http.ResponseWriter, r *http.Request) {
 
 	opts := site.InitOptions{
 		SiteTitle: req.SiteTitle,
-		Author:    req.Author,
-		Email:     req.Email,
-		BaseURL:   req.BaseURL,
 	}
 
 	s.LogDebug("Initializing new site at: %s", s.DataDir)
@@ -308,7 +305,7 @@ func (s *Server) handleRender(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDrafts(w http.ResponseWriter, r *http.Request) {
-	draftsDir := filepath.Join(s.DataDir, ".polis", "drafts")
+	draftsDir := filepath.Join(s.DataDir, ".polis", "posts", "drafts")
 
 	switch r.Method {
 	case http.MethodGet:
@@ -391,7 +388,7 @@ func (s *Server) handleDraft(w http.ResponseWriter, r *http.Request) {
 	id = strings.ReplaceAll(id, "/", "-")
 	id = strings.ReplaceAll(id, "\\", "-")
 
-	draftPath := filepath.Join(s.DataDir, ".polis", "drafts", id+".md")
+	draftPath := filepath.Join(s.DataDir, ".polis", "posts", "drafts", id+".md")
 
 	switch r.Method {
 	case http.MethodGet:
@@ -469,8 +466,12 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[warning] post-publish render failed: %v", err)
 	}
 
-	// Run post-publish hook if configured
-	if s.Config != nil && s.Config.Hooks != nil {
+	// Run post-publish hook (checks explicit config, then auto-discovers .polis/hooks/)
+	{
+		var hc *hooks.HookConfig
+		if s.Config != nil {
+			hc = s.Config.Hooks
+		}
 		payload := &hooks.HookPayload{
 			Event:         hooks.EventPostPublish,
 			Path:          result.Path,
@@ -479,7 +480,7 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 			Timestamp:     time.Now().UTC().Format("2006-01-02T15:04:05Z"),
 			CommitMessage: hooks.GenerateCommitMessage(hooks.EventPostPublish, result.Title),
 		}
-		hookResult, err := hooks.RunHook(s.DataDir, s.Config.Hooks, payload)
+		hookResult, err := hooks.RunHook(s.DataDir, hc, payload)
 		if err != nil {
 			// Log hook error but don't fail the publish
 			log.Printf("[warning] post-publish hook failed: %v", err)
@@ -644,8 +645,12 @@ func (s *Server) handleRepublish(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[warning] post-republish render failed: %v", err)
 	}
 
-	// Run post-republish hook if configured
-	if s.Config != nil && s.Config.Hooks != nil {
+	// Run post-republish hook (checks explicit config, then auto-discovers .polis/hooks/)
+	{
+		var hc *hooks.HookConfig
+		if s.Config != nil {
+			hc = s.Config.Hooks
+		}
 		payload := &hooks.HookPayload{
 			Event:         hooks.EventPostRepublish,
 			Path:          result.Path,
@@ -654,7 +659,7 @@ func (s *Server) handleRepublish(w http.ResponseWriter, r *http.Request) {
 			Timestamp:     time.Now().UTC().Format("2006-01-02T15:04:05Z"),
 			CommitMessage: hooks.GenerateCommitMessage(hooks.EventPostRepublish, result.Title),
 		}
-		hookResult, err := hooks.RunHook(s.DataDir, s.Config.Hooks, payload)
+		hookResult, err := hooks.RunHook(s.DataDir, hc, payload)
 		if err != nil {
 			// Log hook error but don't fail the republish
 			log.Printf("[warning] post-republish hook failed: %v", err)
@@ -931,14 +936,23 @@ func (s *Server) handleCommentBeseech(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// If auto-blessed, move to blessed directory
+	// If auto-blessed, move to blessed directory and re-render
 	if resp.Status == "blessed" {
 		if err := comment.MoveComment(s.DataDir, req.CommentID, comment.StatusPending, comment.StatusBlessed); err != nil {
 			log.Printf("[warning] Failed to move auto-blessed comment: %v", err)
 		}
 
-		// Run hook
-		if s.Config.Hooks != nil {
+		// Re-render site so HTML includes the new blessed comment
+		if err := s.RenderSite(); err != nil {
+			log.Printf("[warning] post-beseech render failed: %v", err)
+		}
+
+		// Run post-comment hook (checks explicit config, then auto-discovers .polis/hooks/)
+		{
+			var hc *hooks.HookConfig
+			if s.Config != nil {
+				hc = s.Config.Hooks
+			}
 			payload := &hooks.HookPayload{
 				Event:         hooks.EventPostComment,
 				Path:          fmt.Sprintf("comments/blessed/%s.md", req.CommentID),
@@ -947,7 +961,7 @@ func (s *Server) handleCommentBeseech(w http.ResponseWriter, r *http.Request) {
 				Timestamp:     time.Now().UTC().Format("2006-01-02T15:04:05Z"),
 				CommitMessage: hooks.GenerateCommitMessage(hooks.EventPostComment, signed.Meta.InReplyTo),
 			}
-			hooks.RunHook(s.DataDir, s.Config.Hooks, payload)
+			hooks.RunHook(s.DataDir, hc, payload)
 		}
 	}
 
@@ -1099,8 +1113,8 @@ func (s *Server) handleBlessingRequests(w http.ResponseWriter, r *http.Request) 
 	// Create discovery client
 	client := discovery.NewClient(s.Config.DiscoveryURL, s.Config.DiscoveryKey)
 
-	// Get domain from subdomain
-	domain := s.Config.Subdomain
+	// Get domain from base URL
+	domain := s.GetSubdomain()
 
 	// Fetch pending blessing requests
 	requests, err := blessing.FetchPendingRequests(client, domain)
@@ -1317,7 +1331,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	baseURL := ""
 
 	if s.Config != nil {
-		subdomain = s.Config.Subdomain
+		subdomain = s.GetSubdomain()
 		discoveryURL = s.Config.DiscoveryURL
 		discoveryConfigured = s.Config.DiscoveryURL != "" && s.Config.DiscoveryKey != ""
 		if s.Config.ViewMode != "" {
@@ -1360,40 +1374,35 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) getAutomations() []Automation {
 	var automations []Automation
-	if s.Config == nil || s.Config.Hooks == nil {
-		return automations
+	var hc *hooks.HookConfig
+	if s.Config != nil {
+		hc = s.Config.Hooks
 	}
 
-	h := s.Config.Hooks
-	if h.PostPublish != "" {
-		automations = append(automations, Automation{
-			ID:          "post-publish",
-			Name:        "Post-publish hook",
-			Description: "Runs after each publish",
-			Event:       "post-publish",
-			ScriptPath:  h.PostPublish,
-			Enabled:     true,
-		})
+	type hookInfo struct {
+		event       hooks.HookEvent
+		id          string
+		name        string
+		description string
 	}
-	if h.PostRepublish != "" {
-		automations = append(automations, Automation{
-			ID:          "post-republish",
-			Name:        "Post-republish hook",
-			Description: "Runs after each republish",
-			Event:       "post-republish",
-			ScriptPath:  h.PostRepublish,
-			Enabled:     true,
-		})
+	allHooks := []hookInfo{
+		{hooks.EventPostPublish, "post-publish", "Post-publish hook", "Runs after each publish"},
+		{hooks.EventPostRepublish, "post-republish", "Post-republish hook", "Runs after each republish"},
+		{hooks.EventPostComment, "post-comment", "Post-comment hook", "Runs after you bless a comment on your site"},
 	}
-	if h.PostComment != "" {
-		automations = append(automations, Automation{
-			ID:          "post-comment",
-			Name:        "Post-comment hook",
-			Description: "Runs after you bless a comment on your site",
-			Event:       "post-comment",
-			ScriptPath:  h.PostComment,
-			Enabled:     true,
-		})
+
+	for _, h := range allHooks {
+		path := hooks.GetHookPathWithDiscovery(hc, h.event, s.DataDir)
+		if path != "" {
+			automations = append(automations, Automation{
+				ID:          h.id,
+				Name:        h.name,
+				Description: h.description,
+				Event:       string(h.event),
+				ScriptPath:  path,
+				Enabled:     true,
+			})
+		}
 	}
 
 	return automations
@@ -1831,7 +1840,7 @@ func (s *Server) handleContent(w http.ResponseWriter, r *http.Request) {
 	} else if strings.HasPrefix(contentPath, "comments/blessed/") {
 		contentType = "blessed_comment"
 		editable = false // Blessed comments from others are not editable
-	} else if strings.HasPrefix(contentPath, ".polis/drafts/") {
+	} else if strings.HasPrefix(contentPath, ".polis/posts/drafts/") || strings.HasPrefix(contentPath, ".polis/drafts/") {
 		contentType = "draft"
 		editable = true // Own drafts are editable
 	} else if strings.HasSuffix(contentPath, ".md") && !strings.Contains(contentPath, "/") {

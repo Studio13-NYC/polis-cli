@@ -19,14 +19,14 @@ func main() {
 
 	// Check if first argument is "serve" to start the server
 	if len(os.Args) > 1 && os.Args[1] == "serve" {
-		runServer(os.Args[2:])
+		runServer(os.Args[2:], Version)
 	} else {
 		// Dispatch to CLI command handler
 		cmd.Execute(os.Args[1:])
 	}
 }
 
-func runServer(args []string) {
+func runServer(args []string, cliVersion string) {
 	// Parse serve-specific flags
 	dataDir := "."
 
@@ -52,6 +52,6 @@ func runServer(args []string) {
 		log.Fatal("Failed to create sub filesystem:", err)
 	}
 
-	// Run the server
-	server.Run(webFS, dataDir)
+	// Run the server with CLI version for metadata
+	server.Run(webFS, dataDir, server.RunOptions{CLIVersion: cliVersion})
 }

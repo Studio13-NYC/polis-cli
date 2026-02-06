@@ -2,6 +2,7 @@
 package publish
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -14,13 +15,17 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/vdibart/polis-cli/cli-go/pkg/metadata"
 	"github.com/vdibart/polis-cli/cli-go/pkg/signing"
 )
 
-const (
-	// Generator identifier for frontmatter
-	Generator = "polis-cli-go/0.1.0"
-)
+// Version is set at startup by the cmd package.
+var Version = "dev"
+
+// GetGenerator returns the generator identifier for frontmatter.
+func GetGenerator() string {
+	return "polis-cli-go/" + Version
+}
 
 // PublishResult contains the result of publishing a post
 type PublishResult struct {
@@ -105,10 +110,20 @@ func Slugify(title string) string {
 	}
 
 	if slug == "" {
-		slug = "untitled"
+		slug = "untitled-" + randomSuffix(8)
 	}
 
 	return slug
+}
+
+// randomSuffix generates a short random hex string.
+func randomSuffix(nBytes int) string {
+	b := make([]byte, nBytes)
+	if _, err := rand.Read(b); err != nil {
+		// Fallback to timestamp-based suffix if crypto/rand fails
+		return fmt.Sprintf("%x", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b)
 }
 
 // CanonicalizeContent normalizes content for consistent hashing.
@@ -164,7 +179,7 @@ signature: %s
 ---`,
 		escapeYAMLString(title),
 		timestamp,
-		Generator,
+		GetGenerator(),
 		hash,
 		hash,
 		timestamp,
@@ -217,6 +232,10 @@ func PublishPost(dataDir, markdown, filename string, privateKey []byte) (*Publis
 	// Generate filename if not provided
 	if filename == "" {
 		filename = Slugify(title)
+		// If the slug is generic (no meaningful title), add a random suffix
+		if filename == "untitled" {
+			filename = "untitled-" + randomSuffix(8)
+		}
 	} else {
 		// Sanitize provided filename
 		filename = Slugify(filename)
@@ -224,6 +243,10 @@ func PublishPost(dataDir, markdown, filename string, privateKey []byte) (*Publis
 
 	// Ensure .md extension is not duplicated
 	filename = strings.TrimSuffix(filename, ".md")
+
+	// Ensure unique filename (prevent collisions)
+	dateDir := time.Now().UTC().Format("20060102")
+	filename = ensureUniqueFilename(dataDir, dateDir, filename)
 
 	// Canonicalize the raw markdown for consistent hashing
 	canonicalBody := CanonicalizeContent(markdown)
@@ -245,7 +268,7 @@ version-history:
 ---`,
 		escapeYAMLString(title),
 		timestamp,
-		Generator,
+		GetGenerator(),
 		hash,
 		hash,
 		timestamp,
@@ -272,7 +295,6 @@ version-history:
 	finalContent := finalFrontmatter + "\n\n" + canonicalBody
 
 	// Create directory structure: posts/YYYYMMDD/
-	dateDir := time.Now().UTC().Format("20060102")
 	postsDir := filepath.Join(dataDir, "posts", dateDir)
 	if err := os.MkdirAll(postsDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create posts directory: %w", err)
@@ -316,6 +338,38 @@ version-history:
 		Version:   "sha256:" + hash,
 		Signature: signature,
 	}, nil
+}
+
+// ensureUniqueFilename checks for filename collisions and appends -2, -3, etc. if needed.
+func ensureUniqueFilename(dataDir, dateDir, filename string) string {
+	candidate := filename
+	suffix := 2
+	for {
+		// Check posts directory
+		postPath := filepath.Join(dataDir, "posts", dateDir, candidate+".md")
+		if _, err := os.Stat(postPath); err == nil {
+			candidate = fmt.Sprintf("%s-%d", filename, suffix)
+			suffix++
+			continue
+		}
+
+		// Check drafts directories (both old and new paths)
+		draftPath1 := filepath.Join(dataDir, ".polis", "posts", "drafts", candidate+".md")
+		draftPath2 := filepath.Join(dataDir, ".polis", "drafts", candidate+".md")
+		if _, err := os.Stat(draftPath1); err == nil {
+			candidate = fmt.Sprintf("%s-%d", filename, suffix)
+			suffix++
+			continue
+		}
+		if _, err := os.Stat(draftPath2); err == nil {
+			candidate = fmt.Sprintf("%s-%d", filename, suffix)
+			suffix++
+			continue
+		}
+
+		break
+	}
+	return candidate
 }
 
 // extractSignatureBase64 extracts the base64 content from an SSH signature.
@@ -427,33 +481,15 @@ FULL_CONTENT_START
 }
 
 // AppendToIndex appends a post entry to public.jsonl.
+// Delegates to metadata.AppendPostToIndex for deduplication support.
 func AppendToIndex(dataDir string, meta *PostMeta) error {
-	metadataDir := filepath.Join(dataDir, "metadata")
-	if err := os.MkdirAll(metadataDir, 0755); err != nil {
-		return err
-	}
-
-	indexPath := filepath.Join(metadataDir, "public.jsonl")
-
-	// Marshal to JSON
-	jsonLine, err := json.Marshal(meta)
-	if err != nil {
-		return err
-	}
-
-	// Append to file
-	f, err := os.OpenFile(indexPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	_, err = f.WriteString(string(jsonLine) + "\n")
-	return err
+	return metadata.AppendPostToIndex(dataDir, meta.Path, meta.Title, meta.Published, meta.CurrentVersion)
 }
 
-// DefaultVersion is the polis version for new manifests
-const DefaultVersion = "0.42.0"
+// DefaultVersion returns the polis version for new manifests.
+func DefaultVersion() string {
+	return Version
+}
 
 // UpdateManifest updates the manifest.json file.
 // Matches the bash CLI's manifest structure exactly.
@@ -469,7 +505,7 @@ func UpdateManifest(dataDir string) error {
 
 	// Set version if not already set
 	if manifest.Version == "" {
-		manifest.Version = DefaultVersion
+		manifest.Version = DefaultVersion()
 	}
 
 	// Count posts and find last_published timestamp
@@ -683,7 +719,7 @@ version-history:%s
 		escapeYAMLString(title),
 		originalPublished,
 		updateTimestamp,
-		Generator,
+		GetGenerator(),
 		hash,
 		versionHistoryYAML,
 	)
@@ -715,7 +751,7 @@ signature: %s
 		escapeYAMLString(title),
 		originalPublished,
 		updateTimestamp,
-		Generator,
+		GetGenerator(),
 		hash,
 		versionHistoryYAML,
 		sigBase64,

@@ -52,6 +52,19 @@ func handlePublish(args []string) {
 		exitError("Failed to publish: %v", err)
 	}
 
+	// Remove original file if not already in posts/ (matches bash CLI behavior)
+	inputAbs, err1 := filepath.Abs(inputFile)
+	postAbs, err2 := filepath.Abs(filepath.Join(dir, result.Path))
+	if err1 == nil && err2 == nil && inputAbs != postAbs {
+		if err := os.Remove(inputAbs); err != nil {
+			if !jsonOutput {
+				fmt.Fprintf(os.Stderr, "[!] Could not remove original file: %v\n", err)
+			}
+		} else if !jsonOutput {
+			fmt.Println("[✓] Moved original file into posts/")
+		}
+	}
+
 	if jsonOutput {
 		outputJSON(map[string]interface{}{
 			"success":   result.Success,

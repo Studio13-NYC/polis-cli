@@ -46,24 +46,30 @@ type HookResult struct {
 	Error    string `json:"error,omitempty"`
 }
 
-// RunHook executes a hook script if configured.
-// Returns nil error if no hook is configured (not an error condition).
+// RunHook executes a hook script if configured or discovered by convention.
+// Checks explicit config first, then falls back to .polis/hooks/{event}.sh.
+// Returns nil error if no hook is found (not an error condition).
 func RunHook(siteDir string, config *HookConfig, payload *HookPayload) (*HookResult, error) {
-	if config == nil {
-		return &HookResult{Executed: false}, nil
+	// Get hook path from explicit config
+	var hookPath string
+	if config != nil {
+		switch payload.Event {
+		case EventPostPublish:
+			hookPath = config.PostPublish
+		case EventPostRepublish:
+			hookPath = config.PostRepublish
+		case EventPostComment:
+			hookPath = config.PostComment
+		}
 	}
 
-	// Get hook path from config based on event type
-	var hookPath string
-	switch payload.Event {
-	case EventPostPublish:
-		hookPath = config.PostPublish
-	case EventPostRepublish:
-		hookPath = config.PostRepublish
-	case EventPostComment:
-		hookPath = config.PostComment
-	default:
-		return &HookResult{Executed: false}, nil
+	// Auto-discover from conventional location if not explicitly configured
+	if hookPath == "" {
+		conventional := filepath.Join(".polis", "hooks", string(payload.Event)+".sh")
+		fullPath := filepath.Join(siteDir, conventional)
+		if _, err := os.Stat(fullPath); err == nil {
+			hookPath = conventional
+		}
 	}
 
 	if hookPath == "" {
@@ -135,21 +141,36 @@ func GenerateCommitMessage(event HookEvent, title string) string {
 	}
 }
 
-// GetHookPath returns the configured hook path for a given event.
-// Returns empty string if no hook is configured.
+// GetHookPath returns the hook path for a given event.
+// Checks explicit config first, then falls back to the conventional
+// location .polis/hooks/{event}.sh if siteDir is provided.
+// Returns empty string if no hook is found.
 func GetHookPath(config *HookConfig, event HookEvent) string {
-	if config == nil {
-		return ""
+	return GetHookPathWithDiscovery(config, event, "")
+}
+
+// GetHookPathWithDiscovery returns the hook path for a given event,
+// checking explicit config first, then auto-discovering from siteDir.
+func GetHookPathWithDiscovery(config *HookConfig, event HookEvent, siteDir string) string {
+	var hookPath string
+	if config != nil {
+		switch event {
+		case EventPostPublish:
+			hookPath = config.PostPublish
+		case EventPostRepublish:
+			hookPath = config.PostRepublish
+		case EventPostComment:
+			hookPath = config.PostComment
+		}
 	}
 
-	switch event {
-	case EventPostPublish:
-		return config.PostPublish
-	case EventPostRepublish:
-		return config.PostRepublish
-	case EventPostComment:
-		return config.PostComment
-	default:
-		return ""
+	if hookPath == "" && siteDir != "" {
+		conventional := filepath.Join(".polis", "hooks", string(event)+".sh")
+		fullPath := filepath.Join(siteDir, conventional)
+		if _, err := os.Stat(fullPath); err == nil {
+			hookPath = conventional
+		}
 	}
+
+	return hookPath
 }

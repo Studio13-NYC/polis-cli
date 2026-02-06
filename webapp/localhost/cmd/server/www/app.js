@@ -1251,9 +1251,8 @@ const App = {
 
     // Revoke a blessing (remove from blessed-comments.json)
     async revokeBlessing(commentUrl) {
-        if (!confirm('Revoke this blessing? The comment will be removed from your blessed comments index.')) {
-            return;
-        }
+        const confirmed = await this.showConfirmModal('Revoke Blessing', 'Revoke this blessing? The comment will be removed from your blessed comments index.', 'Revoke', 'Cancel', 'danger');
+        if (!confirmed) return;
 
         try {
             await this.api('POST', '/api/blessing/revoke', {
@@ -1431,9 +1430,8 @@ const App = {
 
     // Delete an automation
     async deleteAutomation(id) {
-        if (!confirm('Remove this automation? The hook will no longer run.')) {
-            return;
-        }
+        const confirmed = await this.showConfirmModal('Remove Automation', 'Remove this automation? The hook will no longer run.', 'Remove', 'Cancel', 'danger');
+        if (!confirmed) return;
         try {
             await this.api('DELETE', `/api/automations/${encodeURIComponent(id)}`);
             this.showToast('Automation removed', 'success');
@@ -2325,9 +2323,8 @@ echo "File: $POLIS_PATH"</code>
             return;
         }
 
-        if (!confirm('Sign this comment and send it for blessing? The post author will need to approve it.')) {
-            return;
-        }
+        const confirmed = await this.showConfirmModal('Send for Blessing', 'Sign this comment and send it for blessing? The post author will need to approve it.', 'Sign & Send', 'Cancel');
+        if (!confirmed) return;
 
         const btn = document.getElementById('sign-send-btn');
         btn.classList.add('btn-loading');
@@ -2423,9 +2420,8 @@ echo "File: $POLIS_PATH"</code>
 
     // Grant blessing to an incoming comment request
     async grantBlessing(commentVersion, commentUrl, inReplyTo) {
-        if (!confirm('Bless this comment? It will be added to your blessed comments index.')) {
-            return;
-        }
+        const confirmed = await this.showConfirmModal('Bless Comment', 'Bless this comment? It will be added to your blessed comments index.', 'Bless', 'Cancel');
+        if (!confirmed) return;
 
         try {
             await this.api('POST', '/api/blessing/grant', {
@@ -2444,9 +2440,8 @@ echo "File: $POLIS_PATH"</code>
 
     // Deny blessing to an incoming comment request
     async denyBlessing(commentVersion) {
-        if (!confirm('Deny this blessing request? The commenter will be notified.')) {
-            return;
-        }
+        const confirmed = await this.showConfirmModal('Deny Blessing', 'Deny this blessing request? The commenter will be notified.', 'Deny', 'Cancel', 'danger');
+        if (!confirmed) return;
 
         try {
             await this.api('POST', '/api/blessing/deny', {

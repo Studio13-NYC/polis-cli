@@ -5,6 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+
+	"github.com/vdibart/polis-cli/cli-go/pkg/comment"
+	"github.com/vdibart/polis-cli/cli-go/pkg/metadata"
+	"github.com/vdibart/polis-cli/cli-go/pkg/publish"
 )
 
 // Version is set at build time with -ldflags
@@ -18,6 +22,11 @@ var (
 
 // Execute is the main entry point for the CLI.
 func Execute(args []string) {
+	// Propagate CLI version to all packages that embed it in metadata
+	publish.Version = Version
+	comment.Version = Version
+	metadata.Version = Version
+
 	if len(args) < 1 {
 		printUsage()
 		os.Exit(1)
@@ -175,13 +184,20 @@ Commands related to cloning remote polis sites:
 
 Commands related to local configuration:
   polis init [options]            Initialize Polis directory structure
+    --site-title <title>          Site display name
+    --register                    Auto-register with discovery service after init
+    --keys-dir <path>             Custom keys directory (default: .polis/keys)
+    --posts-dir <path>            Custom posts directory (default: posts)
+    --comments-dir <path>         Custom comments directory (default: comments)
+    --snippets-dir <path>         Custom snippets directory (default: snippets)
+    --versions-dir <path>         Custom versions directory (default: .versions)
   polis rebuild --posts|--comments|--notifications|--all
                                   Rebuild indexes and reset state
   polis index                     View index
   polis version                   Print CLI version
   polis about                     Show site, versions, config info
   polis rotate-key                Generate new keypair and re-sign content
-  polis serve                     Start local web server (bundled binary only)
+  polis serve [-d|--data-dir PATH] Start local web server (bundled binary only)
 
 Examples:
   polis init

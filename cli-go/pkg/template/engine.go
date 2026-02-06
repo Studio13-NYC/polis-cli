@@ -57,6 +57,8 @@ type RenderContext struct {
 	// Comment-specific
 	InReplyToURL string
 	RootPostURL  string
+	TargetAuthor string
+	Preview      string
 
 	// Loop data (for sections)
 	Posts           []PostData
@@ -169,6 +171,8 @@ func (e *Engine) substituteVariables(template string, ctx *RenderContext) string
 		// Comment-specific
 		"in_reply_to_url": ctx.InReplyToURL,
 		"root_post_url":   ctx.RootPostURL,
+		"target_author":   ctx.TargetAuthor,
+		"preview":         ctx.Preview,
 	}
 
 	// Replace all {{variable}} patterns

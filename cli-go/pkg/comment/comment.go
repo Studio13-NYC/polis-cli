@@ -13,14 +13,20 @@ import (
 	"time"
 
 	"github.com/vdibart/polis-cli/cli-go/pkg/metadata"
+	"github.com/vdibart/polis-cli/cli-go/pkg/publish"
 	"github.com/vdibart/polis-cli/cli-go/pkg/signing"
 	polisurl "github.com/vdibart/polis-cli/cli-go/pkg/url"
 )
 
-const (
-	// Generator identifier for comment frontmatter
-	Generator = "polis-webapp/0.1.0"
+// Version is set at startup by the cmd package.
+var Version = "dev"
 
+// GetGenerator returns the generator identifier for comment frontmatter.
+func GetGenerator() string {
+	return "polis-cli-go/" + Version
+}
+
+const (
 	// Comment status directories
 	StatusDrafts  = "drafts"
 	StatusPending = "pending"
@@ -134,6 +140,7 @@ func SaveDraft(dataDir string, draft *CommentDraft) error {
 	if draft.ID == "" {
 		draft.ID = GenerateCommentID(draft.InReplyTo, time.Now().UTC())
 	}
+	draft.ID = ensureUniqueCommentID(dataDir, draft.ID)
 
 	if draft.CreatedAt == "" {
 		draft.CreatedAt = time.Now().UTC().Format("2006-01-02T15:04:05Z")
@@ -240,6 +247,7 @@ func SignComment(dataDir string, draft *CommentDraft, authorEmail, siteURL strin
 	if commentID == "" {
 		commentID = GenerateCommentID(draft.InReplyTo, timestamp)
 	}
+	commentID = ensureUniqueCommentID(dataDir, commentID)
 	dateDir := timestamp.Format("20060102")
 	commentURL := fmt.Sprintf("%s/comments/%s/%s.md", strings.TrimSuffix(siteURL, "/"), dateDir, commentID)
 
@@ -282,7 +290,7 @@ version-history:
 ---`,
 		escapeYAMLTitle(title),
 		timestampStr,
-		Generator,
+		GetGenerator(),
 		draft.InReplyTo,
 		rootPost,
 		hash,
@@ -321,7 +329,7 @@ signature: %s
 		escapeYAMLTitle(title),
 		timestampStr,
 		authorEmail,
-		Generator,
+		GetGenerator(),
 		draft.InReplyTo,
 		rootPost,
 		hash,
@@ -437,7 +445,7 @@ func MoveComment(dataDir, commentID, fromStatus, toStatus string) error {
 		return fmt.Errorf("failed to remove source comment: %w", err)
 	}
 
-	// When moving to blessed, add to public.jsonl for CLI compatibility
+	// When moving to blessed, add to public.jsonl and blessed-comments.json
 	if toStatus == StatusBlessed {
 		// Parse nested in-reply-to structure
 		inReplyToURL, _ := ParseNestedInReplyTo(content)
@@ -458,6 +466,13 @@ func MoveComment(dataDir, commentID, fromStatus, toStatus string) error {
 			version = fm["comment_version"]
 		}
 
+		// Build comment URL from frontmatter or construct from path
+		commentURL := fm["comment_url"]
+		if commentURL == "" {
+			// Fallback: URL not available, use relative path
+			commentURL = relativePath
+		}
+
 		// Add to public.jsonl
 		if err := metadata.AppendCommentToIndex(
 			dataDir,
@@ -468,7 +483,22 @@ func MoveComment(dataDir, commentID, fromStatus, toStatus string) error {
 			inReplyToURL,
 		); err != nil {
 			// Log but don't fail - the comment is already blessed
-			// This is a best-effort index update
+			_ = err
+		}
+
+		// Add to blessed-comments.json so rendered posts show the comment
+		postPath := extractPostPath(inReplyToURL)
+		if err := metadata.AddBlessedComment(dataDir, postPath, metadata.BlessedComment{
+			URL:     commentURL,
+			Version: version,
+		}); err != nil {
+			// Log but don't fail
+			_ = err
+		}
+
+		// Update manifest comment count
+		if err := publish.UpdateManifest(dataDir); err != nil {
+			// Log but don't fail
 			_ = err
 		}
 	}
@@ -878,6 +908,56 @@ func escapeYAMLTitle(s string) string {
 		return fmt.Sprintf("\"%s\"", escaped)
 	}
 	return s
+}
+
+// ensureUniqueCommentID checks for comment ID collisions across all status directories.
+// Appends -2, -3, etc. if a collision is found.
+func ensureUniqueCommentID(dataDir, commentID string) string {
+	candidate := commentID
+	suffix := 2
+	for {
+		collision := false
+		// Check all private status dirs
+		for _, status := range []string{StatusDrafts, StatusPending, StatusDenied} {
+			path := filepath.Join(dataDir, ".polis", "comments", status, candidate+".md")
+			if _, err := os.Stat(path); err == nil {
+				collision = true
+				break
+			}
+		}
+		// Check blessed (public) comments date dirs
+		if !collision {
+			commentsDir := filepath.Join(dataDir, "comments")
+			if dateDirs, err := os.ReadDir(commentsDir); err == nil {
+				for _, dd := range dateDirs {
+					if dd.IsDir() {
+						path := filepath.Join(commentsDir, dd.Name(), candidate+".md")
+						if _, err := os.Stat(path); err == nil {
+							collision = true
+							break
+						}
+					}
+				}
+			}
+		}
+
+		if !collision {
+			break
+		}
+		candidate = fmt.Sprintf("%s-%d", commentID, suffix)
+		suffix++
+	}
+	return candidate
+}
+
+// extractPostPath extracts the relative post path from a full URL.
+// e.g., https://alice.polis.site/posts/20260127/hello.md -> posts/20260127/hello.md
+func extractPostPath(url string) string {
+	idx := strings.Index(url, "/posts/")
+	if idx >= 0 {
+		return url[idx+1:] // Return "posts/..." without leading slash
+	}
+	return url
 }
 
 // ParseNestedInReplyTo extracts url and root-post from nested in-reply-to structure.

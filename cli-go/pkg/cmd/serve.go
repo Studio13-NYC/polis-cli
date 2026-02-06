@@ -17,5 +17,18 @@ func defaultServeHandler(args []string) {
 }
 
 func handleServe(args []string) {
+	for _, arg := range args {
+		if arg == "--help" || arg == "-h" {
+			fmt.Print(`Usage: polis serve [options]
+
+Start the local web server (bundled binary only).
+
+Options:
+  -d, --data-dir PATH    Polis site directory (default: current directory)
+  -h, --help             Show this help message
+`)
+			return
+		}
+	}
 	ServeHandler(args)
 }

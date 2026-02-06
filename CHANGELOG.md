@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.47.0] - 2026-02-06
+
+### Added
+
+- **[Go CLI] Shell completions for `serve` and `validate`**: Both bash and zsh completions now include the `serve` command (with `--data-dir`/`-d` flags) and `validate` command (with `--json` flag)
+- **[Go CLI] Hooks auto-discovery**: Hook scripts placed at conventional paths (`.polis/hooks/{event}.sh`) are now automatically discovered and executed without needing to register them in `webapp-config.json`
+- **[Go CLI] Template engine enhancements**: Added `{{target_author}}` and `{{preview}}` variables now available in comment loop templates for better metadata display
+- **[Go CLI] Test coverage expansion**: Added 7 new test files covering comment operations, hooks, index rebuilding, metadata management, publishing, and site initialization
+
+### Fixed
+
+- **[Go CLI] File move behavior in `polis post`**: The CLI now moves (removes) the original file after publishing, matching the bash CLI's behavior. Non-fatal on failure (warns only).
+- **[Go CLI] Comment count synchronization**: Blessing a comment now properly updates `manifest.json` comment count to stay in sync with actual blessed comments
+- **[Go CLI] Version string consistency**: All generated metadata files (`.well-known/polis`, `manifest.json`, `following.json`, `blessed-comments.json`) and frontmatter generator fields now use the actual CLI version from `version.txt` instead of hardcoded values
+- **[Go CLI] Deduplication in `public.jsonl`**: Index updates now check for existing entries by path and update in place instead of always appending
+
+### Changed
+
+- **[Go CLI] `polis init` creates `webapp-config.json`**: The init command now creates `.polis/webapp-config.json` with webapp-specific defaults
+- **[Go CLI] Drafts directory migration**: Automatic migration from deprecated `.polis/drafts` to `.polis/posts/drafts` location
+
+### [Webapp] Version Correction: 1.0.0 → 0.1.0
+
+The webapp version has been corrected from the incorrect `1.0.0` to `0.1.0`. This reflects its alpha status and aligns with semantic versioning.
+
+- **CLI version propagation**: Server now accepts `CLIVersion` via `RunOptions` and propagates it through publish, comment, and metadata packages
+- **Hooks without config**: Publish, republish, and beseech handlers now fire hooks without explicit configuration, using auto-discovery
+- **Styled confirmation dialogs**: Replaced browser `confirm()` calls with custom styled modal dialogs
+- **Startup migrations**: Automatic drafts directory migration on webapp startup
+- **Config cleanup**: Removed deprecated `Subdomain` field from webapp configuration
+
 ## [0.46.0] - 2026-02-05
 
 ### Changed

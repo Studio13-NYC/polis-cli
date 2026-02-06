@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"strings"
@@ -87,6 +88,21 @@ func GetActiveTheme(dataDir string) (string, error) {
 		return "", err
 	}
 	return manifest.ActiveTheme, nil
+}
+
+// SelectRandomTheme picks a random theme from available themes and persists the choice.
+// This matches the bash CLI's select_theme() behavior.
+func SelectRandomTheme(dataDir, cliThemesDir string) (string, error) {
+	themes, err := ListThemes(dataDir, cliThemesDir)
+	if err != nil || len(themes) == 0 {
+		return "", fmt.Errorf("no themes found")
+	}
+	selected := themes[rand.IntN(len(themes))]
+	// Persist the choice so future renders use the same theme
+	if err := SetActiveTheme(dataDir, selected); err != nil {
+		// Non-fatal: theme works even if not saved
+	}
+	return selected, nil
 }
 
 // LoadManifest loads the site manifest from metadata/manifest.json.

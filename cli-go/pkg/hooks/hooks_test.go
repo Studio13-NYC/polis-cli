@@ -1,0 +1,145 @@
+package hooks
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestRunHook_AutoDiscover(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create conventional hook location
+	hookDir := filepath.Join(dir, ".polis", "hooks")
+	if err := os.MkdirAll(hookDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	scriptPath := filepath.Join(hookDir, "post-publish.sh")
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\necho hook-fired\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	payload := &HookPayload{
+		Event:   EventPostPublish,
+		Path:    "posts/20250101/test.md",
+		Title:   "Test Post",
+		Version: "1",
+	}
+
+	result, err := RunHook(dir, nil, payload)
+	if err != nil {
+		t.Fatalf("RunHook failed: %v", err)
+	}
+	if !result.Executed {
+		t.Error("Expected hook to be executed via auto-discovery")
+	}
+	if result.Output == "" {
+		t.Error("Expected hook output")
+	}
+}
+
+func TestRunHook_ExplicitOverridesConvention(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create conventional hook (should NOT be called)
+	hookDir := filepath.Join(dir, ".polis", "hooks")
+	if err := os.MkdirAll(hookDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	conventionalPath := filepath.Join(hookDir, "post-publish.sh")
+	if err := os.WriteFile(conventionalPath, []byte("#!/bin/sh\necho conventional\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create explicit hook at a custom path
+	customDir := filepath.Join(dir, "my-hooks")
+	if err := os.MkdirAll(customDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	explicitPath := filepath.Join(customDir, "publish.sh")
+	if err := os.WriteFile(explicitPath, []byte("#!/bin/sh\necho explicit\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	config := &HookConfig{
+		PostPublish: "my-hooks/publish.sh",
+	}
+
+	payload := &HookPayload{
+		Event:   EventPostPublish,
+		Path:    "posts/20250101/test.md",
+		Title:   "Test Post",
+		Version: "1",
+	}
+
+	result, err := RunHook(dir, config, payload)
+	if err != nil {
+		t.Fatalf("RunHook failed: %v", err)
+	}
+	if !result.Executed {
+		t.Error("Expected hook to be executed")
+	}
+	if result.Output != "explicit\n" {
+		t.Errorf("Expected explicit hook output, got %q", result.Output)
+	}
+}
+
+func TestRunHook_NilConfigNoConventionalFile(t *testing.T) {
+	dir := t.TempDir()
+
+	payload := &HookPayload{
+		Event:   EventPostPublish,
+		Path:    "posts/20250101/test.md",
+		Title:   "Test Post",
+		Version: "1",
+	}
+
+	result, err := RunHook(dir, nil, payload)
+	if err != nil {
+		t.Fatalf("RunHook should not error: %v", err)
+	}
+	if result.Executed {
+		t.Error("Expected hook to NOT be executed when no config and no conventional file")
+	}
+}
+
+func TestGetHookPathWithDiscovery_AutoDiscover(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create conventional hook
+	hookDir := filepath.Join(dir, ".polis", "hooks")
+	if err := os.MkdirAll(hookDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hookDir, "post-publish.sh"), []byte("#!/bin/sh\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	path := GetHookPathWithDiscovery(nil, EventPostPublish, dir)
+	if path != filepath.Join(".polis", "hooks", "post-publish.sh") {
+		t.Errorf("Expected conventional path, got %q", path)
+	}
+
+	// Non-existent event should return empty
+	path = GetHookPathWithDiscovery(nil, EventPostRepublish, dir)
+	if path != "" {
+		t.Errorf("Expected empty for non-existent hook, got %q", path)
+	}
+}
+
+func TestGetHookPath_BackwardsCompatible(t *testing.T) {
+	config := &HookConfig{
+		PostPublish: "my-hooks/pub.sh",
+	}
+
+	// Original GetHookPath (no siteDir) should still work
+	path := GetHookPath(config, EventPostPublish)
+	if path != "my-hooks/pub.sh" {
+		t.Errorf("Expected explicit path, got %q", path)
+	}
+
+	path = GetHookPath(nil, EventPostPublish)
+	if path != "" {
+		t.Errorf("Expected empty for nil config, got %q", path)
+	}
+}

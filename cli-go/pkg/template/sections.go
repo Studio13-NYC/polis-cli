@@ -130,6 +130,8 @@ func (e *Engine) renderCommentsSection(content string, ctx *RenderContext, depth
 			URL:            comment.URL,
 			Published:      comment.Published,
 			PublishedHuman: comment.PublishedHuman,
+			TargetAuthor:   comment.TargetAuthor,
+			Preview:        comment.Preview,
 
 			// Copy site-level variables
 			SiteURL:   ctx.SiteURL,

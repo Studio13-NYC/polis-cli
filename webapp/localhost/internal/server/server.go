@@ -16,7 +16,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/vdibart/polis-cli/cli-go/pkg/comment"
 	"github.com/vdibart/polis-cli/cli-go/pkg/hooks"
+	"github.com/vdibart/polis-cli/cli-go/pkg/metadata"
+	"github.com/vdibart/polis-cli/cli-go/pkg/publish"
 	"github.com/vdibart/polis-cli/cli-go/pkg/render"
 	"github.com/vdibart/polis-cli/cli-go/pkg/site"
 )
@@ -60,6 +63,7 @@ type Config struct {
 type Server struct {
 	DataDir      string
 	CLIThemesDir string // Path to CLI themes directory (fallback for theme snippets)
+	CLIVersion   string // CLI version for metadata files (set by bundled binary or from version.txt)
 	Config       *Config
 	PrivateKey   []byte
 	PublicKey    []byte
@@ -241,7 +245,11 @@ func (s *Server) LoadConfig() {
 // SaveConfig saves the webapp configuration to webapp-config.json
 func (s *Server) SaveConfig() error {
 	configPath := filepath.Join(s.DataDir, ".polis", "webapp-config.json")
+	// Clear deprecated fields before saving (don't persist them)
+	savedSubdomain := s.Config.Subdomain
+	s.Config.Subdomain = ""
 	data, err := json.MarshalIndent(s.Config, "", "  ")
+	s.Config.Subdomain = savedSubdomain // Restore in memory for runtime use
 	if err != nil {
 		return err
 	}
@@ -356,15 +364,6 @@ func (s *Server) LoadEnv() {
 	// This is the authoritative source for base_url - not stored in .well-known/polis
 	if baseURL := env["POLIS_BASE_URL"]; baseURL != "" {
 		s.BaseURL = strings.TrimSuffix(baseURL, "/")
-
-		// Also derive subdomain if not set (for backwards compatibility)
-		if s.Config != nil && s.Config.Subdomain == "" {
-			host := strings.TrimPrefix(baseURL, "https://")
-			host = strings.TrimPrefix(host, "http://")
-			if idx := strings.Index(host, "."); idx > 0 {
-				s.Config.Subdomain = host[:idx]
-			}
-		}
 	}
 }
 
@@ -536,6 +535,16 @@ func NewServer(dataDir, cliThemesDir string) *Server {
 
 // Initialize validates the site and loads configuration.
 func (s *Server) Initialize() {
+	// Propagate CLI version to packages that embed it in metadata
+	if s.CLIVersion != "" {
+		publish.Version = s.CLIVersion
+		comment.Version = s.CLIVersion
+		metadata.Version = s.CLIVersion
+	}
+
+	// Migrate .polis/drafts -> .polis/posts/drafts if needed
+	s.migrateDraftsDir()
+
 	// Validate the site first - only load keys/config if valid
 	validation := site.Validate(s.DataDir)
 	if validation.Status == site.StatusValid {
@@ -571,6 +580,29 @@ func (s *Server) Initialize() {
 	}
 }
 
+// migrateDraftsDir migrates .polis/drafts to .polis/posts/drafts if needed.
+func (s *Server) migrateDraftsDir() {
+	oldPath := filepath.Join(s.DataDir, ".polis", "drafts")
+	newPath := filepath.Join(s.DataDir, ".polis", "posts", "drafts")
+
+	// Only migrate if old path exists and new path doesn't
+	oldInfo, oldErr := os.Stat(oldPath)
+	_, newErr := os.Stat(newPath)
+
+	if oldErr == nil && oldInfo.IsDir() && os.IsNotExist(newErr) {
+		// Create parent directory
+		if err := os.MkdirAll(filepath.Dir(newPath), 0755); err != nil {
+			log.Printf("[warning] Failed to create parent directory for drafts migration: %v", err)
+			return
+		}
+		if err := os.Rename(oldPath, newPath); err != nil {
+			log.Printf("[warning] Failed to migrate drafts directory: %v", err)
+		} else {
+			log.Printf("[i] Migrated drafts: .polis/drafts -> .polis/posts/drafts")
+		}
+	}
+}
+
 // Close cleans up server resources.
 func (s *Server) Close() {
 	if s.Logger != nil {
@@ -578,8 +610,13 @@ func (s *Server) Close() {
 	}
 }
 
+// RunOptions contains optional configuration for the server.
+type RunOptions struct {
+	CLIVersion string // CLI version for metadata (empty = use package default)
+}
+
 // Run starts the HTTP server with the given embedded filesystem.
-func Run(webFS fs.FS, dataDir string) {
+func Run(webFS fs.FS, dataDir string, opts ...RunOptions) {
 	// Resolve symlinks - if data/ is a symlink, follow it
 	dataDir = ResolveSymlink(dataDir)
 
@@ -604,6 +641,9 @@ func Run(webFS fs.FS, dataDir string) {
 
 	// Initialize server
 	server := NewServer(dataDir, cliThemesDir)
+	if len(opts) > 0 && opts[0].CLIVersion != "" {
+		server.CLIVersion = opts[0].CLIVersion
+	}
 	server.Initialize()
 	defer server.Close()
 

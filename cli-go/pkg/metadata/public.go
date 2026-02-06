@@ -30,9 +30,31 @@ type InReplyToEntry struct {
 	Version string `json:"version,omitempty"`
 }
 
-// AppendToPublicIndex appends an entry to public.jsonl.
-// Creates the metadata directory and file if they don't exist.
+// AppendToPublicIndex adds an entry to public.jsonl.
+// If an entry with the same Path already exists, it is updated in place.
+// Otherwise the entry is appended. Creates the metadata directory and file if they don't exist.
 func AppendToPublicIndex(siteDir string, entry *IndexEntry) error {
+	// Load existing entries to check for duplicates
+	existing, err := LoadPublicIndex(siteDir)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+
+	// Check if entry already exists by path
+	found := false
+	for i, e := range existing {
+		if e.Path == entry.Path {
+			existing[i] = *entry
+			found = true
+			break
+		}
+	}
+
+	if found {
+		return writePublicIndex(siteDir, existing)
+	}
+
+	// No duplicate - append
 	metadataDir := filepath.Join(siteDir, "metadata")
 	if err := os.MkdirAll(metadataDir, 0755); err != nil {
 		return fmt.Errorf("failed to create metadata directory: %w", err)
@@ -40,20 +62,17 @@ func AppendToPublicIndex(siteDir string, entry *IndexEntry) error {
 
 	indexPath := filepath.Join(metadataDir, PublicIndexFilename)
 
-	// Marshal to JSON
 	jsonLine, err := json.Marshal(entry)
 	if err != nil {
 		return fmt.Errorf("failed to marshal entry: %w", err)
 	}
 
-	// Open file for append (create if doesn't exist)
 	f, err := os.OpenFile(indexPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return fmt.Errorf("failed to open index file: %w", err)
 	}
 	defer f.Close()
 
-	// Write JSON line with newline
 	if _, err := f.Write(append(jsonLine, '\n')); err != nil {
 		return fmt.Errorf("failed to write to index: %w", err)
 	}

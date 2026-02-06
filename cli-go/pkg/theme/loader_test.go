@@ -165,6 +165,62 @@ func TestListThemes(t *testing.T) {
 	}
 }
 
+func TestSelectRandomTheme_SavesChoice(t *testing.T) {
+	dataDir := t.TempDir()
+	cliThemesDir := t.TempDir()
+
+	// Create two CLI themes
+	createTestTheme(t, cliThemesDir, "sols")
+	createTestTheme(t, cliThemesDir, "zane")
+
+	selected, err := SelectRandomTheme(dataDir, cliThemesDir)
+	if err != nil {
+		t.Fatalf("SelectRandomTheme failed: %v", err)
+	}
+
+	// Verify returned theme is one of the available ones
+	if selected != "sols" && selected != "zane" {
+		t.Errorf("Expected 'sols' or 'zane', got '%s'", selected)
+	}
+
+	// Verify the choice was persisted in the manifest
+	saved, err := GetActiveTheme(dataDir)
+	if err != nil {
+		t.Fatalf("GetActiveTheme failed after SelectRandomTheme: %v", err)
+	}
+	if saved != selected {
+		t.Errorf("Persisted theme '%s' doesn't match selected '%s'", saved, selected)
+	}
+}
+
+func TestSelectRandomTheme_NoThemes(t *testing.T) {
+	dataDir := t.TempDir()
+	cliThemesDir := t.TempDir()
+
+	_, err := SelectRandomTheme(dataDir, cliThemesDir)
+	if err == nil {
+		t.Error("Expected error when no themes available")
+	}
+}
+
+func TestSelectRandomTheme_SingleTheme(t *testing.T) {
+	dataDir := t.TempDir()
+	cliThemesDir := t.TempDir()
+
+	createTestTheme(t, cliThemesDir, "turbo")
+
+	// Run multiple times to verify single theme is always selected
+	for i := 0; i < 10; i++ {
+		selected, err := SelectRandomTheme(dataDir, cliThemesDir)
+		if err != nil {
+			t.Fatalf("SelectRandomTheme failed: %v", err)
+		}
+		if selected != "turbo" {
+			t.Errorf("Expected 'turbo', got '%s'", selected)
+		}
+	}
+}
+
 func TestCalculateCSSPath(t *testing.T) {
 	tests := []struct {
 		filePath string

@@ -24,7 +24,7 @@ func newTestServer(t *testing.T) *Server {
 		filepath.Join(dataDir, ".polis"),
 		filepath.Join(dataDir, ".polis", "keys"),
 		filepath.Join(dataDir, ".polis", "themes"),
-		filepath.Join(dataDir, ".polis", "drafts"),
+		filepath.Join(dataDir, ".polis", "posts", "drafts"),
 		filepath.Join(dataDir, ".polis", "comments", "drafts"),
 		filepath.Join(dataDir, ".polis", "comments", "pending"),
 		filepath.Join(dataDir, ".polis", "comments", "denied"),
@@ -62,12 +62,12 @@ func newConfiguredServer(t *testing.T) *Server {
 	os.WriteFile(privKeyPath, privKey, 0600)
 	os.WriteFile(pubKeyPath, pubKey, 0644)
 
-	// Set config
+	// Set config (Subdomain is deprecated - use BaseURL instead)
 	s.Config = &Config{
 		SetupCode: "test-setup",
-		Subdomain: "test-site",
 		SetupAt:   "2026-01-01T00:00:00Z",
 	}
+	s.BaseURL = "https://test-site.polis.pub"
 
 	// Create .well-known/polis
 	wellKnown := map[string]interface{}{
@@ -537,7 +537,7 @@ func TestHandleDrafts_ListWithDrafts(t *testing.T) {
 	s := newTestServer(t)
 
 	// Create some drafts
-	draftsDir := filepath.Join(s.DataDir, ".polis", "drafts")
+	draftsDir := filepath.Join(s.DataDir, ".polis", "posts", "drafts")
 	os.WriteFile(filepath.Join(draftsDir, "draft1.md"), []byte("# Draft 1"), 0644)
 	os.WriteFile(filepath.Join(draftsDir, "draft2.md"), []byte("# Draft 2"), 0644)
 
@@ -587,7 +587,7 @@ func TestHandleDrafts_SaveNew(t *testing.T) {
 	}
 
 	// Verify file was created
-	draftPath := filepath.Join(s.DataDir, ".polis", "drafts", "my-draft.md")
+	draftPath := filepath.Join(s.DataDir, ".polis", "posts", "drafts", "my-draft.md")
 	content, err := os.ReadFile(draftPath)
 	if err != nil {
 		t.Fatalf("draft file not created: %v", err)
@@ -648,7 +648,7 @@ func TestHandleDrafts_SaveSanitizesID(t *testing.T) {
 	}
 
 	// Verify file is in drafts directory, not elsewhere
-	draftPath := filepath.Join(s.DataDir, ".polis", "drafts", id+".md")
+	draftPath := filepath.Join(s.DataDir, ".polis", "posts", "drafts", id+".md")
 	if _, err := os.Stat(draftPath); os.IsNotExist(err) {
 		t.Error("draft should be created in drafts directory")
 	}
@@ -695,7 +695,7 @@ func TestHandleDraft_GetExisting(t *testing.T) {
 	s := newTestServer(t)
 
 	// Create a draft
-	draftPath := filepath.Join(s.DataDir, ".polis", "drafts", "test-draft.md")
+	draftPath := filepath.Join(s.DataDir, ".polis", "posts", "drafts", "test-draft.md")
 	os.WriteFile(draftPath, []byte("# Test Draft"), 0644)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/drafts/test-draft", nil)
@@ -748,7 +748,7 @@ func TestHandleDraft_Delete(t *testing.T) {
 	s := newTestServer(t)
 
 	// Create a draft
-	draftPath := filepath.Join(s.DataDir, ".polis", "drafts", "to-delete.md")
+	draftPath := filepath.Join(s.DataDir, ".polis", "posts", "drafts", "to-delete.md")
 	os.WriteFile(draftPath, []byte("# To Delete"), 0644)
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/drafts/to-delete", nil)
@@ -2212,8 +2212,13 @@ func TestSaveConfig_Success(t *testing.T) {
 	if loaded.SetupCode != "save-test" {
 		t.Errorf("expected SetupCode='save-test', got %s", loaded.SetupCode)
 	}
-	if loaded.Subdomain != "saved-site" {
-		t.Errorf("expected Subdomain='saved-site', got %s", loaded.Subdomain)
+	// Subdomain should NOT be persisted (deprecated field stripped on save)
+	if loaded.Subdomain != "" {
+		t.Errorf("expected Subdomain to be empty on disk, got %s", loaded.Subdomain)
+	}
+	// But in-memory value should be preserved
+	if s.Config.Subdomain != "saved-site" {
+		t.Errorf("expected in-memory Subdomain='saved-site', got %s", s.Config.Subdomain)
 	}
 }
 
@@ -2429,7 +2434,7 @@ DISCOVERY_SERVICE_KEY=new-key`
 
 func TestLoadEnv_POLIS_BASE_URL(t *testing.T) {
 	s := newTestServer(t)
-	s.Config = &Config{} // Config without subdomain
+	s.Config = &Config{}
 
 	// Create .env with POLIS_BASE_URL
 	envContent := `POLIS_BASE_URL=https://alice.polis.pub`
@@ -2438,16 +2443,18 @@ func TestLoadEnv_POLIS_BASE_URL(t *testing.T) {
 
 	s.LoadEnv()
 
-	if s.Config.Subdomain != "alice" {
-		t.Errorf("expected subdomain='alice' from base URL, got %s", s.Config.Subdomain)
+	// BaseURL should be set, subdomain derived via GetSubdomain()
+	if s.BaseURL != "https://alice.polis.pub" {
+		t.Errorf("expected BaseURL='https://alice.polis.pub', got %s", s.BaseURL)
+	}
+	if s.GetSubdomain() != "alice" {
+		t.Errorf("expected GetSubdomain()='alice', got %s", s.GetSubdomain())
 	}
 }
 
-func TestLoadEnv_POLIS_BASE_URL_NoOverride(t *testing.T) {
+func TestLoadEnv_POLIS_BASE_URL_Subdomain(t *testing.T) {
 	s := newTestServer(t)
-	s.Config = &Config{
-		Subdomain: "existing-subdomain",
-	}
+	s.Config = &Config{}
 
 	// Create .env with POLIS_BASE_URL
 	envContent := `POLIS_BASE_URL=https://new.polis.pub`
@@ -2456,9 +2463,21 @@ func TestLoadEnv_POLIS_BASE_URL_NoOverride(t *testing.T) {
 
 	s.LoadEnv()
 
-	// Should not override existing subdomain
-	if s.Config.Subdomain != "existing-subdomain" {
-		t.Errorf("expected subdomain not to be overridden, got %s", s.Config.Subdomain)
+	// GetSubdomain derives from BaseURL
+	if s.GetSubdomain() != "new" {
+		t.Errorf("expected GetSubdomain()='new', got %s", s.GetSubdomain())
+	}
+}
+
+func TestGetSubdomain_FallbackToConfig(t *testing.T) {
+	// Test backwards compat: old configs with Subdomain field but no BaseURL
+	s := newTestServer(t)
+	s.Config = &Config{
+		Subdomain: "legacy-site",
+	}
+	// No BaseURL set
+	if s.GetSubdomain() != "legacy-site" {
+		t.Errorf("expected GetSubdomain() to fall back to Config.Subdomain, got %s", s.GetSubdomain())
 	}
 }
 
@@ -2509,7 +2528,7 @@ func TestConfigPersistence_RoundTrip(t *testing.T) {
 	// Create and save config
 	s.Config = &Config{
 		SetupCode:    "round-trip",
-		Subdomain:    "persist-test",
+		Subdomain:    "persist-test", // Deprecated - should be stripped on save
 		SetupAt:      "2026-01-20T10:00:00Z",
 		DiscoveryURL: "https://persist.com",
 		DiscoveryKey: "persist-key",
@@ -2530,8 +2549,9 @@ func TestConfigPersistence_RoundTrip(t *testing.T) {
 	if s2.Config.SetupCode != "round-trip" {
 		t.Errorf("SetupCode mismatch: expected 'round-trip', got %s", s2.Config.SetupCode)
 	}
-	if s2.Config.Subdomain != "persist-test" {
-		t.Errorf("Subdomain mismatch")
+	// Subdomain is stripped on save (deprecated field)
+	if s2.Config.Subdomain != "" {
+		t.Errorf("expected Subdomain to be empty after round-trip, got %s", s2.Config.Subdomain)
 	}
 	if s2.Config.DiscoveryURL != "https://persist.com" {
 		t.Errorf("DiscoveryURL mismatch")
@@ -2643,7 +2663,7 @@ func TestDrafts_SavePathTraversalPrevention(t *testing.T) {
 	}
 
 	// Verify file WAS created in proper drafts directory
-	draftsDir := filepath.Join(s.DataDir, ".polis", "drafts")
+	draftsDir := filepath.Join(s.DataDir, ".polis", "posts", "drafts")
 	files, _ := os.ReadDir(draftsDir)
 	if len(files) != 1 {
 		t.Errorf("expected 1 file in drafts dir, got %d", len(files))
@@ -3350,6 +3370,171 @@ func TestHandleSnippet_SourcePreservedInResponse(t *testing.T) {
 
 	if source, ok := result["source"].(string); !ok || source != "theme" {
 		t.Errorf("expected source=theme in response, got: %v", result)
+	}
+}
+
+// ============================================================================
+// Webhook Safety Regression Tests
+// ============================================================================
+
+func TestPublishHookNotCalledOnError(t *testing.T) {
+	s := newTestServer(t)
+	// No private key = publish will fail
+	markerFile := filepath.Join(s.DataDir, "hook-marker")
+
+	s.Config = &Config{
+		Hooks: &hooks.HookConfig{
+			PostPublish: "touch " + markerFile,
+		},
+	}
+
+	body := jsonBody(t, map[string]string{"markdown": "# Test"})
+	req := httptest.NewRequest(http.MethodPost, "/api/publish", body)
+	rr := httptest.NewRecorder()
+
+	s.handlePublish(rr, req)
+
+	// Publish should fail (no private key)
+	if rr.Code == http.StatusOK {
+		t.Error("expected publish to fail without private key")
+	}
+
+	// Hook marker should NOT exist
+	if _, err := os.Stat(markerFile); !os.IsNotExist(err) {
+		t.Error("hook should not have been called on publish error")
+	}
+}
+
+func TestRepublishHookNotCalledOnError(t *testing.T) {
+	s := newConfiguredServer(t)
+	markerFile := filepath.Join(s.DataDir, "hook-marker")
+
+	s.Config.Hooks = &hooks.HookConfig{
+		PostPublish: "touch " + markerFile,
+	}
+
+	// Republish a non-existent post
+	body := jsonBody(t, map[string]string{
+		"path":     "posts/20260101/nonexistent.md",
+		"markdown": "# Updated",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/republish", body)
+	rr := httptest.NewRecorder()
+
+	s.handleRepublish(rr, req)
+
+	// Republish should fail (file not found)
+	if rr.Code == http.StatusOK {
+		t.Error("expected republish to fail for nonexistent post")
+	}
+
+	// Hook marker should NOT exist
+	if _, err := os.Stat(markerFile); !os.IsNotExist(err) {
+		t.Error("hook should not have been called on republish error")
+	}
+}
+
+func TestBlessingGrantHookNotCalledOnError(t *testing.T) {
+	s := newTestServer(t)
+	// No discovery service config = grant will fail
+	markerFile := filepath.Join(s.DataDir, "hook-marker")
+
+	s.Config = &Config{
+		Hooks: &hooks.HookConfig{
+			PostComment: "touch " + markerFile,
+		},
+	}
+
+	body := jsonBody(t, map[string]string{
+		"comment_version": "sha256:abc",
+		"comment_url":     "https://bob.polis.pub/comments/test.md",
+		"in_reply_to":     "https://alice.polis.pub/posts/test.md",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/blessing/grant", body)
+	rr := httptest.NewRecorder()
+
+	s.handleBlessingGrant(rr, req)
+
+	// Grant should fail (no discovery config or no private key)
+	if rr.Code == http.StatusOK {
+		t.Error("expected blessing grant to fail without config")
+	}
+
+	// Hook marker should NOT exist
+	if _, err := os.Stat(markerFile); !os.IsNotExist(err) {
+		t.Error("hook should not have been called on blessing grant error")
+	}
+}
+
+// ============================================================================
+// Drafts Migration Tests
+// ============================================================================
+
+func TestMigrateDraftsDir_OldToNew(t *testing.T) {
+	dataDir := t.TempDir()
+	s := &Server{DataDir: dataDir}
+
+	// Create old-style drafts dir with a file
+	oldDir := filepath.Join(dataDir, ".polis", "drafts")
+	os.MkdirAll(oldDir, 0755)
+	os.WriteFile(filepath.Join(oldDir, "test-draft.md"), []byte("# Draft"), 0644)
+
+	s.migrateDraftsDir()
+
+	// Old dir should be gone
+	if _, err := os.Stat(oldDir); !os.IsNotExist(err) {
+		t.Error("expected old drafts dir to be removed after migration")
+	}
+
+	// New dir should exist with the file
+	newDir := filepath.Join(dataDir, ".polis", "posts", "drafts")
+	if _, err := os.Stat(newDir); os.IsNotExist(err) {
+		t.Fatal("expected new drafts dir to exist")
+	}
+	content, err := os.ReadFile(filepath.Join(newDir, "test-draft.md"))
+	if err != nil {
+		t.Fatal("expected draft file to be migrated")
+	}
+	if string(content) != "# Draft" {
+		t.Errorf("expected draft content preserved, got: %s", string(content))
+	}
+}
+
+func TestMigrateDraftsDir_NoOldDir(t *testing.T) {
+	dataDir := t.TempDir()
+	s := &Server{DataDir: dataDir}
+
+	// No old dir exists - should be a no-op
+	s.migrateDraftsDir()
+
+	newDir := filepath.Join(dataDir, ".polis", "posts", "drafts")
+	if _, err := os.Stat(newDir); !os.IsNotExist(err) {
+		t.Error("expected new dir not to be created when no old dir exists")
+	}
+}
+
+func TestMigrateDraftsDir_NewAlreadyExists(t *testing.T) {
+	dataDir := t.TempDir()
+	s := &Server{DataDir: dataDir}
+
+	// Create both old and new dirs
+	oldDir := filepath.Join(dataDir, ".polis", "drafts")
+	newDir := filepath.Join(dataDir, ".polis", "posts", "drafts")
+	os.MkdirAll(oldDir, 0755)
+	os.MkdirAll(newDir, 0755)
+	os.WriteFile(filepath.Join(oldDir, "old-draft.md"), []byte("old"), 0644)
+	os.WriteFile(filepath.Join(newDir, "new-draft.md"), []byte("new"), 0644)
+
+	s.migrateDraftsDir()
+
+	// Old dir should still exist (migration skipped)
+	if _, err := os.Stat(oldDir); os.IsNotExist(err) {
+		t.Error("expected old dir to be preserved when new dir already exists")
+	}
+	// New dir file should be intact
+	content, _ := os.ReadFile(filepath.Join(newDir, "new-draft.md"))
+	if string(content) != "new" {
+		t.Error("expected new dir contents to be preserved")
 	}
 }
 

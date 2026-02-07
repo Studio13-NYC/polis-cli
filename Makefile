@@ -12,9 +12,8 @@
 # Default: build all targets
 all: cli webapp bundled
 
-# Version files
+# Version file (all Go binaries share the same version)
 CLI_VERSION := $(shell cat cli-go/version.txt)
-WEBAPP_VERSION := $(shell cat webapp/localhost/version.txt)
 
 # Output directory
 DIST := dist
@@ -28,8 +27,8 @@ cli:
 # Webapp-only build
 webapp:
 	@mkdir -p $(DIST)
-	cd webapp/localhost && go build -ldflags "-X main.Version=$(WEBAPP_VERSION)" -o ../../$(DIST)/polis-server ./cmd/server
-	@echo "Built $(DIST)/polis-server (version $(WEBAPP_VERSION))"
+	cd webapp/localhost && go build -ldflags "-X main.Version=$(CLI_VERSION)" -o ../../$(DIST)/polis-server ./cmd/server
+	@echo "Built $(DIST)/polis-server (version $(CLI_VERSION))"
 
 # Bundled build (uses CLI version since it's the CLI with serve added)
 bundled:
@@ -62,10 +61,10 @@ release-cli:
 
 release-webapp:
 	@mkdir -p $(DIST)
-	cd webapp/localhost && GOOS=linux GOARCH=amd64 go build -ldflags "-X main.Version=$(WEBAPP_VERSION)" -o ../../$(DIST)/polis-server-linux-amd64 ./cmd/server
-	cd webapp/localhost && GOOS=darwin GOARCH=amd64 go build -ldflags "-X main.Version=$(WEBAPP_VERSION)" -o ../../$(DIST)/polis-server-darwin-amd64 ./cmd/server
-	cd webapp/localhost && GOOS=darwin GOARCH=arm64 go build -ldflags "-X main.Version=$(WEBAPP_VERSION)" -o ../../$(DIST)/polis-server-darwin-arm64 ./cmd/server
-	cd webapp/localhost && GOOS=windows GOARCH=amd64 go build -ldflags "-X main.Version=$(WEBAPP_VERSION)" -o ../../$(DIST)/polis-server-windows-amd64.exe ./cmd/server
+	cd webapp/localhost && GOOS=linux GOARCH=amd64 go build -ldflags "-X main.Version=$(CLI_VERSION)" -o ../../$(DIST)/polis-server-linux-amd64 ./cmd/server
+	cd webapp/localhost && GOOS=darwin GOARCH=amd64 go build -ldflags "-X main.Version=$(CLI_VERSION)" -o ../../$(DIST)/polis-server-darwin-amd64 ./cmd/server
+	cd webapp/localhost && GOOS=darwin GOARCH=arm64 go build -ldflags "-X main.Version=$(CLI_VERSION)" -o ../../$(DIST)/polis-server-darwin-arm64 ./cmd/server
+	cd webapp/localhost && GOOS=windows GOARCH=amd64 go build -ldflags "-X main.Version=$(CLI_VERSION)" -o ../../$(DIST)/polis-server-windows-amd64.exe ./cmd/server
 	@echo "Built webapp release binaries"
 
 release-bundled:

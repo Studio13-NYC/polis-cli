@@ -1,21 +1,23 @@
-# Polis CLI
+# Polis
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](https://github.com/vdibart/polis-cli?tab=AGPL-3.0-1-ov-file)
 [![Platform: Linux | macOS | Windows](https://img.shields.io/badge/Platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey.svg)]()
 
-**A decentralized social network for the open web.**
+**A decentralized social network that makes the open web fun again.**
 
-Your posts live on your domain. Your followers are yours. Your content persist even if the network disappears. No oversight, no lock-in, no algorithm.
+Polis helps you publish, follow, and have conversations — without losing control over your content. Your posts are signed markdown files. Your identity is a keypair. Easily deploy to GitHub Pages, Netlify, or any static host and own everything you create.
 
 ---
 
-## The idea
+## Why Polis
 
-Social networks captured something valuable—the connections between people—then held it hostage. Polis gives that back.
+- **Your content can't be deplatformed.** Posts are markdown files signed with your Ed25519 key, hosted on your domain. No API to shut off, no account to suspend.
 
-With Polis, your content publishes to your server. You decide which comments to amplify or hide, but the comment is hosted on the commenter's server.  No algorithms, no oversight, no spam - just self-moderating conversation.
+- **Comments without spam.** Anyone can comment on your posts (published on *their* domain). You bless the ones you want your audience to see. Unblessed comments still exist — just not on your site.
 
-Built on standards you already trust: HTTPS for delivery, Ed25519 for signatures. Your content is markdown files. Your identity is a keypair. Move hosts anytime—everything comes with you.
+- **Move hosts anytime.** Everything is flat files. Switch from GitHub Pages to Netlify to a VPS — your content, keys, and followers come with you.
+
+- **No algorithms, no fees, no lock-in.** No engagement metrics, no 10% platform cut, no terms of service that change under your feet.
 
 ---
 
@@ -37,140 +39,98 @@ $ polis follow https://alice.dev
 [i] 12 posts, 3 with comments
 ```
 
-Works with GitHub Pages, Vercel, Netlify, or any static host.
-
 ---
 
-## Installation
-
-### Pre-built Binary (Recommended)
-
-The Go CLI is the recommended implementation. Three binaries are available:
-
-| Binary | Description | Size |
-|--------|-------------|------|
-| `polis` | CLI-only (recommended for most users) | ~9 MB |
-| `polis-server` | Web UI only | ~11 MB |
-| `polis-full` | CLI + `serve` command for local preview | ~12 MB |
+## Get started
 
 ```bash
-# Linux/macOS one-liner
 curl -fsSL https://raw.githubusercontent.com/vdibart/polis-cli/main/scripts/install.sh | bash
 
-# Or download from GitHub Releases
-# https://github.com/vdibart/polis-cli/releases
-```
-
-### Build from Source
-
-```bash
-git clone https://github.com/vdibart/polis-cli.git
-cd polis-cli
-make all          # Builds all three binaries to dist/
-./dist/polis version
-```
-
----
-
-## Commands
-
-All 27 commands from the Bash CLI are implemented in the Go CLI:
-
-| Command | Description |
-|---------|-------------|
-| `about` | Show site configuration |
-| `beseech` | Send blessing request to discovery service |
-| `blessing deny` | Deny a pending blessing request |
-| `blessing grant` | Grant a pending blessing request |
-| `blessing requests` | List pending blessing requests |
-| `blessing sync` | Sync blessings from discovery service |
-| `clone` | Clone a remote polis site |
-| `comment` | Add a comment to a post |
-| `discover` | Discover content from followed sites |
-| `extract` | Extract post content |
-| `follow` | Follow a polis site |
-| `help` | Show help message |
-| `index` | Manage public index |
-| `init` | Initialize a new polis site |
-| `migrate` | Migrate site to new domain |
-| `notifications` | Manage local notifications |
-| `post` | Publish a new post |
-| `preview` | Preview content in browser |
-| `publish` | Alias for post |
-| `rebuild` | Rebuild site from history |
-| `render` | Render markdown to HTML |
-| `rotate-key` | Rotate signing key |
-| `serve` | Start local HTTP server (polis-full only) |
-| `unfollow` | Unfollow a polis site |
-| `version` | Show version information |
-
----
-
-## Quick start
-
-### Initialize and publish
-
-```bash
 mkdir my-site && cd my-site
 polis init
 export POLIS_BASE_URL="https://yourdomain.com"
 
 echo "# Hello World" > hello.md
 polis post hello.md
-```
-
-### Deploy
-
-```bash
 polis render                    # Generate HTML
+
+# Preview locally before deploying
+polis-full serve
+
+# Deploy
 git init && git add . && git commit -m "First post"
 git push                        # To GitHub Pages, Netlify, etc.
 ```
 
 ---
 
-## Going deeper
+## Two ways to use it
 
-**Local preview** — Use `polis-full serve` to preview your site locally before publishing.
+**Command line** — `polis post`, `polis follow`, `polis discover`, `polis comment`, and 23 more commands. All support `--json` for scripting and automation. See the [full command reference](docs/USAGE.md).
 
-**Scripting** — All commands support `--json` for machine-readable output. Pipe content directly, automate blessing workflows, integrate with other tools.
-
-**Tutorial** — New to Polis? Run `polis-tutorial` for an interactive walkthrough with simulated commands.
-
-**AI integration** — Polis includes a [Claude Code](https://claude.ai/code) skill for natural language workflows: "publish my draft", "check my blessing requests", "comment on Alice's post".
+**Web UI** — Run `polis-full serve` to get a full publishing environment in your browser — write and preview posts, manage blessings, and discover what authors you follow are writing.
 
 ---
 
-## Reference Implementation (Bash)
+## The blessing model
 
-The original Bash CLI remains available and fully functional:
+Polis replaces top-down moderation with author-controlled curation.
+
+1. Someone comments on your post (the comment lives on *their* domain)
+2. They request your blessing via the discovery service
+3. You review and grant or deny — blessed comments appear on your rendered post
+4. Unblessed comments still exist on the commenter's domain, just not amplified to your audience
+
+Curated conversation without censorship.
+
+---
+
+## Installation
+
+### Pre-built binary (recommended)
 
 ```bash
-# Prerequisites
-# macOS: brew install openssh jq curl pandoc git
-# Ubuntu: sudo apt-get install openssh-client jq curl pandoc git
-
-export PATH="$PATH:$(pwd)/polis-cli/cli-bash"
-polis version
+curl -fsSL https://raw.githubusercontent.com/vdibart/polis-cli/main/scripts/install.sh | bash
 ```
 
-| | Go CLI | Bash CLI |
-|---|---|---|
-| Status | **Primary (recommended)** | Reference implementation |
-| Dependencies | None | bash, jq, curl, ssh |
-| Platforms | Linux, macOS, Windows | Linux, macOS |
-| Size | ~9 MB | ~320 KB |
-| TUI mode | Use `polis-full serve` | Deprecated |
+Three binaries are available on [GitHub Releases](https://github.com/vdibart/polis-cli/releases):
+
+| Binary | What you get | Size |
+|--------|-------------|------|
+| **`polis-full`** (recommended) | CLI + web UI + local preview | ~12 MB |
+| `polis` | CLI only | ~9 MB |
+| `polis-server` | Web UI only | ~11 MB |
+
+### Build from source
+
+```bash
+git clone https://github.com/vdibart/polis-cli.git
+cd polis-cli && make all
+./dist/polis version
+```
+
+---
+
+## Going deeper
+
+- **Themes** — Three built-in themes (sols, turbo, zane) with Mustache-style templating. See [TEMPLATING.md](docs/TEMPLATING.md).
+- **JSON mode** — Every command supports `--json` for scripting and automation. See [JSON-MODE.md](docs/JSON-MODE.md).
+- **Interactive tutorial** — Run `polis-tutorial` for a guided walkthrough with simulated commands.
+- **AI integration** — Polis includes a [Claude Code](https://claude.ai/code) skill for natural language workflows: "publish my draft", "check my blessing requests", "comment on Alice's post".
+
+---
+
+## The bash CLI as specification
+
+The bootstrap bash implementation (`cli-bash/polis`) is a single ~9000-line file that implements the complete Polis protocol with minimal dependencies (bash, jq, curl, ssh). It serves as a readable, executable specification — purpose-built for developers and LLMs to reference when porting Polis to other languages. Not deprecated, not legacy: a spec you can run.
 
 ---
 
 ## Documentation
 
-- **[USAGE.md](docs/USAGE.md)** — Complete command reference
+- **[USAGE.md](docs/USAGE.md)** — Complete command reference (27 commands)
+- **[TEMPLATING.md](docs/TEMPLATING.md)** — Themes and templates
 - **[JSON-MODE.md](docs/JSON-MODE.md)** — JSON output for scripting
-- **[TEMPLATING.md](docs/TEMPLATING.md)** — Customize your site's HTML
-- **[TUI.md](docs/TUI.md)** — Terminal user interface
-- **[UPGRADING.md](docs/UPGRADING.md)** — Version migrations
 - **[SECURITY-MODEL.md](docs/SECURITY-MODEL.md)** — Cryptographic details
 - **[MANIFESTO.md](docs/MANIFESTO.md)** — Vision and philosophy
 
@@ -190,4 +150,4 @@ Questions or issues? [Open a GitHub issue](https://github.com/vdibart/polis-cli/
 
 ---
 
-*Polis: Your content, your network, your rules.*
+*Your content, your domain, your rules.*

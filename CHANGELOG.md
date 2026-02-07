@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.48.0] - 2026-02-07
+
+### Security
+
+- **[Go CLI] [H3] `rotate-key` now updates `.well-known/polis`**: The rotate-key command previously read the config but never wrote back the new public key, leaving sites broken after rotation. Now properly parses the JSON config, replaces the `public_key` field, and writes it back while preserving all other fields.
+- **[Go CLI] [M6] Private temp directory for diffs**: The `computeUnifiedDiff()` function now creates a private temp directory (0700 permissions) instead of using the system `/tmp` directly. Diff computation no longer creates world-readable temporary files.
+- **[Webapp] [H1] Error detail redaction**: HTTP error responses no longer include `err.Error()` output that could leak file paths and OS error strings. All endpoints now return generic error messages to clients while logging full details server-side.
+- **[Webapp] [M1] Draft ID whitelist sanitization**: Draft IDs are now sanitized using a whitelist regex (replacing `[^a-zA-Z0-9_-]` with `-`) instead of the previous blacklist that only stripped `/` and `\`.
+- **[Webapp] [M2] Path traversal canonicalization**: The `validatePostPath()` and `validateContentPath()` functions now apply `filepath.Clean()` before checking for `..`, preventing encoded traversal sequences from bypassing validation.
+
+### Changed
+
+- **Version consolidation**: All three Go binaries (CLI, webapp, bundled) now share a single version from `cli-go/version.txt`. The webapp no longer maintains a separate version number.
+
+### Tests
+
+- **[Webapp] Error response redaction tests**: Added `TestErrorResponsesRedacted` to verify error responses don't leak OS error strings or file paths
+- **[Webapp] Draft ID sanitization tests**: Added `TestDraftIDSanitization` to verify special characters, path traversal, null bytes, and unicode are properly stripped from draft IDs
+- **[Webapp] Path canonicalization tests**: Added `TestValidatePostPath_Canonicalization` and `TestValidateContentPath_Canonicalization` to verify `filepath.Clean` edge cases are handled correctly
+
 ## [0.47.0] - 2026-02-06
 
 ### Added

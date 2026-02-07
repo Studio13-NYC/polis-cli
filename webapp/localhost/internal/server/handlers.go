@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -23,9 +24,14 @@ import (
 	polisurl "github.com/vdibart/polis-cli/cli-go/pkg/url"
 )
 
+// draftIDSanitizer strips all characters except alphanumeric, hyphens, and underscores.
+var draftIDSanitizer = regexp.MustCompile(`[^a-zA-Z0-9_-]`)
+
 // validatePostPath ensures the path is safe and within the posts directory.
 // This prevents path traversal attacks that could read/write arbitrary files.
 func validatePostPath(path string) error {
+	// Canonicalize first to normalize encoded traversals (e.g., ./, //)
+	path = filepath.Clean(path)
 	// Must start with "posts/"
 	if !strings.HasPrefix(path, "posts/") {
 		return fmt.Errorf("invalid path: must be under posts/")
@@ -44,6 +50,8 @@ func validatePostPath(path string) error {
 // validateContentPath ensures the path is safe and within allowed directories.
 // This prevents path traversal attacks.
 func validateContentPath(path string) error {
+	// Canonicalize first to normalize encoded traversals (e.g., ./, //)
+	path = filepath.Clean(path)
 	// No path traversal sequences
 	if strings.Contains(path, "..") {
 		return fmt.Errorf("invalid path: traversal not allowed")
@@ -138,7 +146,7 @@ func (s *Server) handleInit(w http.ResponseWriter, r *http.Request) {
 	result, err := site.Init(s.DataDir, opts)
 	if err != nil {
 		s.LogError("Failed to initialize site: %v", err)
-		http.Error(w, "Failed to initialize site: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "Failed to initialize site", http.StatusInternalServerError)
 		return
 	}
 	s.LogInfo("Initialized new site at: %s (title: %s)", result.SiteDir, req.SiteTitle)
@@ -194,7 +202,7 @@ func (s *Server) handleLink(w http.ResponseWriter, r *http.Request) {
 	// Convert to absolute path
 	targetPath, err := filepath.Abs(targetPath)
 	if err != nil {
-		http.Error(w, "Invalid path: "+err.Error(), http.StatusBadRequest)
+		http.Error(w, "Invalid path", http.StatusBadRequest)
 		return
 	}
 
@@ -212,7 +220,8 @@ func (s *Server) handleLink(w http.ResponseWriter, r *http.Request) {
 	// Get the current data directory path (before it's a symlink)
 	execPath, err := os.Executable()
 	if err != nil {
-		http.Error(w, "Failed to get executable path: "+err.Error(), http.StatusInternalServerError)
+		s.LogError("failed to get executable path: %v", err)
+		http.Error(w, "Failed to get executable path", http.StatusInternalServerError)
 		return
 	}
 	linkPath := filepath.Join(filepath.Dir(execPath), "data")
@@ -233,7 +242,8 @@ func (s *Server) handleLink(w http.ResponseWriter, r *http.Request) {
 
 	// Remove existing data directory/symlink
 	if err := os.RemoveAll(linkPath); err != nil {
-		http.Error(w, "Failed to remove existing data directory: "+err.Error(), http.StatusInternalServerError)
+		s.LogError("failed to remove existing data directory: %v", err)
+		http.Error(w, "Failed to remove existing data directory", http.StatusInternalServerError)
 		return
 	}
 
@@ -241,7 +251,7 @@ func (s *Server) handleLink(w http.ResponseWriter, r *http.Request) {
 	s.LogDebug("Linking to existing site: %s", targetPath)
 	if err := os.Symlink(targetPath, linkPath); err != nil {
 		s.LogError("Failed to create symlink: %v", err)
-		http.Error(w, "Failed to create symlink: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "Failed to create symlink", http.StatusInternalServerError)
 		return
 	}
 	s.LogInfo("Linked to existing site: %s", targetPath)
@@ -286,14 +296,16 @@ func (s *Server) handleRender(w http.ResponseWriter, r *http.Request) {
 	// Render markdown to HTML
 	html, err := render.MarkdownToHTML(req.Markdown)
 	if err != nil {
-		http.Error(w, "Failed to render markdown: "+err.Error(), http.StatusInternalServerError)
+		s.LogError("render markdown: %v", err)
+		http.Error(w, "Failed to render markdown", http.StatusInternalServerError)
 		return
 	}
 
 	// Sign the content
 	signature, err := signing.SignContent([]byte(req.Markdown), s.PrivateKey)
 	if err != nil {
-		http.Error(w, "Failed to sign content: "+err.Error(), http.StatusInternalServerError)
+		s.LogError("sign content: %v", err)
+		http.Error(w, "Failed to sign content", http.StatusInternalServerError)
 		return
 	}
 
@@ -355,12 +367,12 @@ func (s *Server) handleDrafts(w http.ResponseWriter, r *http.Request) {
 			req.ID = fmt.Sprintf("draft-%d", time.Now().Unix())
 		}
 
-		// Sanitize ID
-		req.ID = strings.ReplaceAll(req.ID, "/", "-")
-		req.ID = strings.ReplaceAll(req.ID, "\\", "-")
+		// Sanitize ID - whitelist only safe characters
+		req.ID = draftIDSanitizer.ReplaceAllString(req.ID, "-")
 
 		draftPath := filepath.Join(draftsDir, req.ID+".md")
 		if err := os.WriteFile(draftPath, []byte(req.Markdown), 0644); err != nil {
+			s.LogError("failed to save draft: %v", err)
 			http.Error(w, "Failed to save draft", http.StatusInternalServerError)
 			return
 		}
@@ -384,9 +396,8 @@ func (s *Server) handleDraft(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Sanitize ID
-	id = strings.ReplaceAll(id, "/", "-")
-	id = strings.ReplaceAll(id, "\\", "-")
+	// Sanitize ID - whitelist only safe characters
+	id = draftIDSanitizer.ReplaceAllString(id, "-")
 
 	draftPath := filepath.Join(s.DataDir, ".polis", "posts", "drafts", id+".md")
 
@@ -406,6 +417,7 @@ func (s *Server) handleDraft(w http.ResponseWriter, r *http.Request) {
 
 	case http.MethodDelete:
 		if err := os.Remove(draftPath); err != nil {
+			s.LogError("failed to delete draft: %v", err)
 			http.Error(w, "Failed to delete draft", http.StatusInternalServerError)
 			return
 		}
@@ -455,7 +467,7 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	result, err := publish.PublishPost(s.DataDir, markdown, req.Filename, s.PrivateKey)
 	if err != nil {
 		s.LogError("Failed to publish: %v", err)
-		http.Error(w, "Failed to publish: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "Failed to publish", http.StatusInternalServerError)
 		return
 	}
 	s.LogInfo("Published post: %s (title: %s)", result.Path, result.Title)
@@ -634,7 +646,7 @@ func (s *Server) handleRepublish(w http.ResponseWriter, r *http.Request) {
 	result, err := publish.RepublishPost(s.DataDir, req.Path, markdown, s.PrivateKey)
 	if err != nil {
 		s.LogError("Failed to republish %s: %v", req.Path, err)
-		http.Error(w, "Failed to republish: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "Failed to republish", http.StatusInternalServerError)
 		return
 	}
 	s.LogInfo("Republished post: %s (title: %s)", result.Path, result.Title)
@@ -681,7 +693,8 @@ func (s *Server) handleCommentDrafts(w http.ResponseWriter, r *http.Request) {
 		// List comment drafts
 		drafts, err := comment.ListDrafts(s.DataDir)
 		if err != nil {
-			http.Error(w, "Failed to list drafts: "+err.Error(), http.StatusInternalServerError)
+			s.LogError("failed to list drafts: %v", err)
+			http.Error(w, "Failed to list drafts", http.StatusInternalServerError)
 			return
 		}
 
@@ -716,7 +729,8 @@ func (s *Server) handleCommentDrafts(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if err := comment.SaveDraft(s.DataDir, draft); err != nil {
-			http.Error(w, "Failed to save draft: "+err.Error(), http.StatusInternalServerError)
+			s.LogError("failed to save draft: %v", err)
+			http.Error(w, "Failed to save draft", http.StatusInternalServerError)
 			return
 		}
 
@@ -752,7 +766,8 @@ func (s *Server) handleCommentDraft(w http.ResponseWriter, r *http.Request) {
 
 	case http.MethodDelete:
 		if err := comment.DeleteDraft(s.DataDir, id); err != nil {
-			http.Error(w, "Failed to delete draft: "+err.Error(), http.StatusInternalServerError)
+			s.LogError("failed to delete draft: %v", err)
+			http.Error(w, "Failed to delete draft", http.StatusInternalServerError)
 			return
 		}
 
@@ -834,7 +849,8 @@ func (s *Server) handleCommentSign(w http.ResponseWriter, r *http.Request) {
 
 	signed, err := comment.SignComment(s.DataDir, draft, authorEmail, siteURL, s.PrivateKey)
 	if err != nil {
-		http.Error(w, "Failed to sign comment: "+err.Error(), http.StatusInternalServerError)
+		s.LogError("failed to sign comment: %v", err)
+		http.Error(w, "Failed to sign comment", http.StatusInternalServerError)
 		return
 	}
 
@@ -888,7 +904,8 @@ func (s *Server) handleCommentBeseech(w http.ResponseWriter, r *http.Request) {
 	// Parse timestamp to get date directory (YYYYMMDD format)
 	ts, err := time.Parse("2006-01-02T15:04:05Z", signed.Meta.Timestamp)
 	if err != nil {
-		http.Error(w, "Invalid timestamp in comment: "+err.Error(), http.StatusInternalServerError)
+		s.LogError("invalid timestamp in comment: %v", err)
+		http.Error(w, "Invalid timestamp in comment", http.StatusInternalServerError)
 		return
 	}
 	dateDir := ts.Format("20060102")
@@ -912,7 +929,8 @@ func (s *Server) handleCommentBeseech(w http.ResponseWriter, r *http.Request) {
 	// Sign the canonical payload (NOT the file signature)
 	beseechSig, err := signing.SignContent([]byte(canonicalPayload), s.PrivateKey)
 	if err != nil {
-		http.Error(w, "Failed to sign beseech payload: "+err.Error(), http.StatusInternalServerError)
+		s.LogError("failed to sign beseech payload: %v", err)
+		http.Error(w, "Failed to sign beseech payload", http.StatusInternalServerError)
 		return
 	}
 
@@ -932,7 +950,8 @@ func (s *Server) handleCommentBeseech(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := client.BeseechBlessing(beseechReq)
 	if err != nil {
-		http.Error(w, "Failed to send blessing request: "+err.Error(), http.StatusInternalServerError)
+		s.LogError("failed to send blessing request: %v", err)
+		http.Error(w, "Failed to send blessing request", http.StatusInternalServerError)
 		return
 	}
 
@@ -981,7 +1000,8 @@ func (s *Server) handleCommentsPending(w http.ResponseWriter, r *http.Request) {
 
 	comments, err := comment.ListComments(s.DataDir, comment.StatusPending)
 	if err != nil {
-		http.Error(w, "Failed to list pending comments: "+err.Error(), http.StatusInternalServerError)
+		s.LogError("failed to list pending comments: %v", err)
+		http.Error(w, "Failed to list pending comments", http.StatusInternalServerError)
 		return
 	}
 
@@ -999,7 +1019,8 @@ func (s *Server) handleCommentsBlessed(w http.ResponseWriter, r *http.Request) {
 
 	comments, err := comment.ListComments(s.DataDir, comment.StatusBlessed)
 	if err != nil {
-		http.Error(w, "Failed to list blessed comments: "+err.Error(), http.StatusInternalServerError)
+		s.LogError("failed to list blessed comments: %v", err)
+		http.Error(w, "Failed to list blessed comments", http.StatusInternalServerError)
 		return
 	}
 
@@ -1017,7 +1038,8 @@ func (s *Server) handleCommentsDenied(w http.ResponseWriter, r *http.Request) {
 
 	comments, err := comment.ListComments(s.DataDir, comment.StatusDenied)
 	if err != nil {
-		http.Error(w, "Failed to list denied comments: "+err.Error(), http.StatusInternalServerError)
+		s.LogError("failed to list denied comments: %v", err)
+		http.Error(w, "Failed to list denied comments", http.StatusInternalServerError)
 		return
 	}
 
@@ -1053,7 +1075,7 @@ func (s *Server) handleCommentByStatus(w http.ResponseWriter, r *http.Request) {
 
 	result, err := comment.GetComment(s.DataDir, commentID, status)
 	if err != nil {
-		http.Error(w, "Comment not found: "+err.Error(), http.StatusNotFound)
+		http.Error(w, "Comment not found", http.StatusNotFound)
 		return
 	}
 
@@ -1089,7 +1111,8 @@ func (s *Server) handleCommentsSync(w http.ResponseWriter, r *http.Request) {
 	// Sync pending comments
 	result, err := comment.SyncPendingComments(s.DataDir, client, s.Config.Hooks)
 	if err != nil {
-		http.Error(w, "Failed to sync comments: "+err.Error(), http.StatusInternalServerError)
+		s.LogError("failed to sync comments: %v", err)
+		http.Error(w, "Failed to sync comments", http.StatusInternalServerError)
 		return
 	}
 
@@ -1119,7 +1142,8 @@ func (s *Server) handleBlessingRequests(w http.ResponseWriter, r *http.Request) 
 	// Fetch pending blessing requests
 	requests, err := blessing.FetchPendingRequests(client, domain)
 	if err != nil {
-		http.Error(w, "Failed to fetch requests: "+err.Error(), http.StatusInternalServerError)
+		s.LogError("failed to fetch requests: %v", err)
+		http.Error(w, "Failed to fetch requests", http.StatusInternalServerError)
 		return
 	}
 
@@ -1177,7 +1201,7 @@ func (s *Server) handleBlessingGrant(w http.ResponseWriter, r *http.Request) {
 	)
 	if err != nil {
 		s.LogError("Failed to grant blessing: %v", err)
-		http.Error(w, "Failed to grant blessing: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "Failed to grant blessing", http.StatusInternalServerError)
 		return
 	}
 	s.LogInfo("Granted blessing for comment: %s", req.CommentURL)
@@ -1229,7 +1253,7 @@ func (s *Server) handleBlessingDeny(w http.ResponseWriter, r *http.Request) {
 	result, err := blessing.Deny(req.CommentVersion, client, s.PrivateKey)
 	if err != nil {
 		s.LogError("Failed to deny blessing: %v", err)
-		http.Error(w, "Failed to deny blessing: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "Failed to deny blessing", http.StatusInternalServerError)
 		return
 	}
 	s.LogInfo("Denied blessing for comment version: %s", req.CommentVersion)
@@ -1284,7 +1308,8 @@ func (s *Server) handleBlessingRevoke(w http.ResponseWriter, r *http.Request) {
 
 	// Remove from blessed-comments.json
 	if err := metadata.RemoveBlessedComment(s.DataDir, normalizedURL); err != nil {
-		http.Error(w, "Failed to revoke blessing: "+err.Error(), http.StatusInternalServerError)
+		s.LogError("failed to revoke blessing: %v", err)
+		http.Error(w, "Failed to revoke blessing", http.StatusInternalServerError)
 		return
 	}
 	s.LogInfo("Revoked blessing for comment: %s", normalizedURL)
@@ -1465,7 +1490,8 @@ func (s *Server) handleAutomations(w http.ResponseWriter, r *http.Request) {
 		// Create the hook script
 		scriptPath, err := s.createHookScript(script, hookType)
 		if err != nil {
-			http.Error(w, "Failed to create hook: "+err.Error(), http.StatusInternalServerError)
+			s.LogError("failed to create hook: %v", err)
+			http.Error(w, "Failed to create hook", http.StatusInternalServerError)
 			return
 		}
 
@@ -1491,7 +1517,8 @@ func (s *Server) handleAutomationsQuick(w http.ResponseWriter, r *http.Request) 
 
 	scriptPath, err := s.createHookScript(template.Script, "post-publish")
 	if err != nil {
-		http.Error(w, "Failed to create hook: "+err.Error(), http.StatusInternalServerError)
+		s.LogError("failed to create hook: %v", err)
+		http.Error(w, "Failed to create hook", http.StatusInternalServerError)
 		return
 	}
 	_ = scriptPath // suppress unused variable warning
@@ -1576,7 +1603,8 @@ func (s *Server) handleAutomation(w http.ResponseWriter, r *http.Request) {
 
 		// Save the updated config
 		if err := s.SaveConfig(); err != nil {
-			http.Error(w, "Failed to save config: "+err.Error(), http.StatusInternalServerError)
+			s.LogError("failed to save config: %v", err)
+			http.Error(w, "Failed to save config", http.StatusInternalServerError)
 			return
 		}
 
@@ -1653,7 +1681,8 @@ func (s *Server) handleHooksGenerate(w http.ResponseWriter, r *http.Request) {
 	// Create hooks directory
 	hooksDir := filepath.Join(s.DataDir, ".polis", "hooks")
 	if err := os.MkdirAll(hooksDir, 0755); err != nil {
-		http.Error(w, "Failed to create hooks directory: "+err.Error(), http.StatusInternalServerError)
+		s.LogError("failed to create hooks directory: %v", err)
+		http.Error(w, "Failed to create hooks directory", http.StatusInternalServerError)
 		return
 	}
 
@@ -1682,7 +1711,8 @@ echo "Hook triggered: %s"
 `, req.HookType, req.HookType, req.HookType)
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
-		http.Error(w, "Failed to write hook script: "+err.Error(), http.StatusInternalServerError)
+		s.LogError("failed to write hook script: %v", err)
+		http.Error(w, "Failed to write hook script", http.StatusInternalServerError)
 		return
 	}
 
@@ -1705,7 +1735,8 @@ echo "Hook triggered: %s"
 	}
 
 	if err := s.SaveConfig(); err != nil {
-		http.Error(w, "Failed to save config: "+err.Error(), http.StatusInternalServerError)
+		s.LogError("failed to save config: %v", err)
+		http.Error(w, "Failed to save config", http.StatusInternalServerError)
 		return
 	}
 
@@ -1747,7 +1778,8 @@ func (s *Server) handleViewMode(w http.ResponseWriter, r *http.Request) {
 	// Update and save
 	s.Config.ViewMode = req.ViewMode
 	if err := s.SaveConfig(); err != nil {
-		http.Error(w, "Failed to save config: "+err.Error(), http.StatusInternalServerError)
+		s.LogError("failed to save config: %v", err)
+		http.Error(w, "Failed to save config", http.StatusInternalServerError)
 		return
 	}
 
@@ -1781,7 +1813,8 @@ func (s *Server) handleShowFrontmatter(w http.ResponseWriter, r *http.Request) {
 	// Update and save
 	s.Config.ShowFrontmatter = &req.ShowFrontmatter
 	if err := s.SaveConfig(); err != nil {
-		http.Error(w, "Failed to save config: "+err.Error(), http.StatusInternalServerError)
+		s.LogError("failed to save config: %v", err)
+		http.Error(w, "Failed to save config", http.StatusInternalServerError)
 		return
 	}
 
@@ -1856,7 +1889,8 @@ func (s *Server) handleContent(w http.ResponseWriter, r *http.Request) {
 	// Render markdown to HTML (without frontmatter)
 	html, err := render.MarkdownToHTML(markdown)
 	if err != nil {
-		http.Error(w, "Failed to render markdown: "+err.Error(), http.StatusInternalServerError)
+		s.LogError("failed to render markdown: %v", err)
+		http.Error(w, "Failed to render markdown", http.StatusInternalServerError)
 		return
 	}
 
@@ -1985,7 +2019,7 @@ func (s *Server) handleSiteRegistrationStatus(w http.ResponseWriter, r *http.Req
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"configured": true,
 			"domain":     domain,
-			"error":      "Unable to check: " + err.Error(),
+			"error":      "Unable to check registration status",
 		})
 		return
 	}
@@ -2060,7 +2094,7 @@ func (s *Server) handleSiteRegister(w http.ResponseWriter, r *http.Request) {
 	result, err := client.RegisterSite(domain, s.PrivateKey, email, authorName)
 	if err != nil {
 		s.LogError("Failed to register site: %v", err)
-		http.Error(w, "Registration failed: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "Registration failed", http.StatusInternalServerError)
 		return
 	}
 
@@ -2112,7 +2146,7 @@ func (s *Server) handleSiteUnregister(w http.ResponseWriter, r *http.Request) {
 	result, err := client.UnregisterSite(domain, s.PrivateKey)
 	if err != nil {
 		s.LogError("Failed to unregister site: %v", err)
-		http.Error(w, "Unregistration failed: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "Unregistration failed", http.StatusInternalServerError)
 		return
 	}
 
@@ -2139,7 +2173,8 @@ func (s *Server) handleSnippets(w http.ResponseWriter, r *http.Request) {
 		// List snippets from both local .polis/themes/ and CLI themes (fallback)
 		tree, err := snippet.ListSnippets(s.DataDir, s.CLIThemesDir, "", path, filter)
 		if err != nil {
-			http.Error(w, "Failed to list snippets: "+err.Error(), http.StatusInternalServerError)
+			s.LogError("failed to list snippets: %v", err)
+			http.Error(w, "Failed to list snippets", http.StatusInternalServerError)
 			return
 		}
 
@@ -2163,7 +2198,8 @@ func (s *Server) handleSnippets(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if err := snippet.CreateSnippet(s.DataDir, req.Path, req.Content); err != nil {
-			http.Error(w, "Failed to create snippet: "+err.Error(), http.StatusInternalServerError)
+			s.LogError("failed to create snippet: %v", err)
+			http.Error(w, "Failed to create snippet", http.StatusInternalServerError)
 			return
 		}
 
@@ -2203,7 +2239,7 @@ func (s *Server) handleSnippet(w http.ResponseWriter, r *http.Request) {
 				content, err = snippet.ReadSnippet(s.DataDir, s.CLIThemesDir, "", snippetPath, "theme")
 			}
 			if err != nil {
-				http.Error(w, "Snippet not found: "+err.Error(), http.StatusNotFound)
+				http.Error(w, "Snippet not found", http.StatusNotFound)
 				return
 			}
 		}
@@ -2228,7 +2264,8 @@ func (s *Server) handleSnippet(w http.ResponseWriter, r *http.Request) {
 
 		// Write to local .polis/themes/ or CLI themes (fallback)
 		if err := snippet.WriteSnippet(s.DataDir, s.CLIThemesDir, "", snippetPath, req.Content, req.Source); err != nil {
-			http.Error(w, "Failed to save snippet: "+err.Error(), http.StatusInternalServerError)
+			s.LogError("failed to save snippet: %v", err)
+			http.Error(w, "Failed to save snippet", http.StatusInternalServerError)
 			return
 		}
 
@@ -2242,7 +2279,8 @@ func (s *Server) handleSnippet(w http.ResponseWriter, r *http.Request) {
 	case http.MethodDelete:
 		// Delete snippet (global only)
 		if err := snippet.DeleteSnippet(s.DataDir, snippetPath); err != nil {
-			http.Error(w, "Failed to delete snippet: "+err.Error(), http.StatusInternalServerError)
+			s.LogError("failed to delete snippet: %v", err)
+			http.Error(w, "Failed to delete snippet", http.StatusInternalServerError)
 			return
 		}
 
@@ -2286,7 +2324,7 @@ func (s *Server) handleRenderPage(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		log.Printf("[render-page] Failed to create renderer: %v", err)
-		http.Error(w, "Failed to create renderer: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "Failed to create renderer", http.StatusInternalServerError)
 		return
 	}
 
@@ -2294,7 +2332,7 @@ func (s *Server) handleRenderPage(w http.ResponseWriter, r *http.Request) {
 	stats, err := renderer.RenderAll(true)
 	if err != nil {
 		log.Printf("[render-page] Render failed: %v", err)
-		http.Error(w, "Render failed: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "Render failed", http.StatusInternalServerError)
 		return
 	}
 

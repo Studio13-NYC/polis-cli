@@ -56,8 +56,8 @@ Core packages in `pkg/` are designed to be imported by other Go applications:
 
 ```go
 import (
-    "github.com/vdibart/polis-planning/cli-go/pkg/render"
-    "github.com/vdibart/polis-planning/cli-go/pkg/publish"
+    "github.com/vdibart/polis-cli/cli-go/pkg/render"
+    "github.com/vdibart/polis-cli/cli-go/pkg/publish"
 )
 
 // Render all pages
@@ -81,7 +81,7 @@ Currently implemented commands:
 - `polis version` - Show version information
 - `polis help` - Show help message
 
-For the full CLI with all commands, use the bash CLI at `cli-bash/bin/polis`.
+For the full CLI with all commands, use the bash CLI at `cli-bash/polis`.
 
 ## Template System
 

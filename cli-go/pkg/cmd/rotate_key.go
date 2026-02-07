@@ -1,10 +1,12 @@
 package cmd
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/vdibart/polis-cli/cli-go/pkg/signing"
 )
@@ -70,8 +72,19 @@ func handleRotateKey(args []string) {
 		exitError("Failed to read .well-known/polis: %v", err)
 	}
 
-	// Simple string replacement for public key (to avoid JSON parsing issues)
-	// This is a simplification - a full implementation would properly parse and update JSON
+	// Parse, update public_key, and write back
+	var wkJSON map[string]interface{}
+	if err := json.Unmarshal(wkData, &wkJSON); err != nil {
+		exitError("Failed to parse .well-known/polis: %v", err)
+	}
+	wkJSON["public_key"] = strings.TrimSpace(string(pubSSH))
+	updatedWK, err := json.MarshalIndent(wkJSON, "", "  ")
+	if err != nil {
+		exitError("Failed to marshal .well-known/polis: %v", err)
+	}
+	if err := os.WriteFile(wellKnownPath, append(updatedWK, '\n'), 0644); err != nil {
+		exitError("Failed to write .well-known/polis: %v", err)
+	}
 
 	if !jsonOutput {
 		fmt.Println()
@@ -80,11 +93,12 @@ func handleRotateKey(args []string) {
 		fmt.Println("[i] New public key:")
 		fmt.Printf("  %s\n", string(pubSSH))
 		fmt.Println()
+		fmt.Println("[i] Updated .well-known/polis with new public key")
+		fmt.Println()
 		fmt.Println("[!] Important next steps:")
-		fmt.Println("  1. Update .well-known/polis with the new public key")
-		fmt.Println("  2. Re-sign all posts with: polis republish <path>")
-		fmt.Println("  3. Re-sign all comments with: polis republish <path>")
-		fmt.Println("  4. Deploy the updated files")
+		fmt.Println("  1. Re-sign all posts with: polis republish <path>")
+		fmt.Println("  2. Re-sign all comments with: polis republish <path>")
+		fmt.Println("  3. Deploy the updated files")
 	}
 
 	if jsonOutput {
@@ -92,13 +106,10 @@ func handleRotateKey(args []string) {
 			"status":  "success",
 			"command": "rotate-key",
 			"data": map[string]interface{}{
-				"new_public_key":   string(pubSSH),
+				"new_public_key":    string(pubSSH),
 				"old_key_backed_up": !*deleteOldKey,
-				"old_key_path":     oldPrivateKeyPath,
+				"old_key_path":      oldPrivateKeyPath,
 			},
 		})
 	}
-
-	// Suppress unused variable warning
-	_ = wkData
 }

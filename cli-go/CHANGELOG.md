@@ -5,6 +5,28 @@ All notable changes to the Go CLI will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.48.0]
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Security
+
+- **[H3] `rotate-key` now updates `.well-known/polis`**: Previously, `rotate-key` read `.well-known/polis` but never wrote back the new public key, leaving the site broken after rotation. Now the command parses the JSON, replaces `public_key`, and writes it back while preserving all other fields.
+- **[M6] Temp files use private directory**: `computeUnifiedDiff()` now creates a private temp directory (`0700`) instead of using the system `/tmp` directly. Files created during diff computation are no longer world-readable.
+- **[Webapp] [H1] Error detail redaction**: All HTTP error responses that previously included `err.Error()` (leaking file paths, OS error strings) now return generic messages. Internal error details are logged server-side via `s.LogError()`.
+- **[Webapp] [M1] Draft ID whitelist sanitization**: Draft IDs are now sanitized with a whitelist regex (`[^a-zA-Z0-9_-]` replaced with `-`) instead of the previous blacklist approach that only stripped `/` and `\`.
+- **[Webapp] [M2] Path traversal canonicalization**: `validatePostPath()` and `validateContentPath()` now apply `filepath.Clean()` before checking for `..`, preventing encoded traversal sequences from bypassing the check.
+
+### Tests
+
+- **[Webapp]** Added `TestErrorResponsesRedacted` to verify error responses don't contain OS error strings or file paths.
+- **[Webapp]** Added `TestDraftIDSanitization` to verify special characters, path traversal, null bytes, and unicode are stripped from draft IDs.
+- **[Webapp]** Added `TestValidatePostPath_Canonicalization` and `TestValidateContentPath_Canonicalization` to verify `filepath.Clean` inputs are handled correctly.
+
 ## [0.47.0]
 
 ### Added
@@ -14,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`{{target_author}}` and `{{preview}}` in comment loops**: Template engine now wires `target_author` and `preview` variables through `{{#comments}}` sections and partial includes
 - **`polis init` creates `webapp-config.json`**: Init now creates `.polis/webapp-config.json` with webapp-specific defaults (`setup_at`, `view_mode`, `show_frontmatter`). Discovery credentials are not included — they belong in `.env` and are loaded at runtime.
 - **Hooks auto-discovery**: `RunHook()` and `GetHookPath()` now check `.polis/hooks/{event}.sh` when no explicit path is configured. Placing a script in the conventional location just works without registering it in `webapp-config.json`.
+- **[Webapp] CLI version propagation**: Server accepts `CLIVersion` via `RunOptions` and propagates it to `publish`, `comment`, and `metadata` packages so all generated metadata uses the correct CLI version
 
 ### Fixed
 
@@ -43,6 +66,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Flexible blessed comment path matching**: `GetBlessedCommentsForPost()` matches across `.md`/`.html` extensions and full URL vs relative path variants
 - **Renderer skips .versions directories**: `RenderAll()` Walk callbacks now skip `.versions` directories, matching `index/rebuild.go` behavior
 - **Drafts directory renamed**: `.polis/drafts` → `.polis/posts/drafts`; old path still accepted in content validation for backwards compatibility
+- **[Webapp] Hooks fire without explicit config**: Publish, republish, and beseech handlers no longer guard hook execution behind `s.Config.Hooks != nil`. `RunHook()` now handles nil config gracefully with auto-discovery from `.polis/hooks/`.
+- **[Webapp] Automations list shows auto-discovered hooks**: `getAutomations()` uses `GetHookPathWithDiscovery()` so the settings UI displays hooks found at conventional paths, not just those registered in `webapp-config.json`.
+- **[Webapp] Native confirm() replaced**: All 5 browser `confirm()` calls replaced with styled `showConfirmModal()` dialogs with appropriate danger/default types
+- **[Webapp] Subdomain removed from webapp-config.json**: `SaveConfig()` strips the deprecated `Subdomain` field; `LoadEnv()` no longer derives subdomain from `POLIS_BASE_URL`; all runtime usage goes through `GetSubdomain()` which derives from `BaseURL`
+- **[Webapp] Beseech auto-bless renders site**: The auto-blessed branch of the beseech handler now calls `RenderSite()` before running hooks, ensuring HTML is generated before deployment
+- **[Webapp] Drafts directory migration on startup**: Automatic migration from `.polis/drafts` to `.polis/posts/drafts` on webapp startup
+- **[Webapp] Init handler compatibility**: Removed deleted `Author`/`Email`/`BaseURL` fields from `InitOptions` construction to match updated `cli-go/pkg/site` API
 
 ## [0.46.0] - 2026-02-05
 

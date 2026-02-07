@@ -289,8 +289,8 @@ func TestHandleInit_KeysAlreadyExist(t *testing.T) {
 		t.Errorf("expected status 500, got %d: %s", rr.Code, rr.Body.String())
 	}
 
-	if !strings.Contains(rr.Body.String(), "already exists") {
-		t.Error("expected error message about existing keys")
+	if !strings.Contains(rr.Body.String(), "Failed to initialize site") {
+		t.Error("expected generic init failure message")
 	}
 }
 
@@ -2871,7 +2871,7 @@ func TestValidatePostPath(t *testing.T) {
 		{"double traversal", "posts/../../etc/passwd", true},
 		{"null byte injection", "posts/20260128/test\x00.md", true},
 		{"empty path", "", true},
-		{"just posts", "posts/", false},
+		{"just posts dir", "posts/", true}, // filepath.Clean strips trailing slash; bare directory is not a valid post path
 	}
 
 	for _, tt := range tests {
@@ -3535,6 +3535,204 @@ func TestMigrateDraftsDir_NewAlreadyExists(t *testing.T) {
 	content, _ := os.ReadFile(filepath.Join(newDir, "new-draft.md"))
 	if string(content) != "new" {
 		t.Error("expected new dir contents to be preserved")
+	}
+}
+
+// ============================================================================
+// Security: Error Redaction Tests (H1)
+// ============================================================================
+
+func TestErrorResponsesRedacted(t *testing.T) {
+	s := newConfiguredServer(t)
+
+	// Strings that should NEVER appear in HTTP error responses
+	osErrorStrings := []string{
+		"permission denied",
+		"no such file or directory",
+		"not a directory",
+		"/tmp/",
+		"/home/",
+		s.DataDir, // The actual data directory path
+	}
+
+	// Test publish with content that will fail (trigger internal errors)
+	tests := []struct {
+		name    string
+		method  string
+		path    string
+		body    interface{}
+		handler func(http.ResponseWriter, *http.Request)
+	}{
+		{
+			name:    "handleRender with nil key",
+			method:  http.MethodPost,
+			path:    "/api/render",
+			body:    map[string]string{"markdown": "# Test"},
+			handler: (&Server{DataDir: s.DataDir}).handleRender, // No private key
+		},
+		{
+			name:   "handleCommentsPending with missing dir",
+			method: http.MethodGet,
+			path:   "/api/comments/pending",
+			handler: (&Server{
+				DataDir: "/nonexistent/path/that/does/not/exist",
+			}).handleCommentsPending,
+		},
+		{
+			name:   "handleCommentsBlessed with missing dir",
+			method: http.MethodGet,
+			path:   "/api/comments/blessed",
+			handler: (&Server{
+				DataDir: "/nonexistent/path/that/does/not/exist",
+			}).handleCommentsBlessed,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var body *bytes.Buffer
+			if tt.body != nil {
+				body = jsonBody(t, tt.body)
+			} else {
+				body = bytes.NewBuffer(nil)
+			}
+			req := httptest.NewRequest(tt.method, tt.path, body)
+			rr := httptest.NewRecorder()
+
+			tt.handler(rr, req)
+
+			responseBody := rr.Body.String()
+			for _, osErr := range osErrorStrings {
+				if strings.Contains(strings.ToLower(responseBody), strings.ToLower(osErr)) {
+					t.Errorf("response contains OS error detail %q: %s", osErr, responseBody)
+				}
+			}
+		})
+	}
+}
+
+// ============================================================================
+// Security: Draft ID Sanitization Tests (M1)
+// ============================================================================
+
+func TestDraftIDSanitization(t *testing.T) {
+	s := newTestServer(t)
+
+	tests := []struct {
+		name       string
+		inputID    string
+		wantSafe   bool // ID should not contain dangerous chars
+		wantPrefix string
+	}{
+		{"normal ID", "my-draft", true, ""},
+		{"path traversal", "../../../etc/passwd", true, ""},
+		{"null bytes", "draft\x00evil", true, ""},
+		{"slashes", "a/b/c", true, ""},
+		{"backslashes", "a\\b\\c", true, ""},
+		{"unicode", "draft\u2028evil", true, ""},
+		{"special chars", "draft@#$%.md", true, ""},
+		{"spaces", "my draft name", true, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := jsonBody(t, map[string]string{
+				"id":       tt.inputID,
+				"markdown": "# Test",
+			})
+			req := httptest.NewRequest(http.MethodPost, "/api/drafts", body)
+			rr := httptest.NewRecorder()
+
+			s.handleDrafts(rr, req)
+
+			if rr.Code != http.StatusOK {
+				// May fail due to missing dirs, but we want to check file system effects
+				return
+			}
+
+			var resp map[string]interface{}
+			json.NewDecoder(rr.Body).Decode(&resp)
+
+			id, ok := resp["id"].(string)
+			if !ok {
+				return
+			}
+
+			// Verify the ID only contains safe characters
+			for _, ch := range id {
+				if !((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '-' || ch == '_') {
+					t.Errorf("sanitized ID %q contains unsafe character %q", id, string(ch))
+				}
+			}
+
+			// Verify no path traversal chars
+			if strings.Contains(id, "..") {
+				t.Errorf("sanitized ID still contains '..': %s", id)
+			}
+			if strings.Contains(id, "/") {
+				t.Errorf("sanitized ID still contains '/': %s", id)
+			}
+			if strings.Contains(id, "\\") {
+				t.Errorf("sanitized ID still contains '\\': %s", id)
+			}
+		})
+	}
+}
+
+// ============================================================================
+// Security: Path Traversal Tests (M2)
+// ============================================================================
+
+func TestValidatePostPath_Canonicalization(t *testing.T) {
+	tests := []struct {
+		name    string
+		path    string
+		wantErr bool
+	}{
+		{"normal path", "posts/20260101/hello.md", false},
+		{"dot-dot traversal", "posts/../../../etc/passwd", true},
+		{"double slash", "posts//20260101//hello.md", false},
+		{"dot segment", "posts/./20260101/hello.md", false},
+		{"null byte", "posts/20260101/hello\x00.md", true},
+		{"not posts prefix", "comments/foo.md", true},
+		{"clean removes prefix", "../posts/hello.md", true}, // filepath.Clean("../posts/hello.md") = "../posts/hello.md"
+		{"encoded dot-dot", "posts/20260101/..%2f..%2fetc/passwd", true}, // Contains ".." substring which is blocked
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validatePostPath(tt.path)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validatePostPath(%q) error = %v, wantErr %v", tt.path, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateContentPath_Canonicalization(t *testing.T) {
+	tests := []struct {
+		name    string
+		path    string
+		wantErr bool
+	}{
+		{"root markdown", "index.md", false},
+		{"root html", "index.html", false},
+		{"posts path", "posts/20260101/hello.md", false},
+		{"comments path", "comments/blessed/comment.md", false},
+		{"drafts path", ".polis/posts/drafts/my-draft.md", false},
+		{"traversal attempt", "../../../etc/passwd", true},
+		{"null byte", "posts/hello\x00.md", true},
+		{"invalid prefix", "secrets/key.pem", true},
+		{"double dot in component", "posts/..hidden/file.md", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateContentPath(tt.path)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateContentPath(%q) error = %v, wantErr %v", tt.path, err, tt.wantErr)
+			}
+		})
 	}
 }
 

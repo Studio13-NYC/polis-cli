@@ -390,19 +390,25 @@ func extractSignatureBase64(sig string) string {
 // computeUnifiedDiff computes a unified diff between old and new content.
 // Returns the diff output, or empty string if contents are identical.
 func computeUnifiedDiff(oldContent, newContent string) (string, error) {
-	// Create temp files for diff
-	oldFile, err := os.CreateTemp("", "old-*.txt")
+	// Create a private temp directory (0700) so files aren't world-readable
+	tmpDir, err := os.MkdirTemp("", "polis-diff-*")
+	if err != nil {
+		return "", fmt.Errorf("failed to create temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+	os.Chmod(tmpDir, 0700)
+
+	// Create temp files for diff inside private directory
+	oldFile, err := os.CreateTemp(tmpDir, "old-*.txt")
 	if err != nil {
 		return "", fmt.Errorf("failed to create temp file for old content: %w", err)
 	}
-	defer os.Remove(oldFile.Name())
 	defer oldFile.Close()
 
-	newFile, err := os.CreateTemp("", "new-*.txt")
+	newFile, err := os.CreateTemp(tmpDir, "new-*.txt")
 	if err != nil {
 		return "", fmt.Errorf("failed to create temp file for new content: %w", err)
 	}
-	defer os.Remove(newFile.Name())
 	defer newFile.Close()
 
 	// Write contents

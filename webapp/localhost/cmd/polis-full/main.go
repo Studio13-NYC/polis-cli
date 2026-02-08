@@ -8,6 +8,7 @@ import (
 
 	"github.com/vdibart/polis-cli/cli-go/pkg/cmd"
 	"github.com/vdibart/polis-cli/webapp/localhost/internal/server"
+	"github.com/vdibart/polis-cli/webapp/localhost/internal/webui"
 )
 
 // Version is set at build time with -ldflags
@@ -47,7 +48,7 @@ func runServer(args []string, cliVersion string) {
 	}
 
 	// Get the embedded web UI filesystem
-	webFS, err := fs.Sub(webUI, "www")
+	webFS, err := fs.Sub(webui.Assets, "www")
 	if err != nil {
 		log.Fatal("Failed to create sub filesystem:", err)
 	}

@@ -1,17 +1,14 @@
 package main
 
 import (
-	"embed"
 	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
 
 	"github.com/vdibart/polis-cli/webapp/localhost/internal/server"
+	"github.com/vdibart/polis-cli/webapp/localhost/internal/webui"
 )
-
-//go:embed www/*
-var webUI embed.FS
 
 func main() {
 	// Find data directory relative to executable
@@ -23,7 +20,7 @@ func main() {
 	dataDir := filepath.Join(execDir, "data")
 
 	// Get the embedded web UI filesystem
-	webFS, err := fs.Sub(webUI, "www")
+	webFS, err := fs.Sub(webui.Assets, "www")
 	if err != nil {
 		log.Fatal("Failed to create sub filesystem:", err)
 	}

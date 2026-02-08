@@ -158,6 +158,39 @@ func TestMuteDomain(t *testing.T) {
 	}
 }
 
+func TestInitManifest_UsesPackageVersion(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr := NewManager(tmpDir)
+
+	if err := mgr.InitManifest(); err != nil {
+		t.Fatalf("InitManifest failed: %v", err)
+	}
+
+	manifest, err := mgr.LoadManifest()
+	if err != nil {
+		t.Fatalf("LoadManifest failed: %v", err)
+	}
+
+	if manifest.Version != Version {
+		t.Errorf("InitManifest version = %q, want %q", manifest.Version, Version)
+	}
+}
+
+func TestLoadManifest_DefaultUsesPackageVersion(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr := NewManager(tmpDir)
+
+	// Load without init — should return defaults with package version
+	manifest, err := mgr.LoadManifest()
+	if err != nil {
+		t.Fatalf("LoadManifest failed: %v", err)
+	}
+
+	if manifest.Version != Version {
+		t.Errorf("default manifest version = %q, want %q", manifest.Version, Version)
+	}
+}
+
 func TestDefaultPath(t *testing.T) {
 	path := DefaultNotificationsFile("/data")
 	expected := filepath.Join("/data", ".polis", "notifications.jsonl")

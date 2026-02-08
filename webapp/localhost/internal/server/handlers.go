@@ -14,9 +14,12 @@ import (
 	"github.com/vdibart/polis-cli/cli-go/pkg/blessing"
 	"github.com/vdibart/polis-cli/cli-go/pkg/comment"
 	"github.com/vdibart/polis-cli/cli-go/pkg/discovery"
+	"github.com/vdibart/polis-cli/cli-go/pkg/feed"
+	"github.com/vdibart/polis-cli/cli-go/pkg/following"
 	"github.com/vdibart/polis-cli/cli-go/pkg/hooks"
 	"github.com/vdibart/polis-cli/cli-go/pkg/metadata"
 	"github.com/vdibart/polis-cli/cli-go/pkg/publish"
+	"github.com/vdibart/polis-cli/cli-go/pkg/remote"
 	"github.com/vdibart/polis-cli/cli-go/pkg/render"
 	"github.com/vdibart/polis-cli/cli-go/pkg/signing"
 	"github.com/vdibart/polis-cli/cli-go/pkg/site"
@@ -584,19 +587,22 @@ func (s *Server) handlePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Strip frontmatter to get just the markdown
-	markdown := publish.StripFrontmatter(string(content))
+	rawMarkdown := string(content)
+
+	// Strip frontmatter to get just the body markdown
+	markdown := publish.StripFrontmatter(rawMarkdown)
 
 	// Parse frontmatter for metadata
-	frontmatter := publish.ParseFrontmatter(string(content))
+	frontmatter := publish.ParseFrontmatter(rawMarkdown)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"path":      postPath,
-		"markdown":  markdown,
-		"title":     frontmatter["title"],
-		"published": frontmatter["published"],
-		"updated":   frontmatter["updated"],
+		"path":         postPath,
+		"markdown":     markdown,
+		"raw_markdown": rawMarkdown,
+		"title":        frontmatter["title"],
+		"published":    frontmatter["published"],
+		"updated":      frontmatter["updated"],
 	})
 }
 
@@ -2346,4 +2352,426 @@ func (s *Server) handleRenderPage(w http.ResponseWriter, r *http.Request) {
 		"posts_rendered":    stats.PostsRendered,
 		"comments_rendered": stats.CommentsRendered,
 	})
+}
+
+// ============================================================================
+// Social handlers (following, feed, remote post)
+// ============================================================================
+
+// handleFollowing manages the following list.
+// GET: returns the list of followed authors.
+// POST: follows a new author (with blessing side-effect).
+// DELETE: unfollows an author (with denial side-effect).
+func (s *Server) handleFollowing(w http.ResponseWriter, r *http.Request) {
+	followingPath := following.DefaultPath(s.DataDir)
+
+	switch r.Method {
+	case http.MethodGet:
+		f, err := following.Load(followingPath)
+		if err != nil {
+			s.LogError("following load failed: %v", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"following": f.All(),
+			"count":     f.Count(),
+		})
+
+	case http.MethodPost:
+		if s.PrivateKey == nil {
+			http.Error(w, "Not configured: no private key", http.StatusBadRequest)
+			return
+		}
+
+		var req struct {
+			URL string `json:"url"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		if len(req.URL) < 8 || req.URL[:8] != "https://" {
+			http.Error(w, "Author URL must use HTTPS", http.StatusBadRequest)
+			return
+		}
+
+		discoveryURL := DefaultDiscoveryServiceURL
+		apiKey := ""
+		if s.Config != nil {
+			if s.Config.DiscoveryURL != "" {
+				discoveryURL = s.Config.DiscoveryURL
+			}
+			apiKey = s.Config.DiscoveryKey
+		}
+		discoveryClient := discovery.NewClient(discoveryURL, apiKey)
+		remoteClient := remote.NewClient()
+
+		result, err := following.FollowWithBlessing(followingPath, req.URL, discoveryClient, remoteClient, s.PrivateKey)
+		if err != nil {
+			s.LogError("follow failed: %v", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		s.LogInfo("Followed %s (blessed %d comments)", req.URL, result.CommentsBlessed)
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true,
+			"data":    result,
+		})
+
+	case http.MethodDelete:
+		if s.PrivateKey == nil {
+			http.Error(w, "Not configured: no private key", http.StatusBadRequest)
+			return
+		}
+
+		var req struct {
+			URL string `json:"url"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		if len(req.URL) < 8 || req.URL[:8] != "https://" {
+			http.Error(w, "Author URL must use HTTPS", http.StatusBadRequest)
+			return
+		}
+
+		discoveryURL := DefaultDiscoveryServiceURL
+		apiKey := ""
+		if s.Config != nil {
+			if s.Config.DiscoveryURL != "" {
+				discoveryURL = s.Config.DiscoveryURL
+			}
+			apiKey = s.Config.DiscoveryKey
+		}
+		discoveryClient := discovery.NewClient(discoveryURL, apiKey)
+		remoteClient := remote.NewClient()
+
+		result, err := following.UnfollowWithDenial(followingPath, req.URL, discoveryClient, remoteClient, s.PrivateKey)
+		if err != nil {
+			s.LogError("unfollow failed: %v", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		s.LogInfo("Unfollowed %s (denied %d comments)", req.URL, result.CommentsDenied)
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true,
+			"data":    result,
+		})
+
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// handleFeed returns cached feed items (instant, no network).
+// GET /api/feed?type=post|comment
+func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	cm := feed.NewCacheManager(s.DataDir)
+	typeFilter := r.URL.Query().Get("type")
+
+	var items []feed.CachedFeedItem
+	var err error
+	if typeFilter != "" {
+		items, err = cm.ListByType(typeFilter)
+	} else {
+		items, err = cm.List()
+	}
+	if err != nil {
+		s.LogError("feed list failed: %v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	unread := 0
+	for _, item := range items {
+		if item.ReadAt == "" {
+			unread++
+		}
+	}
+
+	stale, _ := cm.IsStale()
+	manifest, _ := cm.LoadManifest()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"items":        items,
+		"total":        len(items),
+		"unread":       unread,
+		"stale":        stale,
+		"last_refresh": manifest.LastRefresh,
+	})
+}
+
+// handleFeedRefresh runs Aggregate + Merge and returns the updated cache.
+// POST /api/feed/refresh
+func (s *Server) handleFeedRefresh(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	followingPath := following.DefaultPath(s.DataDir)
+	client := remote.NewClient()
+
+	result, err := feed.Aggregate(followingPath, client, feed.AggregateOptions{})
+	if err != nil {
+		s.LogError("feed aggregate failed: %v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	cm := feed.NewCacheManager(s.DataDir)
+	newCount, err := cm.Merge(result)
+	if err != nil {
+		s.LogError("feed merge failed: %v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	s.LogInfo("Feed refresh: checked %d authors, %d new items cached", result.AuthorsChecked, newCount)
+
+	items, _ := cm.List()
+	unread := 0
+	for _, item := range items {
+		if item.ReadAt == "" {
+			unread++
+		}
+	}
+
+	manifest, _ := cm.LoadManifest()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"items":        items,
+		"total":        len(items),
+		"unread":       unread,
+		"new_items":    newCount,
+		"stale":        false,
+		"last_refresh": manifest.LastRefresh,
+		"errors":       result.Errors,
+	})
+}
+
+// handleFeedRead marks feed items as read/unread.
+// POST /api/feed/read
+// Body: {"id":"x"} | {"id":"x","unread":true} | {"all":true} | {"from_id":"x"}
+func (s *Server) handleFeedRead(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		ID     string `json:"id"`
+		Unread bool   `json:"unread"`
+		All    bool   `json:"all"`
+		FromID string `json:"from_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	cm := feed.NewCacheManager(s.DataDir)
+
+	var err error
+	if req.All {
+		err = cm.MarkAllRead()
+	} else if req.FromID != "" {
+		err = cm.MarkUnreadFrom(req.FromID)
+	} else if req.ID != "" {
+		if req.Unread {
+			err = cm.MarkUnread(req.ID)
+		} else {
+			err = cm.MarkRead(req.ID)
+		}
+	} else {
+		http.Error(w, "Missing id, all, or from_id", http.StatusBadRequest)
+		return
+	}
+
+	if err != nil {
+		s.LogError("feed read failed: %v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+	})
+}
+
+// handleFeedCounts returns lightweight feed counts for sidebar badge.
+// GET /api/feed/counts
+func (s *Server) handleFeedCounts(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	cm := feed.NewCacheManager(s.DataDir)
+
+	items, err := cm.List()
+	if err != nil {
+		s.LogError("feed counts failed: %v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	unread := 0
+	for _, item := range items {
+		if item.ReadAt == "" {
+			unread++
+		}
+	}
+
+	stale, _ := cm.IsStale()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"total":  len(items),
+		"unread": unread,
+		"stale":  stale,
+	})
+}
+
+// handleRemotePost fetches a remote post and returns it as rendered HTML.
+// GET /api/remote/post?url=https://example.com/posts/hello.md
+func (s *Server) handleRemotePost(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	postURL := r.URL.Query().Get("url")
+	if postURL == "" {
+		http.Error(w, "Missing 'url' parameter", http.StatusBadRequest)
+		return
+	}
+
+	if len(postURL) < 8 || postURL[:8] != "https://" {
+		http.Error(w, "URL must use HTTPS", http.StatusBadRequest)
+		return
+	}
+
+	client := remote.NewClient()
+
+	// Try fetching the URL as-is first
+	content, err := client.FetchContent(postURL)
+	fetchedURL := postURL
+
+	if err != nil {
+		s.LogError("remote post fetch failed: %v", err)
+		http.Error(w, "Failed to fetch remote post: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+
+	// If the response looks like HTML (not markdown), the host likely served
+	// the rendered page instead of the raw source. Try the alternate extension.
+	if looksLikeHTML(content) {
+		altContent, altURL, altErr := client.TryAlternateExtension(postURL)
+		if altErr == nil && !looksLikeHTML(altContent) {
+			content = altContent
+			fetchedURL = altURL
+		}
+		// If both extensions return HTML, use the original content as-is
+	}
+
+	var body, htmlContent string
+	if looksLikeHTML(content) {
+		// Content is already HTML — serve it directly (strip full page shell if present)
+		htmlContent = extractHTMLBody(content)
+		body = content
+	} else {
+		// Content is markdown — strip frontmatter and render
+		body = stripFrontmatter(content)
+		rendered, renderErr := render.MarkdownToHTML(body)
+		if renderErr != nil {
+			s.LogError("remote post render failed: %v", renderErr)
+			http.Error(w, "Failed to render post", http.StatusInternalServerError)
+			return
+		}
+		htmlContent = rendered
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"url":     fetchedURL,
+		"content": htmlContent,
+		"raw":     body,
+	})
+}
+
+// stripFrontmatter removes YAML frontmatter (---...---) from content.
+func stripFrontmatter(content string) string {
+	if !strings.HasPrefix(content, "---") {
+		return content
+	}
+	// Find the closing ---
+	rest := content[3:]
+	idx := strings.Index(rest, "\n---")
+	if idx < 0 {
+		return content
+	}
+	// Return everything after the closing ---
+	after := rest[idx+4:]
+	return strings.TrimLeft(after, "\n")
+}
+
+// looksLikeHTML checks if content appears to be HTML rather than markdown.
+func looksLikeHTML(content string) bool {
+	trimmed := strings.TrimSpace(content)
+	return strings.HasPrefix(trimmed, "<!DOCTYPE") ||
+		strings.HasPrefix(trimmed, "<!doctype") ||
+		strings.HasPrefix(trimmed, "<html") ||
+		strings.HasPrefix(trimmed, "<HTML")
+}
+
+// extractHTMLBody extracts content between <body> and </body> tags,
+// or between <main> and </main> tags, falling back to the full content.
+func extractHTMLBody(content string) string {
+	lower := strings.ToLower(content)
+
+	// Try <main>...</main> first (most specific)
+	if mainStart := strings.Index(lower, "<main"); mainStart >= 0 {
+		// Find end of opening tag
+		tagEnd := strings.Index(content[mainStart:], ">")
+		if tagEnd >= 0 {
+			innerStart := mainStart + tagEnd + 1
+			if mainEnd := strings.Index(lower[innerStart:], "</main>"); mainEnd >= 0 {
+				return strings.TrimSpace(content[innerStart : innerStart+mainEnd])
+			}
+		}
+	}
+
+	// Try <body>...</body>
+	if bodyStart := strings.Index(lower, "<body"); bodyStart >= 0 {
+		tagEnd := strings.Index(content[bodyStart:], ">")
+		if tagEnd >= 0 {
+			innerStart := bodyStart + tagEnd + 1
+			if bodyEnd := strings.Index(lower[innerStart:], "</body>"); bodyEnd >= 0 {
+				return strings.TrimSpace(content[innerStart : innerStart+bodyEnd])
+			}
+		}
+	}
+
+	return content
 }

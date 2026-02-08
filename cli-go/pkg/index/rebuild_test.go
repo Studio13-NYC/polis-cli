@@ -1,8 +1,10 @@
 package index
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -56,5 +58,49 @@ func TestRebuildCommentsIndex_EmptyWhenNoDiscovery(t *testing.T) {
 	blessedPath := filepath.Join(dataDir, "metadata", "blessed-comments.json")
 	if _, err := os.Stat(blessedPath); os.IsNotExist(err) {
 		t.Error("expected blessed-comments.json to be created")
+	}
+}
+
+func TestRebuildCommentsIndex_UsesPackageVersion(t *testing.T) {
+	dataDir := t.TempDir()
+	os.MkdirAll(filepath.Join(dataDir, "metadata"), 0755)
+
+	opts := RebuildOptions{Comments: true}
+	_, err := rebuildCommentsIndex(dataDir, opts)
+	if err != nil {
+		t.Fatalf("rebuild failed: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dataDir, "metadata", "blessed-comments.json"))
+	if err != nil {
+		t.Fatalf("failed to read blessed-comments.json: %v", err)
+	}
+
+	if !strings.Contains(string(data), `"version": "`+Version+`"`) {
+		t.Errorf("blessed-comments.json should contain version %q, got: %s", Version, string(data))
+	}
+}
+
+func TestRegenerateManifest_UsesPackageVersion(t *testing.T) {
+	dataDir := t.TempDir()
+	os.MkdirAll(filepath.Join(dataDir, "posts"), 0755)
+	os.MkdirAll(filepath.Join(dataDir, "metadata"), 0755)
+
+	if err := regenerateManifest(dataDir); err != nil {
+		t.Fatalf("regenerateManifest failed: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dataDir, "metadata", "manifest.json"))
+	if err != nil {
+		t.Fatalf("failed to read manifest.json: %v", err)
+	}
+
+	var manifest map[string]interface{}
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		t.Fatalf("failed to parse manifest.json: %v", err)
+	}
+
+	if manifest["version"] != Version {
+		t.Errorf("manifest.json version = %q, want %q", manifest["version"], Version)
 	}
 }

@@ -15,6 +15,9 @@ import (
 	"github.com/vdibart/polis-cli/cli-go/pkg/metadata"
 )
 
+// Version is set at init time by cmd package.
+var Version = "dev"
+
 // PostEntry represents a post entry in public.jsonl.
 type PostEntry struct {
 	Type      string `json:"type"`
@@ -188,7 +191,7 @@ func rebuildCommentsIndex(dataDir string, opts RebuildOptions) (int, error) {
 		if err == nil && len(comments) > 0 {
 			// Build fresh blessed-comments.json
 			bc := &metadata.BlessedComments{
-				Version:  "0.45.0",
+				Version:  Version,
 				Comments: []metadata.PostComments{},
 			}
 
@@ -227,7 +230,7 @@ func rebuildCommentsIndex(dataDir string, opts RebuildOptions) (int, error) {
 	blessedPath := filepath.Join(metadataDir, "blessed-comments.json")
 	if _, err := os.Stat(blessedPath); os.IsNotExist(err) {
 		bc := &metadata.BlessedComments{
-			Version:  "0.45.0",
+			Version:  Version,
 			Comments: []metadata.PostComments{},
 		}
 		if err := metadata.SaveBlessedComments(dataDir, bc); err != nil {
@@ -288,7 +291,7 @@ func regenerateManifest(dataDir string) error {
 	})
 
 	manifest := map[string]interface{}{
-		"version":        "0.45.0",
+		"version":        Version,
 		"last_published": time.Now().UTC().Format("2006-01-02T15:04:05Z"),
 		"post_count":     postCount,
 		"comment_count":  commentCount,

@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.49.0] - 2026-02-08
+
+### Added
+
+- **[Go CLI] Feed aggregation package**: New `pkg/feed/` package provides importable feed aggregation logic. `feed.Aggregate()` fetches public indexes from followed authors, filters by `last_checked`, merges, sorts by published date, and updates timestamps.
+- **[Go CLI] Social functions extracted**: `pkg/following/` package now includes `FollowWithBlessing()` and `UnfollowWithDenial()` for reusable social operations with side effects.
+- **[Go CLI] Feed cache with read tracking**: Persistent JSONL cache (`.polis/social/feed-cache.jsonl`) with `CacheManager` supports merge (dedup by deterministic sha256 ID), mark read/unread, mark all read, mark unread from timestamp, and automatic pruning by age/count. Staleness detection via manifest (`.polis/social/feed-manifest.json`).
+- **[Webapp] Social sidebar mode**: Two-mode sidebar (My Site / Social) brings social reading into the webapp. Social mode includes Feed (aggregated posts from followed authors) and Following (author management).
+- **[Webapp] Follow/Unfollow UI**: Follow panel to add authors by HTTPS URL with automatic blessing of pending/denied comments. Unfollow with confirmation modal and warning about denying blessed comments.
+- **[Webapp] Feed view**: Chronological feed of posts from followed authors with type badges (Post/Comment), refresh button, unreachable-author warnings, and empty states.
+- **[Webapp] Remote post viewer**: Slide-out panel renders remote posts with dark theme styling, fetched via new `/api/remote/post` endpoint.
+- **[Webapp] Feed cache with instant load**: `GET /api/feed` loads instantly from local cache. `POST /api/feed/refresh` runs network aggregation and merges into cache. Auto-refresh fires in background when cache is stale (default 15 minutes).
+- **[Webapp] Feed read/unread tracking**: Unread items show bold title with teal dot indicator. Sidebar badge shows unread count. Opening an item marks it read (fire-and-forget). "Mark All Read" button in header.
+- **[Webapp] Feed type filtering**: Filter tabs (All / Posts / Comments) above feed list.
+- **[Webapp] Feed hover actions**: "Mark Unread" and "Unread From Here" buttons appear on hover for read feed items. "Unread From Here" marks the hovered item and all more recent items above it as unread.
+- **[Webapp] Live markdown preview**: Editor now renders a live preview as you type (300ms debounce), replacing the manual "Render Preview" button. Ctrl+Enter triggers publish.
+- **[Webapp] Frontmatter toggle in editor**: Added "Hide FM" / "Show FM" toggle to the editor. When active, displays frontmatter in a non-editable mini-pane above the textarea, preventing accidental edits to signatures and hashes.
+
+### Fixed
+
+- **[Webapp] Feed item click broken for apostrophes**: Inline onclick handlers used single-quoted JS strings, so titles with apostrophes caused silent syntax errors. Feed items now pass numeric indexes instead of raw strings.
+- **[Webapp] "Open original" link pointed to `.md`**: Remote post viewer's "Open original" link now points to the `.html` version for browser viewing.
+- **[Webapp] Remote post viewer styling**: Replaced light parchment styles with dark theme (surface background, lavender left-border, salmon headings, teal links).
+
+### Changed
+
+- **[Go CLI] `discover` refactored**: Now calls `feed.Aggregate()` instead of inline logic. Same CLI output format maintained.
+- **[Webapp] Shared web assets package**: Moved `www/` from duplicated locations (`cmd/server/www/` and `cmd/polis-full/www/`) to single `internal/webui/www/` package. Both entry points now import `internal/webui.Assets`, eliminating file drift.
+- **[Webapp] Browser mode toggle hidden**: Browser mode toggle buttons removed from header (code retained).
+- **Bash CLI**: Version 0.47.0 → 0.49.0 (includes v0.48.0 security fixes already in Go CLI)
+
+### Tests
+
+- **[Go CLI] Feed tests**: 9 tests covering empty feeds, single author, since override, not-following errors, unreachable authors, last_checked updates, 10-item limit, special character titles.
+- **[Go CLI] Feed cache tests**: 13 tests covering item ID determinism, empty cache, merge, merge dedup (preserves read state), mark operations, list by type, prune by count/age, staleness detection, manifest defaults, version propagation.
+- **[Go CLI] Following tests**: 6 tests covering follow adds to list, already-followed, unfollow removes, not-following errors, unreachable sites.
+- **[Webapp] Feed handler tests**: 17 tests for feed cache endpoints covering empty cache, unread count, type filter, method validation, mark operations, invalid ID errors, refresh with special characters.
+
 ## [0.48.0] - 2026-02-07
 
 ### Security

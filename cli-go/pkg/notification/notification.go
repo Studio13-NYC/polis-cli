@@ -10,6 +10,9 @@ import (
 	"time"
 )
 
+// Version is set at init time by cmd package.
+var Version = "dev"
+
 // Notification represents a single notification entry.
 type Notification struct {
 	ID        string          `json:"id"`
@@ -65,7 +68,7 @@ func (m *Manager) InitManifest() error {
 	}
 
 	manifest := Manifest{
-		Version:  "0.45.0",
+		Version:  Version,
 		LastSync: "1970-01-01T00:00:00Z",
 		Preferences: Preferences{
 			PollIntervalMinutes: 60,
@@ -84,7 +87,7 @@ func (m *Manager) LoadManifest() (*Manifest, error) {
 		if os.IsNotExist(err) {
 			// Return defaults
 			return &Manifest{
-				Version:  "0.45.0",
+				Version:  Version,
 				LastSync: "1970-01-01T00:00:00Z",
 				Preferences: Preferences{
 					PollIntervalMinutes: 60,

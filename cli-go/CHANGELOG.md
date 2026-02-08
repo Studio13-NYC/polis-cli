@@ -5,6 +5,45 @@ All notable changes to the Go CLI will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.49.0]
+
+### Added
+
+- **`pkg/feed/` package**: New importable package that extracts feed aggregation logic from `cmd/discover.go`. `feed.Aggregate()` fetches public indexes from followed authors, filters by `last_checked`, merges, sorts by published date, and updates timestamps.
+- **`pkg/following/` social functions**: `FollowWithBlessing()` and `UnfollowWithDenial()` extract the blessing/denial side-effects from `cmd/follow.go` and `cmd/unfollow.go` into importable functions.
+- **`pkg/feed/cache.go` — Feed cache with read tracking**: Persistent JSONL cache (`.polis/social/feed-cache.jsonl`) with `CacheManager` that supports Merge (dedup by deterministic sha256 ID), MarkRead, MarkUnread, MarkAllRead, MarkUnreadFrom, Prune (by age and count), and staleness detection via manifest (`.polis/social/feed-manifest.json`).
+- **[Webapp] Social features — Following + Feed**: Two-mode sidebar ("My Site" / "Social") brings social reading into the webapp. Social mode includes Feed (aggregated posts from followed authors) and Following (author management with follow/unfollow).
+- **[Webapp] Follow/Unfollow**: Follow panel to add authors by HTTPS URL (auto-blesses pending/denied comments). Unfollow with confirmation modal (warns about denying blessed comments).
+- **[Webapp] Feed view**: Chronological feed of posts from followed authors with type badges, refresh button, unreachable-author warnings, and empty states.
+- **[Webapp] Remote post viewer**: Slide-out panel renders remote posts with dark theme styling, fetched via new `/api/remote/post` endpoint.
+- **[Webapp] API endpoints**: `GET/POST/DELETE /api/following`, `GET /api/feed`, `GET /api/remote/post?url=...`, `POST /api/feed/refresh`, `POST /api/feed/read`, `GET /api/feed/counts`
+- **[Webapp] Feed cache — instant load + background refresh**: `GET /api/feed` now loads instantly from local cache. `POST /api/feed/refresh` runs network aggregation and merges into cache. Auto-refresh fires in background when cache is stale (default 15 minutes).
+- **[Webapp] Feed read/unread tracking**: Unread items show bold title + teal dot indicator. Sidebar badge shows unread count. Opening an item marks it read (fire-and-forget). "Mark All Read" button in header.
+- **[Webapp] Feed type filtering**: Filter tabs (All / Posts / Comments) above feed list, passed as `?type=` query param.
+- **[Webapp] Feed hover actions**: "Mark Unread" and "Unread From Here" buttons appear on hover for read feed items only (hidden on unread items). "Unread From Here" marks the hovered item and all more recent items above it as unread. Styled like the FM toggle buttons, replaces the date column on hover.
+- **[Webapp] Live markdown preview**: Editor now renders a live preview as you type (300ms debounce), replacing the manual "Render Preview" button. Ctrl+Enter now triggers publish instead of render.
+- **[Webapp] Frontmatter toggle in editor**: Added "Hide FM" / "Show FM" toggle to the editor markdown pane header. When active, displays frontmatter in a non-editable mini-pane above the textarea. Frontmatter is never exposed in the editable textarea, preventing accidental edits to signatures and hashes. Shares the persisted setting with browser mode.
+
+### Changed
+
+- **`cmd/discover.go` refactored**: Now calls `feed.Aggregate()` instead of inline logic. Same CLI output format maintained.
+- **[Webapp] `following.Version` propagation**: `server.go` `Initialize()` now propagates CLI version to the `following` package alongside `publish`, `comment`, and `metadata`.
+- **[Webapp] Hide browser mode toggle**: Browser mode toggle buttons hidden from the header (code retained, just not visible).
+- **[Webapp] Shared web assets package**: Moved `www/` from duplicated locations (`cmd/server/www/` and `cmd/polis-full/www/`) to a single `internal/webui/www/` package. Both entry points now import `internal/webui.Assets`, eliminating file drift between builds.
+
+### Fixed
+
+- **[Webapp] Feed item click broken for titles with apostrophes**: Inline `onclick` handlers used single-quoted JS strings, so titles like "It's Not Beyond Our Reach" caused a silent syntax error. Feed items now pass a numeric index instead of raw strings.
+- **[Webapp] "Open original" link pointed to `.md`**: The remote post viewer's "Open original" link now points to the `.html` version of the post for browser viewing.
+- **[Webapp] Remote post viewer styling**: Replaced light parchment styles with zane-complementary dark theme (surface background, lavender left-border, salmon headings, teal links, monospace font).
+
+### Tests
+
+- **`pkg/feed/`**: 9 tests — empty feeds, single author, since override, not-following errors, unreachable authors, last_checked updates, no-new-content, 10-item limit, special character titles.
+- **`pkg/feed/cache`**: 13 tests — ComputeItemID determinism, empty cache, merge, merge dedup (preserves read state), mark read, mark unread, mark all read, mark unread from, list by type, prune by count, prune by age, staleness detection, manifest defaults, version propagation, not-found errors, directory creation.
+- **`pkg/following/`**: 6 tests — follow adds to list, already-followed, unfollow removes, unfollow when not following, unreachable sites.
+- **[Webapp]**: 17 handler tests for feed cache endpoints — empty cache, unread count, type filter, method validation, mark read/unread/all/unread-from, invalid ID error, empty refresh, feed counts (empty/with items), feed refresh with special character titles.
+
 ## [0.48.0]
 
 ### Added

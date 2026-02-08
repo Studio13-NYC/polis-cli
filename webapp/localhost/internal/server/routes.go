@@ -57,6 +57,14 @@ func SetupRoutes(mux *http.ServeMux, s *Server) {
 	mux.HandleFunc("/api/snippets", s.handleSnippets)
 	mux.HandleFunc("/api/snippets/", s.handleSnippet)
 
+	// Social API routes (following, feed, remote content)
+	mux.HandleFunc("/api/following", s.handleFollowing)
+	mux.HandleFunc("/api/feed", s.handleFeed)
+	mux.HandleFunc("/api/feed/refresh", s.handleFeedRefresh)
+	mux.HandleFunc("/api/feed/read", s.handleFeedRead)
+	mux.HandleFunc("/api/feed/counts", s.handleFeedCounts)
+	mux.HandleFunc("/api/remote/post", s.handleRemotePost)
+
 	// Render API routes (for snippet editing workflow)
 	mux.HandleFunc("/api/render-page", s.handleRenderPage)
 }

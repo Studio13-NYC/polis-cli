@@ -7,8 +7,13 @@ import (
 	"os"
 
 	"github.com/vdibart/polis-cli/cli-go/pkg/comment"
+	"github.com/vdibart/polis-cli/cli-go/pkg/feed"
+	"github.com/vdibart/polis-cli/cli-go/pkg/following"
+	"github.com/vdibart/polis-cli/cli-go/pkg/index"
 	"github.com/vdibart/polis-cli/cli-go/pkg/metadata"
+	"github.com/vdibart/polis-cli/cli-go/pkg/notification"
 	"github.com/vdibart/polis-cli/cli-go/pkg/publish"
+	"github.com/vdibart/polis-cli/cli-go/pkg/theme"
 )
 
 // Version is set at build time with -ldflags
@@ -26,6 +31,11 @@ func Execute(args []string) {
 	publish.Version = Version
 	comment.Version = Version
 	metadata.Version = Version
+	following.Version = Version
+	index.Version = Version
+	notification.Version = Version
+	theme.Version = Version
+	feed.Version = Version
 
 	if len(args) < 1 {
 		printUsage()

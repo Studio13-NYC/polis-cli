@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/vdibart/polis-cli/cli-go/pkg/feed"
+	"github.com/vdibart/polis-cli/cli-go/pkg/following"
 	"github.com/vdibart/polis-cli/cli-go/pkg/hooks"
 	"github.com/vdibart/polis-cli/cli-go/pkg/signing"
 )
@@ -3735,4 +3738,729 @@ func TestValidateContentPath_Canonicalization(t *testing.T) {
 		})
 	}
 }
+
+// ============================================================================
+// handleFollowing Tests
+// ============================================================================
+
+func TestHandleFollowing_Get_Empty(t *testing.T) {
+	s := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/following", nil)
+	w := httptest.NewRecorder()
+
+	s.handleFollowing(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["count"] != float64(0) {
+		t.Errorf("expected count=0, got %v", resp["count"])
+	}
+}
+
+func TestHandleFollowing_Get_WithEntries(t *testing.T) {
+	s := newTestServer(t)
+
+	// Pre-populate following.json
+	followingData := `{
+		"version": "test",
+		"following": [
+			{"url": "https://alice.example.com", "added_at": "2026-01-01T00:00:00Z"},
+			{"url": "https://bob.example.com", "added_at": "2026-01-02T00:00:00Z"}
+		]
+	}`
+	followingPath := filepath.Join(s.DataDir, "metadata", "following.json")
+	os.WriteFile(followingPath, []byte(followingData), 0644)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/following", nil)
+	w := httptest.NewRecorder()
+
+	s.handleFollowing(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["count"] != float64(2) {
+		t.Errorf("expected count=2, got %v", resp["count"])
+	}
+
+	followingList, ok := resp["following"].([]interface{})
+	if !ok || len(followingList) != 2 {
+		t.Errorf("expected 2 following entries, got %v", resp["following"])
+	}
+}
+
+func TestHandleFollowing_Post_InvalidURL(t *testing.T) {
+	s := newConfiguredServer(t)
+
+	body := jsonBody(t, map[string]string{"url": "http://insecure.example.com"})
+	req := httptest.NewRequest(http.MethodPost, "/api/following", body)
+	w := httptest.NewRecorder()
+
+	s.handleFollowing(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleFollowing_Post_NoKeys(t *testing.T) {
+	s := newTestServer(t)
+	// No keys configured
+
+	body := jsonBody(t, map[string]string{"url": "https://example.com"})
+	req := httptest.NewRequest(http.MethodPost, "/api/following", body)
+	w := httptest.NewRecorder()
+
+	s.handleFollowing(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleFollowing_Delete_NoKeys(t *testing.T) {
+	s := newTestServer(t)
+
+	body := jsonBody(t, map[string]string{"url": "https://example.com"})
+	req := httptest.NewRequest(http.MethodDelete, "/api/following", body)
+	w := httptest.NewRecorder()
+
+	s.handleFollowing(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleFollowing_MethodNotAllowed(t *testing.T) {
+	s := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodPut, "/api/following", nil)
+	w := httptest.NewRecorder()
+
+	s.handleFollowing(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+// ============================================================================
+// handleFeed Tests (cache-backed)
+// ============================================================================
+
+func TestHandleFeed_EmptyCache(t *testing.T) {
+	s := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/feed", nil)
+	w := httptest.NewRecorder()
+
+	s.handleFeed(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+
+	if resp["total"].(float64) != 0 {
+		t.Errorf("expected 0 total, got %v", resp["total"])
+	}
+	if resp["stale"].(bool) != true {
+		t.Error("empty cache should be stale")
+	}
+}
+
+func TestHandleFeed_MethodNotAllowed(t *testing.T) {
+	s := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/feed", nil)
+	w := httptest.NewRecorder()
+
+	s.handleFeed(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+func TestHandleFeed_WithTypeFilter(t *testing.T) {
+	s := newTestServer(t)
+
+	cm := feed.NewCacheManager(s.DataDir)
+	cm.Merge(&feed.AggregateResult{
+		Items: []feed.FeedItem{
+			{Type: "post", Title: "A Post", URL: "posts/a.md", Published: "2026-02-01T10:00:00Z", AuthorURL: "https://a.pub", AuthorDomain: "a.pub"},
+			{Type: "comment", Title: "A Comment", URL: "comments/b.md", Published: "2026-02-02T10:00:00Z", AuthorURL: "https://b.pub", AuthorDomain: "b.pub"},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/feed?type=post", nil)
+	w := httptest.NewRecorder()
+	s.handleFeed(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+	items := resp["items"].([]interface{})
+	if len(items) != 1 {
+		t.Errorf("expected 1 post, got %d", len(items))
+	}
+}
+
+func TestHandleFeedRefresh_SpecialCharacterTitles(t *testing.T) {
+	// Mock polis site that serves manifest + public index with special character titles
+	entries := []map[string]interface{}{
+		{"type": "post", "title": "It's Not Beyond Our Reach", "path": "posts/its-not.md", "published": "2026-01-15T12:00:00Z"},
+		{"type": "post", "title": `She said "hello" & waved`, "path": "posts/she-said.md", "published": "2026-01-14T12:00:00Z"},
+		{"type": "post", "title": "2 < 3 && 5 > 4", "path": "posts/math.md", "published": "2026-01-13T12:00:00Z"},
+	}
+	manifest := map[string]interface{}{
+		"version":        "0.49.0",
+		"last_published": "2026-01-15T12:00:00Z",
+		"post_count":     len(entries),
+	}
+	manifestJSON, _ := json.Marshal(manifest)
+	var indexLines []string
+	for _, e := range entries {
+		line, _ := json.Marshal(e)
+		indexLines = append(indexLines, string(line))
+	}
+	indexContent := strings.Join(indexLines, "\n")
+
+	mockSite := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/metadata/manifest.json"):
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, string(manifestJSON))
+		case strings.HasSuffix(r.URL.Path, "/metadata/public.jsonl"):
+			w.Header().Set("Content-Type", "text/plain")
+			fmt.Fprint(w, indexContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer mockSite.Close()
+
+	// Set up a test server with following.json pointing to mock site
+	s := newTestServer(t)
+	followingPath := following.DefaultPath(s.DataDir)
+	f := &following.FollowingFile{
+		Version:   "test",
+		Following: []following.FollowingEntry{},
+	}
+	f.Add(mockSite.URL)
+	if err := following.Save(followingPath, f); err != nil {
+		t.Fatalf("failed to save following.json: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/feed/refresh", nil)
+	w := httptest.NewRecorder()
+	s.handleFeedRefresh(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		Items []struct {
+			Title string `json:"title"`
+		} `json:"items"`
+		NewItems int `json:"new_items"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if len(resp.Items) != 3 {
+		t.Fatalf("expected 3 items, got %d", len(resp.Items))
+	}
+
+	if resp.NewItems != 3 {
+		t.Errorf("expected 3 new items, got %d", resp.NewItems)
+	}
+
+	// Verify titles with apostrophes, quotes, and angle brackets survive JSON round-trip
+	expectedTitles := []string{
+		"It's Not Beyond Our Reach",
+		`She said "hello" & waved`,
+		"2 < 3 && 5 > 4",
+	}
+	for i, want := range expectedTitles {
+		if resp.Items[i].Title != want {
+			t.Errorf("item[%d] title = %q, want %q", i, resp.Items[i].Title, want)
+		}
+	}
+}
+
+func TestHandleFeed_UnreadCount(t *testing.T) {
+	s := newTestServer(t)
+
+	cm := feed.NewCacheManager(s.DataDir)
+	cm.Merge(&feed.AggregateResult{
+		Items: []feed.FeedItem{
+			{Type: "post", Title: "A", URL: "posts/a.md", Published: "2026-02-01T10:00:00Z", AuthorURL: "https://a.pub", AuthorDomain: "a.pub"},
+			{Type: "post", Title: "B", URL: "posts/b.md", Published: "2026-02-02T10:00:00Z", AuthorURL: "https://a.pub", AuthorDomain: "a.pub"},
+			{Type: "post", Title: "C", URL: "posts/c.md", Published: "2026-02-03T10:00:00Z", AuthorURL: "https://a.pub", AuthorDomain: "a.pub"},
+		},
+	})
+
+	// Mark one as read
+	items, _ := cm.List()
+	cm.MarkRead(items[0].ID)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/feed", nil)
+	w := httptest.NewRecorder()
+	s.handleFeed(w, req)
+
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+
+	if resp["total"].(float64) != 3 {
+		t.Errorf("expected 3 total, got %v", resp["total"])
+	}
+	if resp["unread"].(float64) != 2 {
+		t.Errorf("expected 2 unread, got %v", resp["unread"])
+	}
+}
+
+// ============================================================================
+// handleFeedRefresh Tests
+// ============================================================================
+
+func TestHandleFeedRefresh_EmptyFollowing(t *testing.T) {
+	s := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/feed/refresh", nil)
+	w := httptest.NewRecorder()
+	s.handleFeedRefresh(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["total"].(float64) != 0 {
+		t.Errorf("expected 0 total, got %v", resp["total"])
+	}
+	if resp["new_items"].(float64) != 0 {
+		t.Errorf("expected 0 new_items, got %v", resp["new_items"])
+	}
+	if resp["stale"].(bool) != false {
+		t.Error("just-refreshed cache should not be stale")
+	}
+}
+
+func TestHandleFeedRefresh_MethodNotAllowed(t *testing.T) {
+	s := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/feed/refresh", nil)
+	w := httptest.NewRecorder()
+	s.handleFeedRefresh(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+// ============================================================================
+// handleFeedRead Tests
+// ============================================================================
+
+func TestHandleFeedRead_MarkRead(t *testing.T) {
+	s := newTestServer(t)
+
+	cm := feed.NewCacheManager(s.DataDir)
+	cm.Merge(&feed.AggregateResult{
+		Items: []feed.FeedItem{
+			{Type: "post", Title: "Test", URL: "posts/test.md", Published: "2026-02-01T10:00:00Z", AuthorURL: "https://a.pub", AuthorDomain: "a.pub"},
+		},
+	})
+
+	items, _ := cm.List()
+	itemID := items[0].ID
+
+	body := jsonBody(t, map[string]string{"id": itemID})
+	req := httptest.NewRequest(http.MethodPost, "/api/feed/read", body)
+	w := httptest.NewRecorder()
+	s.handleFeedRead(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	items, _ = cm.List()
+	if items[0].ReadAt == "" {
+		t.Error("item should be marked read")
+	}
+}
+
+func TestHandleFeedRead_MarkUnread(t *testing.T) {
+	s := newTestServer(t)
+
+	cm := feed.NewCacheManager(s.DataDir)
+	cm.Merge(&feed.AggregateResult{
+		Items: []feed.FeedItem{
+			{Type: "post", Title: "Test", URL: "posts/test.md", Published: "2026-02-01T10:00:00Z", AuthorURL: "https://a.pub", AuthorDomain: "a.pub"},
+		},
+	})
+
+	items, _ := cm.List()
+	itemID := items[0].ID
+	cm.MarkRead(itemID)
+
+	body := jsonBody(t, map[string]interface{}{"id": itemID, "unread": true})
+	req := httptest.NewRequest(http.MethodPost, "/api/feed/read", body)
+	w := httptest.NewRecorder()
+	s.handleFeedRead(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	items, _ = cm.List()
+	if items[0].ReadAt != "" {
+		t.Error("item should be unread")
+	}
+}
+
+func TestHandleFeedRead_MarkAllRead(t *testing.T) {
+	s := newTestServer(t)
+
+	cm := feed.NewCacheManager(s.DataDir)
+	cm.Merge(&feed.AggregateResult{
+		Items: []feed.FeedItem{
+			{Type: "post", Title: "A", URL: "posts/a.md", Published: "2026-02-01T10:00:00Z", AuthorURL: "https://a.pub", AuthorDomain: "a.pub"},
+			{Type: "post", Title: "B", URL: "posts/b.md", Published: "2026-02-02T10:00:00Z", AuthorURL: "https://a.pub", AuthorDomain: "a.pub"},
+		},
+	})
+
+	body := jsonBody(t, map[string]interface{}{"all": true})
+	req := httptest.NewRequest(http.MethodPost, "/api/feed/read", body)
+	w := httptest.NewRecorder()
+	s.handleFeedRead(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	unread, _ := cm.UnreadCount()
+	if unread != 0 {
+		t.Errorf("expected 0 unread, got %d", unread)
+	}
+}
+
+func TestHandleFeedRead_MarkUnreadFrom(t *testing.T) {
+	s := newTestServer(t)
+
+	cm := feed.NewCacheManager(s.DataDir)
+	cm.Merge(&feed.AggregateResult{
+		Items: []feed.FeedItem{
+			{Type: "post", Title: "Old", URL: "posts/old.md", Published: "2026-01-01T10:00:00Z", AuthorURL: "https://a.pub", AuthorDomain: "a.pub"},
+			{Type: "post", Title: "Mid", URL: "posts/mid.md", Published: "2026-01-15T10:00:00Z", AuthorURL: "https://a.pub", AuthorDomain: "a.pub"},
+			{Type: "post", Title: "New", URL: "posts/new.md", Published: "2026-02-01T10:00:00Z", AuthorURL: "https://a.pub", AuthorDomain: "a.pub"},
+		},
+	})
+
+	cm.MarkAllRead()
+
+	items, _ := cm.List()
+	// Items sorted desc: New, Mid, Old
+	midID := items[1].ID
+
+	body := jsonBody(t, map[string]interface{}{"from_id": midID})
+	req := httptest.NewRequest(http.MethodPost, "/api/feed/read", body)
+	w := httptest.NewRecorder()
+	s.handleFeedRead(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	items, _ = cm.List()
+	// New should be unread (more recent than mid)
+	if items[0].ReadAt != "" {
+		t.Error("New should be unread")
+	}
+	// Mid should be unread (the target)
+	if items[1].ReadAt != "" {
+		t.Error("Mid should be unread")
+	}
+	// Old should still be read (older than mid)
+	if items[2].ReadAt == "" {
+		t.Error("Old should still be read")
+	}
+}
+
+func TestHandleFeedRead_MethodNotAllowed(t *testing.T) {
+	s := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/feed/read", nil)
+	w := httptest.NewRecorder()
+	s.handleFeedRead(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+func TestHandleFeedRead_MissingFields(t *testing.T) {
+	s := newTestServer(t)
+
+	body := jsonBody(t, map[string]interface{}{})
+	req := httptest.NewRequest(http.MethodPost, "/api/feed/read", body)
+	w := httptest.NewRecorder()
+	s.handleFeedRead(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestHandleFeedRead_InvalidID(t *testing.T) {
+	s := newTestServer(t)
+
+	body := jsonBody(t, map[string]string{"id": "nonexistent"})
+	req := httptest.NewRequest(http.MethodPost, "/api/feed/read", body)
+	w := httptest.NewRecorder()
+	s.handleFeedRead(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500, got %d", w.Code)
+	}
+}
+
+// ============================================================================
+// handleFeedCounts Tests
+// ============================================================================
+
+func TestHandleFeedCounts_Empty(t *testing.T) {
+	s := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/feed/counts", nil)
+	w := httptest.NewRecorder()
+	s.handleFeedCounts(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["total"].(float64) != 0 {
+		t.Errorf("expected 0 total, got %v", resp["total"])
+	}
+	if resp["unread"].(float64) != 0 {
+		t.Errorf("expected 0 unread, got %v", resp["unread"])
+	}
+	if resp["stale"].(bool) != true {
+		t.Error("empty cache should be stale")
+	}
+}
+
+func TestHandleFeedCounts_WithItems(t *testing.T) {
+	s := newTestServer(t)
+
+	cm := feed.NewCacheManager(s.DataDir)
+	cm.Merge(&feed.AggregateResult{
+		Items: []feed.FeedItem{
+			{Type: "post", Title: "A", URL: "posts/a.md", Published: "2026-02-01T10:00:00Z", AuthorURL: "https://a.pub", AuthorDomain: "a.pub"},
+			{Type: "post", Title: "B", URL: "posts/b.md", Published: "2026-02-02T10:00:00Z", AuthorURL: "https://a.pub", AuthorDomain: "a.pub"},
+		},
+	})
+
+	items, _ := cm.List()
+	cm.MarkRead(items[0].ID)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/feed/counts", nil)
+	w := httptest.NewRecorder()
+	s.handleFeedCounts(w, req)
+
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["total"].(float64) != 2 {
+		t.Errorf("expected 2 total, got %v", resp["total"])
+	}
+	if resp["unread"].(float64) != 1 {
+		t.Errorf("expected 1 unread, got %v", resp["unread"])
+	}
+}
+
+func TestHandleFeedCounts_MethodNotAllowed(t *testing.T) {
+	s := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/feed/counts", nil)
+	w := httptest.NewRecorder()
+	s.handleFeedCounts(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+// ============================================================================
+// handleRemotePost Tests
+// ============================================================================
+
+func TestHandleRemotePost_MissingURL(t *testing.T) {
+	s := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/remote/post", nil)
+	w := httptest.NewRecorder()
+
+	s.handleRemotePost(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleRemotePost_InvalidURL(t *testing.T) {
+	s := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/remote/post?url=http://insecure.com/post.md", nil)
+	w := httptest.NewRecorder()
+
+	s.handleRemotePost(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleRemotePost_MethodNotAllowed(t *testing.T) {
+	s := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/remote/post?url=https://example.com/post.md", nil)
+	w := httptest.NewRecorder()
+
+	s.handleRemotePost(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+// ============================================================================
+// stripFrontmatter Tests
+// ============================================================================
+
+func TestStripFrontmatter(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "with frontmatter",
+			input:    "---\ntitle: Hello\ndate: 2026-01-01\n---\n# Hello World\n\nContent here.",
+			expected: "# Hello World\n\nContent here.",
+		},
+		{
+			name:     "without frontmatter",
+			input:    "# Hello World\n\nContent here.",
+			expected: "# Hello World\n\nContent here.",
+		},
+		{
+			name:     "empty content",
+			input:    "",
+			expected: "",
+		},
+		{
+			name:     "only frontmatter",
+			input:    "---\ntitle: Hello\n---\n",
+			expected: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := stripFrontmatter(tt.input)
+			if got != tt.expected {
+				t.Errorf("stripFrontmatter() = %q, want %q", got, tt.expected)
+			}
+		})
+	}
+}
+
+// ============================================================================
+// looksLikeHTML Tests
+// ============================================================================
+
+func TestLooksLikeHTML(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected bool
+	}{
+		{"doctype uppercase", "<!DOCTYPE html><html>...", true},
+		{"doctype lowercase", "<!doctype html><html>...", true},
+		{"html tag", "<html><head>...", true},
+		{"html with whitespace", "  \n<!DOCTYPE html>...", true},
+		{"markdown", "# Hello\n\nSome text", false},
+		{"frontmatter markdown", "---\ntitle: Hi\n---\n# Hello", false},
+		{"empty", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := looksLikeHTML(tt.input); got != tt.expected {
+				t.Errorf("looksLikeHTML() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+
+// ============================================================================
+// extractHTMLBody Tests
+// ============================================================================
+
+func TestExtractHTMLBody(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "extracts body",
+			input:    "<html><head><title>T</title></head><body><h1>Hello</h1></body></html>",
+			expected: "<h1>Hello</h1>",
+		},
+		{
+			name:     "prefers main over body",
+			input:    "<html><body><nav>Nav</nav><main><h1>Content</h1></main></body></html>",
+			expected: "<h1>Content</h1>",
+		},
+		{
+			name:     "no body tag returns full content",
+			input:    "<h1>Just a heading</h1>",
+			expected: "<h1>Just a heading</h1>",
+		},
+		{
+			name:     "body with attributes",
+			input:    `<html><body class="dark"><p>Text</p></body></html>`,
+			expected: "<p>Text</p>",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := extractHTMLBody(tt.input); got != tt.expected {
+				t.Errorf("extractHTMLBody() = %q, want %q", got, tt.expected)
+			}
+		})
+	}
+}
+
 

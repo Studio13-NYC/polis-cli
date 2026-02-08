@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/vdibart/polis-cli/cli-go/pkg/comment"
+	"github.com/vdibart/polis-cli/cli-go/pkg/feed"
+	"github.com/vdibart/polis-cli/cli-go/pkg/following"
 	"github.com/vdibart/polis-cli/cli-go/pkg/hooks"
 	"github.com/vdibart/polis-cli/cli-go/pkg/metadata"
 	"github.com/vdibart/polis-cli/cli-go/pkg/publish"
@@ -540,6 +542,8 @@ func (s *Server) Initialize() {
 		publish.Version = s.CLIVersion
 		comment.Version = s.CLIVersion
 		metadata.Version = s.CLIVersion
+		following.Version = s.CLIVersion
+		feed.Version = s.CLIVersion
 	}
 
 	// Migrate .polis/drafts -> .polis/posts/drafts if needed

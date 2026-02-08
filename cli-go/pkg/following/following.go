@@ -9,6 +9,9 @@ import (
 	"time"
 )
 
+// Version is set at init time by cmd package.
+var Version = "dev"
+
 // FollowingFile represents the following.json structure.
 type FollowingFile struct {
 	Version   string           `json:"version"`
@@ -33,7 +36,7 @@ func Load(path string) (*FollowingFile, error) {
 	if err != nil {
 		if os.IsNotExist(err) {
 			return &FollowingFile{
-				Version:   "0.45.0",
+				Version:   Version,
 				Following: []FollowingEntry{},
 			}, nil
 		}

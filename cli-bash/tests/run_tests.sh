@@ -20,11 +20,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLI_DIR="$(dirname "$SCRIPT_DIR")"
 REPO_ROOT="$(dirname "$CLI_DIR")"
 
-# Export polis binary path (CLI_DIR is cli-bash/, check ./polis)
-if [[ -x "$CLI_DIR/polis" ]]; then
+# Export polis binary path (check ./bin/polis first, then ./polis)
+if [[ -x "$CLI_DIR/bin/polis" ]]; then
+    export POLIS_BIN="$CLI_DIR/bin/polis"
+elif [[ -x "$CLI_DIR/polis" ]]; then
     export POLIS_BIN="$CLI_DIR/polis"
 else
-    export POLIS_BIN="$CLI_DIR/polis"  # Default for error message
+    export POLIS_BIN="$CLI_DIR/bin/polis"  # Default for error message
 fi
 
 # Parse arguments

@@ -1,6 +1,6 @@
-package main
+package webui
 
 import "embed"
 
 //go:embed www/*
-var webUI embed.FS
+var Assets embed.FS

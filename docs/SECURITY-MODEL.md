@@ -42,7 +42,9 @@ Polis uses **Ed25519** for all digital signatures. This is a modern elliptic cur
 4. **Adoption:** Used by SSH, Signal, Tor, and many modern systems.
 5. **Small signatures:** 64 bytes vs 256+ for RSA.
 
-**Implementation:** We use the `@noble/ed25519` library, a well-audited JavaScript implementation with no dependencies.
+**Implementation:**
+- **Discovery service (TypeScript):** Uses the `@noble/ed25519` library, a well-audited JavaScript implementation with no dependencies.
+- **Go CLI and Webapp:** Uses Go's standard library `crypto/ed25519`, a constant-time implementation maintained by the Go team.
 
 ### Content Integrity: SHA-256
 
@@ -192,6 +194,52 @@ No error condition causes key material to be printed.
 | Temp files don't contain keys | ✓ Pass |
 | Error messages don't leak keys | ✓ Pass |
 
+### Go CLI Implementation Audit
+
+The Go CLI (`cli-go/`) uses native `crypto/ed25519` instead of shelling out to `ssh-keygen`. This changes the trust surface:
+
+**Signing approach:**
+```go
+// Private key read from PEM file into memory, used via crypto/ed25519
+privKey, _ := os.ReadFile(keyPath)     // PEM bytes
+key := signing.ParsePrivateKey(privKey) // ed25519.PrivateKey
+signature := signing.SignContent(data, key)
+```
+
+The key is read into process memory and used directly by Go's `crypto/ed25519`. There is no external process or shell command involved.
+
+#### Private Key Never Transmitted or Logged
+
+**Verified:** The Go CLI:
+- Reads PEM from file into `[]byte`, parses to `ed25519.PrivateKey`, signs, returns
+- Key bytes are never printed, logged, or transmitted over the network
+- JSON output includes file *paths* (e.g., `old_key_path`), never key contents
+- `rotate-key` command outputs the new *public* key only
+
+#### No Shell Tracing Risk
+
+Unlike the bash CLI, Go does not have a `set -x` equivalent. There is no mechanism that could accidentally trace key material to stderr.
+
+#### Memory Considerations
+
+- Private key bytes remain in Go process memory until garbage collected
+- Go's GC does not zero memory before freeing (standard limitation of GC-managed languages)
+- The webapp keeps `PrivateKey []byte` in the server struct for the process lifetime
+- This is a defense-in-depth consideration, not an active vulnerability
+
+#### Go CLI Audit Summary
+
+| Check | Status |
+|-------|--------|
+| Private key never printed/logged | ✓ Pass |
+| Private key not in JSON output | ✓ Pass |
+| Private key not in HTTP responses | ✓ Pass |
+| No shell tracing risk | ✓ Pass (N/A for Go) |
+| File permissions (600) on write | ✓ Pass |
+| Git exclusion configured | ✓ Pass |
+| Temp files don't contain keys | ✓ Pass |
+| Error messages don't leak keys | ✓ Pass |
+
 ---
 
 ## Signature Model
@@ -296,6 +344,16 @@ The discovery service is designed as **"honest but curious"**:
 
 **Mitigation:** The discovery service is designed to be replaceable. Users could run their own or switch to alternatives. The protocol doesn't depend on any single discovery service.
 
+### `following.json` Trust Assumption
+
+The `following.json` file (listing who you follow) is fetched over HTTPS without additional signature verification. This is an accepted part of the HTTPS/TLS trust boundary:
+
+- An attacker who can MITM `following.json` can also MITM the `.well-known/polis` public key fetch, which is a strictly worse attack
+- Injecting a false entry into `following.json` could trigger auto-blessing of that author's comments, but only on the victim's own posts
+- This is the same trust model as fetching any other site metadata over HTTPS
+
+**Long-term consideration:** Signed `following.json` would provide an additional layer of integrity verification.
+
 ### What Users Must Protect
 
 1. **Private key:** Loss = impersonation possible until key rotation
@@ -335,7 +393,7 @@ The discovery service is designed as **"honest but curious"**:
 - Discovery service tracks unique `(comment_url, comment_version)` pairs
 - Duplicate submissions rejected
 
-**Residual risk:** Very old replays might succeed if timestamp validation is too loose. Currently not enforced strictly.
+**Residual risk:** Blessing grant/deny timestamps are validated with a 1-hour freshness window. Content publishing timestamps are not strictly validated.
 
 ---
 
@@ -563,6 +621,40 @@ Migration also records the public key used for verification. When followers appl
 
 ---
 
+### Webapp Security
+
+The webapp (`webapp/localhost/`) is a Go HTTP server that manages a Polis site locally.
+
+#### Network Binding
+
+The webapp binds to `127.0.0.1` (localhost only), not `0.0.0.0`. It is not accessible from the network.
+
+#### Authentication
+
+No authentication is required. The webapp is a local tool (like a text editor), not a network service. The user who can reach `127.0.0.1` is assumed to be the site owner.
+
+#### Private Key Handling
+
+The private key is loaded into the `Server.PrivateKey []byte` field at startup. It is:
+- Used only via `signing.SignContent()` for signing operations
+- Never serialized to JSON or returned in any HTTP handler response
+- Never included in log output
+
+#### Path Traversal Protection
+
+Two validation functions guard all file operations:
+
+- `validatePostPath()` — requires `posts/` prefix, rejects `..` and null bytes, applies `filepath.Clean()` before checks
+- `validateContentPath()` — allows specific prefixes (`posts/`, `comments/`, `.polis/posts/drafts/`), root `.md`/`.html` files, applies `filepath.Clean()` before checks
+
+Draft IDs are sanitized with a whitelist regex (`[^a-zA-Z0-9_-]` replaced with `-`).
+
+#### Error Message Redaction
+
+All HTTP error responses return generic messages. Internal error details (file paths, OS error strings) are logged server-side via `s.LogError()` but never exposed to HTTP clients.
+
+---
+
 ### Notifications
 
 **Question:** How does the notification system protect user privacy and prevent abuse?
@@ -661,9 +753,9 @@ Lost private key = lost identity. No backup, no escrow, no recovery.
 
 ### Timestamp Validation
 
-Timestamps are included in signatures but not strictly validated. Very old or future-dated content would still be accepted.
+Timestamps are included in signatures and validated on the discovery service for blessing grant/deny operations (1-hour freshness window, rejecting both stale and future-dated requests). Content publishing timestamps are not strictly validated.
 
-**Future consideration:** Configurable timestamp windows, clock skew tolerance.
+**Future consideration:** Configurable timestamp windows for content publishing.
 
 ---
 
@@ -690,6 +782,20 @@ Currently one discovery service (Supabase-hosted). If compromised or offline:
 - No automatic failover
 
 **Future consideration:** Federated discovery services.
+
+---
+
+### Discovery Service CORS
+
+The discovery service uses `Access-Control-Allow-Origin: *` on all endpoints. This is intentional: the discovery service is a public API that any Polis client (CLI, webapp, browser extension) should be able to reach. There is no session or cookie-based authentication to protect.
+
+---
+
+### Webapp Request Body Size
+
+The webapp does not enforce request body size limits. Since it binds to localhost only, this is mitigated by the local-only access model. A malicious local process could send arbitrarily large requests, but a malicious local process already has full access to the filesystem.
+
+**Future consideration:** Add request body size limits as defense-in-depth.
 
 ---
 
@@ -723,10 +829,23 @@ Optional encryption for private content. Would require:
 - Recipient management
 - Significant complexity increase
 
+### Signed `following.json`
+
+Add cryptographic signatures to `following.json` to prevent MITM injection of false following entries. Currently trusted via HTTPS.
+
+### Request Body Size Limits
+
+Add configurable request body size limits to the webapp as defense-in-depth, even though it binds to localhost only.
+
+### CORS Origin Restrictions
+
+If discovery service usage grows beyond the Polis ecosystem, consider restricting CORS origins to known Polis clients.
+
 ---
 
 ## Document History
 
+- 2026-02-07: Security review of Go CLI, webapp, and discovery service (Go CLI audit, webapp security section, error redaction, timestamp freshness, path traversal hardening, following.json trust documentation)
 - 2026-01-26: Moved File Content Integrity sections to USAGE.md (better discoverability for operational guidance)
 - 2026-01-21: Added Notifications section (signed requests, attack prevention, privacy)
 - 2026-01-12: Added Implementation Security Audit section (private key handling verification)

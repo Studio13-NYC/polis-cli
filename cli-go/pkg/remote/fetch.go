@@ -71,9 +71,19 @@ type Manifest struct {
 type PublicIndexEntry struct {
 	Type      string `json:"type"`
 	Title     string `json:"title"`
+	Path      string `json:"path"`
 	URL       string `json:"url"`
 	Published string `json:"published"`
-	Hash      string `json:"hash"`
+	Hash      string `json:"current_version"`
+}
+
+// GetPath returns the entry's path, preferring the "path" field,
+// falling back to "url" for backwards compatibility.
+func (e PublicIndexEntry) GetPath() string {
+	if e.Path != "" {
+		return e.Path
+	}
+	return e.URL
 }
 
 // FetchContent fetches content from a URL and returns it as a string.

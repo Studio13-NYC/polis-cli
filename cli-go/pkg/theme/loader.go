@@ -11,6 +11,9 @@ import (
 	"strings"
 )
 
+// Version is set at init time by cmd package.
+var Version = "dev"
+
 // Templates holds the loaded theme templates.
 type Templates struct {
 	Post          string // post.html - required
@@ -148,7 +151,7 @@ func SetActiveTheme(dataDir, themeName string) error {
 	if err != nil {
 		// Create new manifest if it doesn't exist
 		manifest = &Manifest{
-			Version: "0.1.0",
+			Version: Version,
 		}
 	}
 

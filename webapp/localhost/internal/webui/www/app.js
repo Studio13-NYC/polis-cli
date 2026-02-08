@@ -3,8 +3,10 @@
 const App = {
     currentDraftId: null,
     currentPostPath: null,  // Set when editing a published post
+    currentFrontmatter: '',  // Stored frontmatter block for published posts
     currentCommentDraftId: null,
     currentView: 'posts-published',  // Current active view in sidebar
+    sidebarMode: 'my-site',  // 'my-site' or 'social'
     filenameManuallySet: false,  // Track if user manually edited the filename
 
     // View mode state: 'list' or 'browser'
@@ -60,7 +62,16 @@ const App = {
         // Incoming (on my posts)
         incomingPending: 0,
         incomingBlessed: 0,
+        // Social
+        feed: 0,
+        feedUnread: 0,
+        following: 0,
     },
+
+    // Feed state
+    _feedItems: null,
+    _feedTypeFilter: '',
+    _feedRefreshing: false,
 
     // Screen management
     screens: {
@@ -334,6 +345,23 @@ const App = {
                 this.counts.incomingBlessed = 0;
             }
 
+            // Load social counts
+            try {
+                const followingData = await this.api('GET', '/api/following');
+                this.counts.following = followingData.count || 0;
+            } catch (e) {
+                this.counts.following = 0;
+            }
+
+            try {
+                const feedCounts = await this.api('GET', '/api/feed/counts');
+                this.counts.feed = feedCounts.total || 0;
+                this.counts.feedUnread = feedCounts.unread || 0;
+            } catch (e) {
+                this.counts.feed = 0;
+                this.counts.feedUnread = 0;
+            }
+
             this.updateBadges();
         } catch (err) {
             console.error('Failed to load counts:', err);
@@ -352,6 +380,9 @@ const App = {
         // Incoming (on my posts)
         this.updateBadge('incoming-pending-count', this.counts.incomingPending, true);
         this.updateBadge('incoming-blessed-count', this.counts.incomingBlessed);
+        // Social
+        this.updateBadge('feed-count', this.counts.feedUnread, this.counts.feedUnread > 0);
+        this.updateBadge('following-count', this.counts.following);
     },
 
     updateBadge(id, count, isWarning = false) {
@@ -453,6 +484,20 @@ const App = {
                 this.snippetState.filter = 'theme';
                 await this.renderSnippetsList(contentList);
                 break;
+
+            // Social views
+            case 'feed':
+                contentTitle.textContent = 'Feed';
+                contentActions.innerHTML = '<button class="secondary sync-btn" onclick="App.markAllFeedRead()">Mark All Read</button> <button class="secondary sync-btn" onclick="App.refreshFeed()">Refresh</button>';
+                await this.renderFeedList(contentList);
+                break;
+
+            case 'following':
+                contentTitle.textContent = 'Following';
+                contentActions.innerHTML = '<button class="primary" onclick="App.openFollowPanel()">Follow Author</button>';
+                await this.renderFollowingList(contentList);
+                break;
+
         }
     },
 
@@ -496,6 +541,14 @@ const App = {
         if (linkExecuteBtn) linkExecuteBtn.addEventListener('click', () => this.executeLink());
         if (linkOverlay) linkOverlay.addEventListener('click', () => this.closeLinkPanel());
 
+        // Sidebar mode toggle
+        document.querySelectorAll('.sidebar-mode-toggle .mode-tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                const mode = tab.dataset.sidebarMode;
+                if (mode) this.setSidebarMode(mode);
+            });
+        });
+
         // Sidebar navigation
         document.querySelectorAll('.sidebar .nav-item').forEach(item => {
             item.addEventListener('click', () => {
@@ -513,11 +566,6 @@ const App = {
             this.showScreen('dashboard');
         });
 
-        // Render preview button
-        document.getElementById('render-btn').addEventListener('click', async () => {
-            await this.renderPreview();
-        });
-
         // Save draft button
         document.getElementById('save-draft-btn').addEventListener('click', async () => {
             await this.saveDraft();
@@ -528,16 +576,23 @@ const App = {
             await this.publish();
         });
 
-        // Auto-generate filename from title as user types
+        // Auto-generate filename from title and live preview as user types
         document.getElementById('markdown-input').addEventListener('input', (e) => {
-            if (this.filenameManuallySet || this.currentPostPath) return;
-
-            const markdown = e.target.value;
-            const title = this.extractTitleFromMarkdown(markdown);
-            if (title) {
-                document.getElementById('filename-input').value = this.slugify(title);
+            if (!this.filenameManuallySet && !this.currentPostPath) {
+                const markdown = e.target.value;
+                const title = this.extractTitleFromMarkdown(markdown);
+                if (title) {
+                    document.getElementById('filename-input').value = this.slugify(title);
+                }
             }
+            this.editorUpdatePreview();
         });
+
+        // Editor frontmatter toggle
+        const editorFmToggle = document.getElementById('editor-fm-toggle');
+        if (editorFmToggle) {
+            editorFmToggle.addEventListener('click', () => this.toggleEditorFrontmatter());
+        }
 
         // Mark filename as manually set when user edits it
         document.getElementById('filename-input').addEventListener('input', () => {
@@ -574,11 +629,11 @@ const App = {
                     this.saveSnippet();
                 }
             }
-            // Ctrl/Cmd + Enter to render
+            // Ctrl/Cmd + Enter to publish
             if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
                 e.preventDefault();
                 if (!this.screens.editor.classList.contains('hidden')) {
-                    this.renderPreview();
+                    this.publish();
                 }
             }
         });
@@ -748,13 +803,15 @@ const App = {
     newPost() {
         this.currentDraftId = null;
         this.currentPostPath = null;
+        this.currentFrontmatter = '';
         this.filenameManuallySet = false;
         document.getElementById('markdown-input').value = '';
         document.getElementById('filename-input').value = '';
         document.getElementById('filename-input').disabled = false;
         document.getElementById('preview-content').innerHTML =
-            '<p class="empty-state">Click "Render Preview" to see your post.</p>';
-        document.getElementById('signature-display').classList.add('hidden');
+            '<p class="empty-state">Start writing to see a preview.</p>';
+
+        this.updateEditorFmToggle();
         this.updatePublishButton();
         this.showScreen('editor');
     },
@@ -1251,9 +1308,8 @@ const App = {
 
     // Revoke a blessing (remove from blessed-comments.json)
     async revokeBlessing(commentUrl) {
-        if (!confirm('Revoke this blessing? The comment will be removed from your blessed comments index.')) {
-            return;
-        }
+        const confirmed = await this.showConfirmModal('Revoke Blessing', 'Revoke this blessing? The comment will be removed from your blessed comments index.', 'Revoke', 'Cancel', 'danger');
+        if (!confirmed) return;
 
         try {
             await this.api('POST', '/api/blessing/revoke', {
@@ -1431,9 +1487,8 @@ const App = {
 
     // Delete an automation
     async deleteAutomation(id) {
-        if (!confirm('Remove this automation? The hook will no longer run.')) {
-            return;
-        }
+        const confirmed = await this.showConfirmModal('Remove Automation', 'Remove this automation? The hook will no longer run.', 'Remove', 'Cancel', 'danger');
+        if (!confirmed) return;
         try {
             await this.api('DELETE', `/api/automations/${encodeURIComponent(id)}`);
             this.showToast('Automation removed', 'success');
@@ -2083,29 +2138,48 @@ echo "File: $POLIS_PATH"</code>
         };
     },
 
-    // Render markdown preview
+    // Render markdown preview (always body-only, frontmatter shown separately)
     async renderPreview() {
-        const markdown = document.getElementById('markdown-input').value;
+        const body = document.getElementById('markdown-input').value;
         const previewContent = document.getElementById('preview-content');
-        const signatureDisplay = document.getElementById('signature-display');
-        const signatureContent = document.getElementById('signature-content');
 
-        if (!markdown.trim()) {
-            previewContent.innerHTML = '<p class="empty-state">Write some content first.</p>';
-            signatureDisplay.classList.add('hidden');
+        if (!body.trim()) {
+            previewContent.innerHTML = '<p class="empty-state">Start writing to see a preview.</p>';
             return;
         }
 
         try {
-            const result = await this.api('POST', '/api/render', { markdown });
+            const result = await this.api('POST', '/api/render', { markdown: body });
             previewContent.innerHTML = result.html;
-            signatureContent.textContent = result.signature;
-            signatureDisplay.classList.remove('hidden');
         } catch (err) {
             previewContent.innerHTML = `<p class="error">Render failed: ${this.escapeHtml(err.message)}</p>`;
-            signatureDisplay.classList.add('hidden');
         }
     },
+
+    // Debounced live preview for editor (300ms, always body-only)
+    editorUpdatePreview: (function() {
+        let timeout = null;
+        return function() {
+            if (timeout) clearTimeout(timeout);
+            timeout = setTimeout(async () => {
+                const body = document.getElementById('markdown-input')?.value || '';
+                const previewContent = document.getElementById('preview-content');
+                if (!previewContent) return;
+
+                if (!body.trim()) {
+                    previewContent.innerHTML = '<p class="empty-state">Start writing to see a preview.</p>';
+                    return;
+                }
+
+                try {
+                    const result = await App.api('POST', '/api/render', { markdown: body });
+                    previewContent.innerHTML = result.html;
+                } catch (err) {
+                    // Don't show errors during typing — leave last good preview
+                }
+            }, 300);
+        };
+    })(),
 
     // Save draft
     async saveDraft() {
@@ -2193,8 +2267,8 @@ echo "File: $POLIS_PATH"</code>
                 this.currentPostPath = null;
                 document.getElementById('markdown-input').value = '';
                 document.getElementById('preview-content').innerHTML =
-                    '<p class="empty-state">Click "Render Preview" to see your post.</p>';
-                document.getElementById('signature-display').classList.add('hidden');
+                    '<p class="empty-state">Start writing to see a preview.</p>';
+        
 
                 // Switch to Published view
                 this.currentView = 'posts-published';
@@ -2225,15 +2299,16 @@ echo "File: $POLIS_PATH"</code>
             const result = await this.api('GET', `/api/drafts/${encodeURIComponent(id)}`);
             this.currentDraftId = id;
             this.currentPostPath = null;
+            this.currentFrontmatter = '';
             this.filenameManuallySet = true;  // Draft already has a filename
             document.getElementById('markdown-input').value = result.markdown;
             document.getElementById('filename-input').value = id;  // Draft ID is the filename
             document.getElementById('filename-input').disabled = false;
-            document.getElementById('preview-content').innerHTML =
-                '<p class="empty-state">Click "Render Preview" to see your post.</p>';
-            document.getElementById('signature-display').classList.add('hidden');
+    
+            this.updateEditorFmToggle();
             this.updatePublishButton();
             this.showScreen('editor');
+            this.editorUpdatePreview();
         } catch (err) {
             this.showToast('Failed to load draft: ' + err.message, 'error');
         }
@@ -2245,12 +2320,18 @@ echo "File: $POLIS_PATH"</code>
             const result = await this.api('GET', `/api/posts/${encodeURIComponent(path)}`);
             this.currentDraftId = null;
             this.currentPostPath = path;
+            // Store frontmatter separately — don't expose it in the textarea
+            this.currentFrontmatter = '';
+            if (result.raw_markdown) {
+                const fmMatch = result.raw_markdown.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/);
+                if (fmMatch) this.currentFrontmatter = fmMatch[0];
+            }
             document.getElementById('markdown-input').value = result.markdown;
-            document.getElementById('preview-content').innerHTML =
-                '<p class="empty-state">Click "Render Preview" to see your post.</p>';
-            document.getElementById('signature-display').classList.add('hidden');
+
+            this.updateEditorFmToggle();
             this.updatePublishButton();
             this.showScreen('editor');
+            this.editorUpdatePreview();
         } catch (err) {
             this.showToast('Failed to load post: ' + err.message, 'error');
         }
@@ -2325,9 +2406,8 @@ echo "File: $POLIS_PATH"</code>
             return;
         }
 
-        if (!confirm('Sign this comment and send it for blessing? The post author will need to approve it.')) {
-            return;
-        }
+        const confirmed = await this.showConfirmModal('Send for Blessing', 'Sign this comment and send it for blessing? The post author will need to approve it.', 'Sign & Send', 'Cancel');
+        if (!confirmed) return;
 
         const btn = document.getElementById('sign-send-btn');
         btn.classList.add('btn-loading');
@@ -2423,9 +2503,8 @@ echo "File: $POLIS_PATH"</code>
 
     // Grant blessing to an incoming comment request
     async grantBlessing(commentVersion, commentUrl, inReplyTo) {
-        if (!confirm('Bless this comment? It will be added to your blessed comments index.')) {
-            return;
-        }
+        const confirmed = await this.showConfirmModal('Bless Comment', 'Bless this comment? It will be added to your blessed comments index.', 'Bless', 'Cancel');
+        if (!confirmed) return;
 
         try {
             await this.api('POST', '/api/blessing/grant', {
@@ -2444,9 +2523,8 @@ echo "File: $POLIS_PATH"</code>
 
     // Deny blessing to an incoming comment request
     async denyBlessing(commentVersion) {
-        if (!confirm('Deny this blessing request? The commenter will be notified.')) {
-            return;
-        }
+        const confirmed = await this.showConfirmModal('Deny Blessing', 'Deny this blessing request? The commenter will be notified.', 'Deny', 'Cancel', 'danger');
+        if (!confirmed) return;
 
         try {
             await this.api('POST', '/api/blessing/deny', {
@@ -3443,6 +3521,46 @@ echo "File: $POLIS_PATH"</code>
         }
     },
 
+    // Update editor FM toggle button and display pane visibility
+    updateEditorFmToggle() {
+        const toggle = document.getElementById('editor-fm-toggle');
+        const fmDisplay = document.getElementById('editor-fm-display');
+        const fmContent = document.getElementById('editor-fm-content');
+        const hasFm = !!this.currentFrontmatter;
+
+        if (toggle) {
+            // Only show the toggle button when there is frontmatter to display
+            toggle.classList.toggle('hidden', !hasFm);
+            toggle.classList.toggle('active', this.showFrontmatter);
+            toggle.textContent = this.showFrontmatter ? 'Hide FM' : 'Show FM';
+            toggle.title = this.showFrontmatter ? 'Hide frontmatter' : 'Show frontmatter';
+        }
+
+        if (fmDisplay && fmContent) {
+            const visible = hasFm && this.showFrontmatter;
+            fmDisplay.classList.toggle('hidden', !visible);
+            if (visible) {
+                fmContent.textContent = this.currentFrontmatter;
+            }
+        }
+    },
+
+    // Toggle frontmatter display pane and save setting
+    async toggleEditorFrontmatter() {
+        this.showFrontmatter = !this.showFrontmatter;
+        this.updateEditorFmToggle();
+        this.updateFrontmatterToggle();
+
+        // Save to server
+        try {
+            await this.api('POST', '/api/settings/show-frontmatter', {
+                show_frontmatter: this.showFrontmatter
+            });
+        } catch (err) {
+            console.error('Failed to save frontmatter setting:', err);
+        }
+    },
+
     // Strip frontmatter from markdown content
     stripFrontmatter(markdown) {
         if (!markdown) return markdown;
@@ -4231,6 +4349,431 @@ echo "File: $POLIS_PATH"</code>
             .replace(/[^a-z0-9]+/g, '-')
             .replace(/^-+|-+$/g, '')
             .substring(0, 50) || 'untitled';
+    },
+
+    // ========================================================================
+    // Social features: sidebar mode, feed, following, remote post
+    // ========================================================================
+
+    setSidebarMode(mode) {
+        this.sidebarMode = mode;
+        const mySite = document.getElementById('sidebar-my-site');
+        const social = document.getElementById('sidebar-social');
+
+        // Toggle sidebar sections
+        if (mode === 'social') {
+            mySite.classList.add('hidden');
+            social.classList.remove('hidden');
+            this.setActiveView('feed');
+        } else {
+            social.classList.add('hidden');
+            mySite.classList.remove('hidden');
+            this.setActiveView('posts-published');
+        }
+
+        // Update tab active state
+        document.querySelectorAll('.sidebar-mode-toggle .mode-tab').forEach(tab => {
+            tab.classList.toggle('active', tab.dataset.sidebarMode === mode);
+        });
+    },
+
+    async renderFeedList(container) {
+        try {
+            container.innerHTML = '<div class="content-list"><div class="empty-state"><p>Loading feed...</p></div></div>';
+            const typeParam = this._feedTypeFilter ? `?type=${this._feedTypeFilter}` : '';
+            const result = await this.api('GET', '/api/feed' + typeParam);
+            const items = result.items || [];
+
+            this._feedItems = items;
+            this.counts.feed = result.total || 0;
+            this.counts.feedUnread = result.unread || 0;
+            this.updateBadge('feed-count', this.counts.feedUnread, this.counts.feedUnread > 0);
+
+            // Build filter tabs
+            const filterHtml = `
+                <div class="feed-filter-tabs">
+                    <button class="feed-filter-tab ${this._feedTypeFilter === '' ? 'active' : ''}" onclick="App.setFeedTypeFilter('')">All</button>
+                    <button class="feed-filter-tab ${this._feedTypeFilter === 'post' ? 'active' : ''}" onclick="App.setFeedTypeFilter('post')">Posts</button>
+                    <button class="feed-filter-tab ${this._feedTypeFilter === 'comment' ? 'active' : ''}" onclick="App.setFeedTypeFilter('comment')">Comments</button>
+                </div>
+            `;
+
+            // Stale banner
+            let staleHtml = '';
+            if (result.stale) {
+                staleHtml = `
+                    <div class="feed-stale-banner" id="feed-stale-banner">
+                        Cache is stale — <a href="#" onclick="event.preventDefault(); App.refreshFeed()">refresh now</a>
+                    </div>
+                `;
+            }
+
+            if (items.length === 0) {
+                const emptyMsg = this.counts.feed === 0 && this.counts.following === 0
+                    ? `<h3>No authors followed</h3><p>Follow some authors to see their posts here.</p><button class="primary" onclick="App.setSidebarMode('social'); App.setActiveView('following');">Browse Following</button>`
+                    : `<h3>No items</h3><p>${this._feedTypeFilter ? 'No ' + this._feedTypeFilter + 's in the feed.' : 'No items in the feed yet. Click Refresh to check for new content.'}</p>`;
+                container.innerHTML = `${filterHtml}${staleHtml}<div class="content-list"><div class="empty-state">${emptyMsg}</div></div>`;
+
+                // Auto-refresh if stale
+                if (result.stale && !this._feedRefreshing) {
+                    this._autoRefreshFeed();
+                }
+                return;
+            }
+
+            container.innerHTML = `
+                ${filterHtml}
+                ${staleHtml}
+                <div class="content-list">
+                    ${items.map((item, idx) => {
+                        const typeLabel = item.type === 'comment' ? 'Comment' : 'Post';
+                        const badgeClass = item.type === 'comment' ? 'feed-type-badge comment' : 'feed-type-badge post';
+                        const isUnread = !item.read_at;
+                        const unreadClass = isUnread ? ' feed-item-unread' : '';
+                        const unreadDot = isUnread ? '<span class="unread-dot"></span>' : '';
+                        return `
+                            <div class="content-item feed-item${unreadClass}" onclick="App.openFeedItem(${idx})">
+                                <div class="item-info">
+                                    <div class="item-title">${unreadDot}${this.escapeHtml(item.title)}</div>
+                                    <div class="item-path">
+                                        <span class="${badgeClass}">${typeLabel}</span>
+                                        ${this.escapeHtml(item.author_domain)}
+                                    </div>
+                                </div>
+                                <span class="item-date">${this.formatDate(item.published)}</span>
+                                <div class="feed-item-actions">
+                                    <button class="feed-action-btn" onclick="event.stopPropagation(); App.markFeedUnread('${item.id}')">Mark Unread</button>
+                                    <button class="feed-action-btn" onclick="event.stopPropagation(); App.markUnreadFromHere('${item.id}')">Unread From Here</button>
+                                </div>
+                            </div>
+                        `;
+                    }).join('')}
+                </div>
+            `;
+
+            // Auto-refresh if stale
+            if (result.stale && !this._feedRefreshing) {
+                this._autoRefreshFeed();
+            }
+        } catch (err) {
+            container.innerHTML = `<div class="content-list"><div class="empty-state"><h3>Failed to load feed</h3><p>${this.escapeHtml(err.message)}</p></div></div>`;
+        }
+    },
+
+    setFeedTypeFilter(type) {
+        this._feedTypeFilter = type;
+        const contentList = document.getElementById('content-list');
+        if (contentList) this.renderFeedList(contentList);
+    },
+
+    async openFeedItem(idx) {
+        const item = this._feedItems && this._feedItems[idx];
+        if (!item) return;
+
+        // Fire-and-forget mark read
+        if (!item.read_at) {
+            item.read_at = new Date().toISOString();
+            this.counts.feedUnread = Math.max(0, this.counts.feedUnread - 1);
+            this.updateBadge('feed-count', this.counts.feedUnread, this.counts.feedUnread > 0);
+
+            // Update DOM optimistically
+            const feedItems = document.querySelectorAll('.feed-item');
+            if (feedItems[idx]) {
+                feedItems[idx].classList.remove('feed-item-unread');
+                const dot = feedItems[idx].querySelector('.unread-dot');
+                if (dot) dot.remove();
+            }
+
+            this.api('POST', '/api/feed/read', { id: item.id }).catch(() => {});
+        }
+
+        this.openRemotePost(item.url, item.author_url, item.title);
+    },
+
+    async refreshFeed() {
+        if (this._feedRefreshing) return;
+        this._feedRefreshing = true;
+        this.showToast('Refreshing feed...', 'info', 3000);
+
+        try {
+            const result = await this.api('POST', '/api/feed/refresh');
+            const newItems = result.new_items || 0;
+
+            this.counts.feed = result.total || 0;
+            this.counts.feedUnread = result.unread || 0;
+            this.updateBadge('feed-count', this.counts.feedUnread, this.counts.feedUnread > 0);
+
+            if (newItems > 0) {
+                this.showToast(`${newItems} new item${newItems > 1 ? 's' : ''}`, 'success');
+            } else {
+                this.showToast('Feed is up to date', 'success');
+            }
+
+            // Re-render if still on feed view
+            if (this.currentView === 'feed') {
+                const contentList = document.getElementById('content-list');
+                if (contentList) await this.renderFeedList(contentList);
+            }
+        } catch (err) {
+            this.showToast('Refresh failed: ' + err.message, 'error');
+        } finally {
+            this._feedRefreshing = false;
+        }
+    },
+
+    async _autoRefreshFeed() {
+        if (this._feedRefreshing) return;
+        this._feedRefreshing = true;
+
+        try {
+            const result = await this.api('POST', '/api/feed/refresh');
+            const newItems = result.new_items || 0;
+
+            this.counts.feed = result.total || 0;
+            this.counts.feedUnread = result.unread || 0;
+            this.updateBadge('feed-count', this.counts.feedUnread, this.counts.feedUnread > 0);
+
+            // Remove stale banner
+            const banner = document.getElementById('feed-stale-banner');
+            if (banner) banner.remove();
+
+            if (newItems > 0) {
+                this.showToast(`${newItems} new item${newItems > 1 ? 's' : ''}`, 'success');
+                // Re-render if still on feed view
+                if (this.currentView === 'feed') {
+                    const contentList = document.getElementById('content-list');
+                    if (contentList) await this.renderFeedList(contentList);
+                }
+            }
+        } catch (err) {
+            console.error('Auto-refresh failed:', err);
+        } finally {
+            this._feedRefreshing = false;
+        }
+    },
+
+    async markAllFeedRead() {
+        try {
+            await this.api('POST', '/api/feed/read', { all: true });
+            this.counts.feedUnread = 0;
+            this.updateBadge('feed-count', 0);
+
+            // Update all items in memory
+            if (this._feedItems) {
+                const now = new Date().toISOString();
+                this._feedItems.forEach(item => { item.read_at = now; });
+            }
+
+            // Re-render
+            if (this.currentView === 'feed') {
+                const contentList = document.getElementById('content-list');
+                if (contentList) await this.renderFeedList(contentList);
+            }
+            this.showToast('All items marked as read', 'success');
+        } catch (err) {
+            this.showToast('Failed: ' + err.message, 'error');
+        }
+    },
+
+    async markFeedUnread(id) {
+        try {
+            await this.api('POST', '/api/feed/read', { id, unread: true });
+            this.counts.feedUnread++;
+            this.updateBadge('feed-count', this.counts.feedUnread, true);
+
+            // Update in memory
+            if (this._feedItems) {
+                const item = this._feedItems.find(i => i.id === id);
+                if (item) item.read_at = '';
+            }
+
+            // Re-render
+            if (this.currentView === 'feed') {
+                const contentList = document.getElementById('content-list');
+                if (contentList) await this.renderFeedList(contentList);
+            }
+        } catch (err) {
+            this.showToast('Failed: ' + err.message, 'error');
+        }
+    },
+
+    async markUnreadFromHere(id) {
+        try {
+            await this.api('POST', '/api/feed/read', { from_id: id });
+            // Reload counts since multiple items changed
+            const counts = await this.api('GET', '/api/feed/counts');
+            this.counts.feedUnread = counts.unread || 0;
+            this.updateBadge('feed-count', this.counts.feedUnread, this.counts.feedUnread > 0);
+
+            // Re-render
+            if (this.currentView === 'feed') {
+                const contentList = document.getElementById('content-list');
+                if (contentList) await this.renderFeedList(contentList);
+            }
+        } catch (err) {
+            this.showToast('Failed: ' + err.message, 'error');
+        }
+    },
+
+    async renderFollowingList(container) {
+        try {
+            const result = await this.api('GET', '/api/following');
+            const follows = result.following || [];
+
+            if (follows.length === 0) {
+                container.innerHTML = `
+                    <div class="content-list">
+                        <div class="empty-state">
+                            <h3>Not following anyone</h3>
+                            <p>Follow authors to see their posts in your feed.</p>
+                            <button class="primary" onclick="App.openFollowPanel()">Follow Author</button>
+                        </div>
+                    </div>
+                `;
+                return;
+            }
+
+            container.innerHTML = `
+                <div class="content-list">
+                    ${follows.map(f => {
+                        const domain = f.url.replace('https://', '').replace('http://', '').replace(/\/$/, '');
+                        const lastChecked = f.last_checked ? this.formatDate(f.last_checked) : 'Never';
+                        return `
+                            <div class="content-item following-item">
+                                <div class="item-info">
+                                    <div class="item-title">${this.escapeHtml(domain)}</div>
+                                    <div class="item-path">${this.escapeHtml(f.url)}</div>
+                                </div>
+                                <div class="following-item-actions">
+                                    <span class="item-date">Checked: ${lastChecked}</span>
+                                    <button class="danger-small" onclick="event.stopPropagation(); App.unfollowAuthor('${this.escapeHtml(f.url)}')">Unfollow</button>
+                                </div>
+                            </div>
+                        `;
+                    }).join('')}
+                </div>
+            `;
+        } catch (err) {
+            container.innerHTML = `<div class="content-list"><div class="empty-state"><h3>Failed to load following</h3><p>${this.escapeHtml(err.message)}</p></div></div>`;
+        }
+    },
+
+    openFollowPanel() {
+        const panel = document.getElementById('follow-panel');
+        const input = document.getElementById('follow-url-input');
+        if (panel) panel.classList.remove('hidden');
+        if (input) { input.value = ''; input.focus(); }
+    },
+
+    closeFollowPanel() {
+        const panel = document.getElementById('follow-panel');
+        if (panel) panel.classList.add('hidden');
+    },
+
+    async submitFollow() {
+        const input = document.getElementById('follow-url-input');
+        const url = (input.value || '').trim();
+        if (!url) {
+            this.showToast('Please enter a URL', 'error');
+            return;
+        }
+        if (!url.startsWith('https://')) {
+            this.showToast('URL must start with https://', 'error');
+            return;
+        }
+
+        try {
+            this.showToast('Following...', 'info', 2000);
+            const result = await this.api('POST', '/api/following', { url });
+            this.closeFollowPanel();
+            if (result.data && result.data.already_followed) {
+                this.showToast('Already following this author', 'info');
+            } else {
+                const blessed = result.data ? result.data.comments_blessed : 0;
+                let msg = 'Now following ' + url;
+                if (blessed > 0) msg += ` (blessed ${blessed} comment${blessed > 1 ? 's' : ''})`;
+                this.showToast(msg, 'success');
+            }
+            await this.loadAllCounts();
+            await this.loadViewContent();
+        } catch (err) {
+            this.showToast('Failed to follow: ' + err.message, 'error');
+        }
+    },
+
+    async unfollowAuthor(url) {
+        const confirmed = await this.showConfirmModal(
+            'Unfollow Author',
+            'Are you sure you want to unfollow ' + url + '? Any blessed comments from this author will be denied.',
+            'Unfollow',
+            'Cancel',
+            'danger'
+        );
+        if (!confirmed) return;
+
+        try {
+            const result = await this.api('DELETE', '/api/following', { url });
+            const denied = result.data ? result.data.comments_denied : 0;
+            let msg = 'Unfollowed ' + url;
+            if (denied > 0) msg += ` (denied ${denied} comment${denied > 1 ? 's' : ''})`;
+            this.showToast(msg, 'success');
+            await this.loadAllCounts();
+            await this.loadViewContent();
+        } catch (err) {
+            this.showToast('Failed to unfollow: ' + err.message, 'error');
+        }
+    },
+
+    openRemotePostByIndex(idx) {
+        const item = this._feedItems && this._feedItems[idx];
+        if (!item) return;
+        this.openRemotePost(item.url, item.author_url, item.title);
+    },
+
+    async openRemotePost(postUrl, authorUrl, title) {
+        const panel = document.getElementById('remote-post-panel');
+        const titleEl = document.getElementById('remote-post-title');
+        const metaEl = document.getElementById('remote-post-meta');
+        const bodyEl = document.getElementById('remote-post-body');
+
+        titleEl.textContent = title || 'Remote Post';
+        metaEl.innerHTML = '<p>Loading...</p>';
+        bodyEl.innerHTML = '';
+        panel.classList.remove('hidden');
+
+        // Build the full post URL from relative path + author base
+        let fullUrl;
+        if (postUrl.startsWith('https://') || postUrl.startsWith('http://')) {
+            fullUrl = postUrl;
+        } else {
+            const base = authorUrl.replace(/\/$/, '');
+            const path = postUrl.startsWith('/') ? postUrl : '/' + postUrl;
+            fullUrl = base + path;
+        }
+
+        // Build a browser-friendly URL for "Open original" (prefer .html over .md)
+        let originalUrl = fullUrl;
+        if (originalUrl.endsWith('.md')) {
+            originalUrl = originalUrl.slice(0, -3) + '.html';
+        }
+
+        const domain = authorUrl.replace('https://', '').replace('http://', '').replace(/\/$/, '');
+        metaEl.innerHTML = `
+            <span class="remote-post-author">${this.escapeHtml(domain)}</span>
+            <a href="${this.escapeHtml(originalUrl)}" target="_blank" class="remote-post-link">Open original &#x2197;</a>
+        `;
+
+        try {
+            const result = await this.api('GET', '/api/remote/post?url=' + encodeURIComponent(fullUrl));
+            bodyEl.innerHTML = `<div class="parchment-preview">${result.content}</div>`;
+        } catch (err) {
+            bodyEl.innerHTML = `<div class="empty-state"><h3>Failed to load post</h3><p>${this.escapeHtml(err.message)}</p><p><a href="${this.escapeHtml(fullUrl)}" target="_blank">Open in new tab</a></p></div>`;
+        }
+    },
+
+    closeRemotePost() {
+        const panel = document.getElementById('remote-post-panel');
+        if (panel) panel.classList.add('hidden');
     },
 
     // Utility: escape HTML

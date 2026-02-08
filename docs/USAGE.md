@@ -41,10 +41,10 @@ brew install pandoc  # Optional: for polis render
 
 ```bash
 # Option 1: Add to PATH (quick start)
-export PATH="/path/to/polis-cli/cli-bash:$PATH"
+export PATH="/path/to/polis-cli/bin:$PATH"
 
 # Option 2: Create symlink
-sudo ln -s /path/to/polis-cli/cli-bash/polis /usr/local/bin/polis
+sudo ln -s /path/to/polis-cli/bin/polis /usr/local/bin/polis
 
 # Verify installation
 polis --help
@@ -63,21 +63,22 @@ mkdir my-site && cd my-site
 git init
 
 # Copy CLI tools and themes
-cp ../polis-cli/cli-bash/polis ./bin/
-cp ../polis-cli/cli-bash/polis-tui ./bin/
-cp ../polis-cli/cli-bash/polis-upgrade ./bin/
+cp ../polis-cli/bin/polis ./bin/
+cp ../polis-cli/bin/polis-tui ./bin/
+cp ../polis-cli/bin/polis-upgrade ./bin/
 cp -r ../polis-cli/themes ./themes/
 
 # Initialize your site
-./cli-bash/polis init
+./bin/polis init
 
-# Add cli-bash/ to .gitignore if you don't want to version the CLI
+# Add bin/ to .gitignore if you don't want to version the CLI
 # Or commit it to lock the CLI version with your content
 ```
 
 **What to copy:**
-- `cli-bash/polis` — Main CLI
-- `cli-bash/polis-upgrade` — Upgrade script (optional)
+- `bin/polis` — Main CLI
+- `bin/polis-tui` — Terminal UI (optional)
+- `bin/polis-upgrade` — Upgrade script (optional)
 - `themes/` — Theme templates (required for `polis init` and `polis render`)
 
 **Why this approach:**

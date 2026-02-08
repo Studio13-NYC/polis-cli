@@ -8,7 +8,7 @@ import (
 
 func TestAddAndRemove(t *testing.T) {
 	f := &FollowingFile{
-		Version:   "0.45.0",
+		Version:   Version,
 		Following: []FollowingEntry{},
 	}
 
@@ -61,7 +61,7 @@ func TestSaveAndLoad(t *testing.T) {
 
 	// Create and save
 	f := &FollowingFile{
-		Version:   "0.45.0",
+		Version:   Version,
 		Following: []FollowingEntry{},
 	}
 	f.Add("https://example.com")
@@ -100,11 +100,15 @@ func TestLoadNonExistent(t *testing.T) {
 	if f.Count() != 0 {
 		t.Errorf("Expected count 0 for non-existent file, got %d", f.Count())
 	}
+
+	if f.Version != Version {
+		t.Errorf("default version = %q, want %q", f.Version, Version)
+	}
 }
 
 func TestUpdateLastChecked(t *testing.T) {
 	f := &FollowingFile{
-		Version:   "0.45.0",
+		Version:   Version,
 		Following: []FollowingEntry{},
 	}
 	f.Add("https://example.com")

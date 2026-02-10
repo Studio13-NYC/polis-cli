@@ -65,6 +65,15 @@ func SetupRoutes(mux *http.ServeMux, s *Server) {
 	mux.HandleFunc("/api/feed/counts", s.handleFeedCounts)
 	mux.HandleFunc("/api/remote/post", s.handleRemotePost)
 
+	// Notification API routes
+	mux.HandleFunc("/api/notifications", s.handleNotifications)
+	mux.HandleFunc("/api/notifications/count", s.handleNotificationCount)
+	mux.HandleFunc("/api/notifications/read", s.handleNotificationRead)
+
+	// Stream API routes (activity stream and followers)
+	mux.HandleFunc("/api/activity", s.handleActivityStream)
+	mux.HandleFunc("/api/followers/count", s.handleFollowerCount)
+
 	// Render API routes (for snippet editing workflow)
 	mux.HandleFunc("/api/render-page", s.handleRenderPage)
 }

@@ -129,7 +129,16 @@
                     <button id="list-mode-btn" class="mode-btn active hidden" data-mode="list" title="List Mode">☰</button>
                     <button id="browser-mode-btn" class="mode-btn hidden" data-mode="browser" title="Browser Mode">◎</button>
                 </div>
-                <span id="subdomain-display" class="subdomain"></span>
+                <div class="header-right">
+                    <span id="domain-display" class="domain-display"></span>
+                    <button id="notification-bell" class="notification-bell" onclick="App.toggleNotifications()" title="Notifications">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+                            <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+                        </svg>
+                        <span id="notification-dot" class="notification-dot hidden"></span>
+                    </button>
+                </div>
             </header>
 
             <!-- Main Container with Sidebar -->
@@ -228,8 +237,11 @@
                             <div class="section-label">Discover</div>
                             <nav>
                                 <button class="nav-item" data-view="feed">
-                                    Feed
+                                    Conversations
                                     <span id="feed-count" class="badge" style="display: none;">0</span>
+                                </button>
+                                <button class="nav-item" data-view="activity">
+                                    Activity
                                 </button>
                             </nav>
                         </div>
@@ -242,6 +254,15 @@
                                 <button class="nav-item" data-view="following">
                                     Following
                                     <span id="following-count" class="badge" style="display: none;">0</span>
+                                </button>
+                            </nav>
+                        </div>
+                        <div class="sidebar-section">
+                            <div class="section-label">Stats</div>
+                            <nav>
+                                <button class="nav-item" data-view="followers">
+                                    Followers
+                                    <span id="followers-count" class="badge" style="display: none;">0</span>
                                 </button>
                             </nav>
                         </div>
@@ -537,6 +558,23 @@ You can use **markdown** formatting."></textarea>
                 </div>
                 <div id="remote-post-meta" class="remote-post-meta"></div>
                 <div id="remote-post-body" class="comment-detail-body remote-post-body"></div>
+            </div>
+        </div>
+
+        <!-- Notification Panel (flyout from right) -->
+        <div id="notification-panel" class="comment-detail-panel hidden">
+            <div class="comment-detail-overlay" onclick="App.closeNotifications()"></div>
+            <div class="comment-detail-content">
+                <div class="comment-detail-header">
+                    <h3>Notifications</h3>
+                    <div class="notification-header-actions">
+                        <button id="notification-toggle-all" class="notification-toggle-btn" onclick="App.toggleAllNotifications()">Show All</button>
+                        <button class="comment-detail-close" onclick="App.closeNotifications()">&times;</button>
+                    </div>
+                </div>
+                <div id="notification-list" class="comment-detail-body notification-list">
+                    <!-- Dynamic notification items -->
+                </div>
             </div>
         </div>
     </div>

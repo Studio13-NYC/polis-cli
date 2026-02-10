@@ -50,11 +50,7 @@ _polis() {
     )
 
     notifications_subcommands=(
-        'list:List notifications (--type to filter, --all to show all)'
-        'read:Mark notification as read (--all for all)'
-        'dismiss:Dismiss notification (--older-than 30d for old ones)'
-        'sync:Sync from discovery service (--reset for full sync)'
-        'config:Configure preferences (--poll-interval, --enable, --disable, --mute, --unmute)'
+        'list:List notifications (--type to filter)'
     )
 
     # Adjust command position if --json is first
@@ -101,32 +97,7 @@ _polis() {
                             list)
                                 _arguments \
                                     '--json[Output in JSON format]' \
-                                    '--type[Filter by notification type]:type:(version_available version_pending new_follower new_post blessing_changed)' \
-                                    '--all[Show all notifications]'
-                                ;;
-                            read)
-                                _arguments \
-                                    '--json[Output in JSON format]' \
-                                    '--all[Mark all as read]'
-                                ;;
-                            dismiss)
-                                _arguments \
-                                    '--json[Output in JSON format]' \
-                                    '--older-than[Dismiss notifications older than]:duration:(7d 14d 30d 60d 90d)'
-                                ;;
-                            sync)
-                                _arguments \
-                                    '--json[Output in JSON format]' \
-                                    '--reset[Reset watermark and do full sync]'
-                                ;;
-                            config)
-                                _arguments \
-                                    '--json[Output in JSON format]' \
-                                    '--poll-interval[Set poll interval]:interval:(15m 30m 60m 120m)' \
-                                    '--enable[Enable notification type]:type:(version_available version_pending new_follower new_post blessing_changed)' \
-                                    '--disable[Disable notification type]:type:(version_available version_pending new_follower new_post blessing_changed)' \
-                                    '--mute[Mute domain]:domain:' \
-                                    '--unmute[Unmute domain]:domain:'
+                                    '--type[Filter by notification type]:type:(version_available version_pending new_follower new_post blessing_changed)'
                                 ;;
                         esac
                     fi

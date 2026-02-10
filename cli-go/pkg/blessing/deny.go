@@ -13,20 +13,19 @@ type DenyResult struct {
 }
 
 // Deny rejects a blessing request.
-// This calls the discovery service to deny the blessing (with signed payload).
+// This calls the discovery service via relationship-update to deny the blessing.
 // No local state changes are needed for denials.
-func Deny(commentVersion string, client *discovery.Client, privateKey []byte) (*DenyResult, error) {
-	if err := client.DenyBlessing(commentVersion, privateKey); err != nil {
+func Deny(commentURL, targetURL string, client *discovery.Client, privateKey []byte) (*DenyResult, error) {
+	if err := client.UpdateRelationship("polis.blessing", commentURL, targetURL, "deny", privateKey); err != nil {
 		return nil, fmt.Errorf("failed to deny blessing: %w", err)
 	}
 
 	return &DenyResult{
-		Success:        true,
-		CommentVersion: commentVersion,
+		Success: true,
 	}, nil
 }
 
 // DenyRequest denies a blessing request using the full request object.
 func DenyRequest(request *IncomingRequest, client *discovery.Client, privateKey []byte) (*DenyResult, error) {
-	return Deny(request.CommentVersion, client, privateKey)
+	return Deny(request.CommentURL, request.InReplyTo, client, privateKey)
 }

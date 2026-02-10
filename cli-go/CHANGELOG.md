@@ -5,6 +5,63 @@ All notable changes to the Go CLI will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.50.0]
+
+### Breaking Changes
+
+- **[Discovery] Unified content model**: Separate `posts_metadata` and `comment_metadata` tables replaced by `ds_content_metadata` (type-keyed) and `ds_relationship_metadata`. Schema version 0.8.0.
+- **[Discovery] Table namespacing**: All tables renamed with `ds_` (user data) or `admin_` (operator data) prefixes.
+- **[Discovery] Edge function namespacing**: All endpoints renamed with `ds-` or `admin-` prefix. Legacy endpoints removed: `posts-register`, `posts-unregister`, `posts-check`, `posts` (query), `comments-blessing-beseech`, `comments-blessing-grant`, `comments-blessing-deny`, `comments-blessing-requests`, `comments` (query), `polis-version`.
+- **[Discovery] New endpoints**: `ds-content-register`, `ds-content-unregister`, `ds-content-check`, `ds-content-query`, `ds-relationship-update`, `ds-relationship-query`.
+- **[Discovery] Canonical signing format**: Unified format `{"type":"polis.post","url":"...","version":"...","author":"...","metadata":{...}}` for content; `{"type":"polis.blessing","source_url":"...","target_url":"...","action":"...","timestamp":"..."}` for relationships.
+- **[Discovery] Status terminology**: `blessed` → `granted` in relationship records.
+- **Discovery client rewrite** (`pkg/discovery/client.go`): Type-specific methods removed. Replaced by generic methods: `RegisterContent()`, `UnregisterContent()`, `CheckContent()`, `QueryContent()`, `UpdateRelationship()`, `QueryRelationships()`.
+- **`blessing.Deny()` signature changed**: Now takes `(commentURL, targetURL, client, privateKey)` instead of `(commentVersion, client, privateKey)`.
+- **[Webapp] Deny blessing API**: `POST /api/blessing/deny` now requires `{"comment_url": "...", "in_reply_to": "..."}` instead of `{"comment_version": "..."}`.
+
+### Added
+
+- **`pkg/stream/` package**: Client-side projection framework for consuming the Discovery Stream
+  - `store.go`: `Store` manages per-projection cursors and materialized state (`.polis/projections/<domain>/`)
+  - `handler.go`: `ProjectionHandler` interface with built-in handler registry
+  - `follow.go`: `FollowHandler` maintains follower set from `polis.follow.announced`/`removed` events
+  - `blessing.go`: `BlessingHandler` processes blessing request/grant/deny events
+  - `notification.go`: `NotificationHandler` generates notifications from events
+- **Discovery client methods**: `RegisterContent()`, `UnregisterContent()`, `CheckContent()`, `QueryContent()`, `UpdateRelationship()`, `QueryRelationships()`, `StreamQuery()`, `StreamPublish()`, `StreamHealth()`, `MakeContentCanonicalJSON()`, `MakeStreamCanonicalJSON()`
+- **Post discovery registration**: `publish.RegisterPost()` automatically registers posts with `ds-content-register`
+- **Comment beseech extraction**: `comment.BeseechComment()` centralizes beseech logic (replaces ~130 lines of inline webapp code)
+- **Stream event publishing**: `stream.PublishEvent()` for emitting events; follow/unfollow emit `polis.follow.announced`/`removed`
+- **[Webapp] Activity stream**: `GET /api/activity` returns events from followed authors. New "Activity" view with timeline.
+- **[Webapp] Followers view**: `GET /api/followers/count` uses projection framework. New "Followers" view with refresh.
+- **[Webapp] Notification API**: `GET /api/notifications`, `GET /api/notifications/count`, `POST /api/notifications/read`. Background polling (60s) for blessing requests. Bell icon in header with badge and flyout.
+- **[Webapp] Domain name in header**: Displays domain from `POLIS_BASE_URL`.
+- **[Discovery] Pluggable validator registry**: `ContentTypeValidator` and `RelationshipTypeValidator` interfaces
+- **[Discovery] Rate limiting**: Shared rate limiting on write endpoints (50-100 req/hour per domain)
+- **[Discovery] Input validation**: URL (2048), email (RFC 5321), signature (2048), metadata (4KB), payload (64KB) limits
+- **[Discovery] CORS hardening**: Explicit `Access-Control-Allow-Methods` and `Access-Control-Max-Age: 600`
+- **[Discovery] Email verification**: `ds-content-register` verifies author email matches `.well-known/polis`
+- **[Discovery] Denial protection**: Re-registering denied comments preserves denial status
+
+### Changed
+
+- **Business logic centralization**: Post registration, comment beseech, stream events moved from webapp to CLI packages
+  - `publish.RegisterPost()` called by `PublishPost()`/`RepublishPost()`
+  - `comment.BeseechComment()` replaces inline webapp logic
+  - `stream.PublishEvent()` replaces webapp's `emitStreamEvent()`
+  - Follow/unfollow events in `following.FollowWithBlessing()`/`UnfollowWithDenial()`
+- **Single source for author email**: Removed `AuthorEmail` from webapp config. Read from `.well-known/polis` only.
+- **[Webapp] Discovery config consolidation**: Removed `DiscoveryURL`/`DiscoveryKey` from `webapp-config.json`. Load from `.env` only.
+- **[Webapp] "Feed" renamed to "Conversations"**: Sidebar and header updated.
+- **Generator string standardization**: Accepts `polis-cli-go/X.Y.Z`, `polis-cli-bash/X.Y.Z`, `polis-cli/X.Y.Z`. Deprecated `polis-webapp`.
+- **Discovery config propagation**: `cmd/root.go` and webapp `Initialize()` propagate config to `publish`, `comment`, `stream` packages
+- Module path alignment: Changed from `polis-planning` to `polis-cli`
+
+### Fixed
+
+- **[Webapp] Posts not in discovery**: Posts weren't registered because `AuthorEmail` was empty
+- **[Discovery] Email spoofing**: Verifies author email matches `.well-known/polis`
+- **[Discovery] Denial bypass**: Re-registering denied comments preserves denial
+
 ## [0.49.0]
 
 ### Added

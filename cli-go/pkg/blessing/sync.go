@@ -12,19 +12,21 @@ type SyncResult struct {
 	Total    int `json:"total"`
 }
 
-// SyncBlessedComments syncs auto-blessed comments from the discovery service to local storage.
-// This ensures that comments that were auto-blessed (e.g., from followed authors)
-// are reflected in the local blessed-comments.json.
+// SyncBlessedComments syncs blessed comments from the discovery service to local storage.
+// Uses the unified relationship-query endpoint to fetch granted blessings.
 func SyncBlessedComments(siteDir, domain string, client *discovery.Client) (*SyncResult, error) {
 	result := &SyncResult{}
 
-	// Fetch all blessed comments for this domain from discovery service
-	blessedComments, err := client.GetBlessedComments(domain)
+	// Fetch all granted blessings for this domain from discovery service
+	resp, err := client.QueryRelationships("polis.blessing", map[string]string{
+		"actor":  domain,
+		"status": "granted",
+	})
 	if err != nil {
 		return nil, err
 	}
 
-	result.Total = len(blessedComments)
+	result.Total = len(resp.Records)
 
 	// Load current local blessed comments
 	blessedFile, err := metadata.LoadBlessedComments(siteDir)
@@ -41,19 +43,19 @@ func SyncBlessedComments(siteDir, domain string, client *discovery.Client) (*Syn
 	}
 
 	// Add any missing blessed comments
-	for _, comment := range blessedComments {
-		if existingURLs[comment.CommentURL] {
+	for _, rel := range resp.Records {
+		if existingURLs[rel.SourceURL] {
 			result.Existing++
 			continue
 		}
 
 		// Add to local index
 		bc := metadata.BlessedComment{
-			URL:     comment.CommentURL,
-			Version: comment.CommentVersion,
+			URL:       rel.SourceURL,
+			BlessedAt: rel.UpdatedAt,
 		}
 
-		postPath := extractPostPath(comment.InReplyTo)
+		postPath := extractPostPath(rel.TargetURL)
 		if err := metadata.AddBlessedComment(siteDir, postPath, bc); err != nil {
 			// Log but continue
 			continue
@@ -65,12 +67,26 @@ func SyncBlessedComments(siteDir, domain string, client *discovery.Client) (*Syn
 	return result, nil
 }
 
-// GetBlessedCommentsForDomain fetches all blessed comments for a domain.
-func GetBlessedCommentsForDomain(domain string, client *discovery.Client) ([]discovery.Comment, error) {
-	return client.GetBlessedComments(domain)
+// GetBlessedCommentsForDomain fetches all granted blessings for a domain.
+func GetBlessedCommentsForDomain(domain string, client *discovery.Client) ([]discovery.RelationshipRecord, error) {
+	resp, err := client.QueryRelationships("polis.blessing", map[string]string{
+		"actor":  domain,
+		"status": "granted",
+	})
+	if err != nil {
+		return nil, err
+	}
+	return resp.Records, nil
 }
 
 // GetCommentsByAuthor fetches comments by author with optional status filter.
-func GetCommentsByAuthor(authorEmail, status string, client *discovery.Client) ([]discovery.Comment, error) {
-	return client.GetCommentsByAuthor(authorEmail, status)
+// Uses content-query for the author's comments and relationship-query for status filtering.
+func GetCommentsByAuthor(authorDomain string, client *discovery.Client) ([]discovery.ContentRecord, error) {
+	resp, err := client.QueryContent("polis.comment", map[string]string{
+		"actor": authorDomain,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return resp.Records, nil
 }

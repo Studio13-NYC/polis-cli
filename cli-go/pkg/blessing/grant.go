@@ -19,12 +19,12 @@ type GrantResult struct {
 
 // Grant approves a blessing request.
 // This:
-// 1. Calls the discovery service to grant the blessing (with signed payload)
+// 1. Calls the discovery service to grant the blessing via relationship-update
 // 2. Updates the local metadata/blessed-comments.json index
 // 3. Optionally runs the post-comment hook
 func Grant(siteDir string, request *IncomingRequest, client *discovery.Client, hookConfig *hooks.HookConfig, privateKey []byte) (*GrantResult, error) {
-	// First, grant on the discovery service (signed request)
-	if err := client.GrantBlessing(request.CommentVersion, privateKey); err != nil {
+	// Grant via unified relationship-update endpoint
+	if err := client.UpdateRelationship("polis.blessing", request.CommentURL, request.InReplyTo, "grant", privateKey); err != nil {
 		return nil, fmt.Errorf("failed to grant blessing: %w", err)
 	}
 

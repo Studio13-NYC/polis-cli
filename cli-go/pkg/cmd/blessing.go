@@ -177,8 +177,33 @@ func handleBlessingDeny(args []string) {
 
 	client := discovery.NewClient(discoveryURL, discoveryKey)
 
+	// To deny, we need to look up the pending relationship first
+	baseURL := os.Getenv("POLIS_BASE_URL")
+	if baseURL == "" {
+		exitError("POLIS_BASE_URL not set")
+	}
+	domain := polisurl.ExtractDomain(baseURL)
+
+	// Find the pending request matching this comment version
+	requests, err := blessing.FetchPendingRequests(client, domain)
+	if err != nil {
+		exitError("Failed to fetch pending requests: %v", err)
+	}
+
+	var targetRequest *blessing.IncomingRequest
+	for _, req := range requests {
+		if req.CommentVersion == commentVersion || req.CommentURL == commentVersion {
+			targetRequest = &req
+			break
+		}
+	}
+
+	if targetRequest == nil {
+		exitError("No pending blessing found for: %s", commentVersion)
+	}
+
 	// Deny the blessing
-	result, err := blessing.Deny(commentVersion, client, privKey)
+	result, err := blessing.DenyRequest(targetRequest, client, privKey)
 	if err != nil {
 		exitError("Failed to deny blessing: %v", err)
 	}
@@ -211,25 +236,24 @@ func handleBlessingBeseech(args []string) {
 
 	client := discovery.NewClient(discoveryURL, discoveryKey)
 
-	// Check current blessing status
-	status, err := client.CheckBlessingStatus(commentVersion)
+	// Check current content status via content-check
+	checkResp, err := client.CheckContent("polis.comment", commentVersion)
 	if err != nil {
-		exitError("Failed to check blessing status: %v", err)
+		exitError("Failed to check comment status: %v", err)
 	}
 
-	if status.BlessingStatus == "blessed" {
+	if !checkResp.Exists {
 		if jsonOutput {
 			outputJSON(map[string]interface{}{
-				"status":  "success",
+				"status":  "error",
 				"command": "blessing-beseech",
-				"data": map[string]interface{}{
-					"comment_version":  commentVersion,
-					"blessing_status": "already_blessed",
-					"message":         "Comment is already blessed",
+				"error": map[string]interface{}{
+					"code":    "NOT_FOUND",
+					"message": "Comment not found in discovery service",
 				},
 			})
 		} else {
-			fmt.Printf("[i] Comment %s is already blessed\n", commentVersion)
+			fmt.Printf("[x] Comment %s not found in discovery service\n", commentVersion)
 		}
 		return
 	}
@@ -241,13 +265,11 @@ func handleBlessingBeseech(args []string) {
 			"status":  "success",
 			"command": "blessing-beseech",
 			"data": map[string]interface{}{
-				"comment_version":  commentVersion,
-				"blessing_status": status.BlessingStatus,
+				"comment_version": commentVersion,
 				"message":         "Use 'polis comment sync' to re-beseech pending comments",
 			},
 		})
 	} else {
-		fmt.Printf("[i] Comment status: %s\n", status.BlessingStatus)
 		fmt.Println("[i] Use 'polis comment sync' to re-beseech pending comments")
 	}
 }

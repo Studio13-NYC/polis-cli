@@ -331,13 +331,20 @@ version-history:
 		fmt.Printf("[warning] Failed to update manifest: %v\n", err)
 	}
 
-	return &PublishResult{
+	result := &PublishResult{
 		Success:   true,
 		Path:      relativePath,
 		Title:     title,
 		Version:   "sha256:" + hash,
 		Signature: signature,
-	}, nil
+	}
+
+	// Register with discovery service (non-fatal)
+	if err := RegisterPost(dataDir, result, privateKey); err != nil {
+		fmt.Printf("[warning] Discovery registration failed: %v\n", err)
+	}
+
+	return result, nil
 }
 
 // ensureUniqueFilename checks for filename collisions and appends -2, -3, etc. if needed.
@@ -492,9 +499,9 @@ func AppendToIndex(dataDir string, meta *PostMeta) error {
 	return metadata.AppendPostToIndex(dataDir, meta.Path, meta.Title, meta.Published, meta.CurrentVersion)
 }
 
-// DefaultVersion returns the polis version for new manifests.
+// DefaultVersion returns the generator identifier for new manifests.
 func DefaultVersion() string {
-	return Version
+	return GetGenerator()
 }
 
 // UpdateManifest updates the manifest.json file.
@@ -793,13 +800,20 @@ signature: %s
 		fmt.Printf("[warning] Failed to update manifest: %v\n", err)
 	}
 
-	return &PublishResult{
+	result := &PublishResult{
 		Success:   true,
 		Path:      postPath,
 		Title:     title,
 		Version:   "sha256:" + hash,
 		Signature: signature,
-	}, nil
+	}
+
+	// Register with discovery service (non-fatal)
+	if err := RegisterPost(dataDir, result, privateKey); err != nil {
+		fmt.Printf("[warning] Discovery registration failed: %v\n", err)
+	}
+
+	return result, nil
 }
 
 // appendVersionHistory appends a new version to the version history file.

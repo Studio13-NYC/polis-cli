@@ -53,16 +53,24 @@ func handleUnfollow(args []string) {
 	failedCount := 0
 	commentCount := 0
 
-	if remoteWK != nil && remoteWK.Email != "" {
-		blessedComments, _ := client.GetCommentsByAuthor(remoteWK.Email, "blessed")
-		commentCount = len(blessedComments)
+	if remoteWK != nil {
+		authorDomain := discovery.ExtractDomainFromURL(authorURL)
+		// Fetch granted blessings where source is from the author's domain
+		grantedResp, _ := client.QueryRelationships("polis.blessing", map[string]string{
+			"status": "granted",
+		})
 
-		for _, comment := range blessedComments {
-			if err := client.DenyBlessing(comment.CommentVersion, privKey); err != nil {
-				failedCount++
-				continue
+		if grantedResp != nil {
+			for _, rel := range grantedResp.Records {
+				if discovery.ExtractDomainFromURL(rel.SourceURL) == authorDomain {
+					commentCount++
+					if err := client.UpdateRelationship("polis.blessing", rel.SourceURL, rel.TargetURL, "deny", privKey); err != nil {
+						failedCount++
+						continue
+					}
+					deniedCount++
+				}
 			}
-			deniedCount++
 		}
 	}
 

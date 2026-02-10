@@ -12,6 +12,11 @@ import (
 // Version is set at init time by cmd package.
 var Version = "dev"
 
+// GetGenerator returns the generator identifier for metadata files.
+func GetGenerator() string {
+	return "polis-cli-go/" + Version
+}
+
 // FollowingFile represents the following.json structure.
 type FollowingFile struct {
 	Version   string           `json:"version"`
@@ -36,7 +41,7 @@ func Load(path string) (*FollowingFile, error) {
 	if err != nil {
 		if os.IsNotExist(err) {
 			return &FollowingFile{
-				Version:   Version,
+				Version:   GetGenerator(),
 				Following: []FollowingEntry{},
 			}, nil
 		}

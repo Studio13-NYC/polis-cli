@@ -46,7 +46,7 @@ func SyncPendingComments(dataDir string, discoveryClient *discovery.Client, hook
 
 		commentID := strings.TrimSuffix(entry.Name(), ".md")
 
-		// Read comment to get version
+		// Read comment to get version and URL
 		commentPath := filepath.Join(pendingDir, entry.Name())
 		data, err := os.ReadFile(commentPath)
 		if err != nil {
@@ -55,21 +55,31 @@ func SyncPendingComments(dataDir string, discoveryClient *discovery.Client, hook
 		}
 
 		fm := ParseFrontmatter(string(data))
-		version := fm["comment_version"]
-		if version == "" {
-			result.Errors = append(result.Errors, commentID+": missing comment_version")
+		commentURL := fm["comment_url"]
+		inReplyTo := fm["in_reply_to"]
+		if commentURL == "" || inReplyTo == "" {
+			result.Errors = append(result.Errors, commentID+": missing comment_url or in_reply_to")
 			continue
 		}
 
-		// Check status with discovery service
-		statusResp, err := discoveryClient.CheckBlessingStatus(version)
+		// Check blessing status via relationship-query
+		resp, err := discoveryClient.QueryRelationships("polis.blessing", map[string]string{
+			"source_url": commentURL,
+			"target_url": inReplyTo,
+		})
 		if err != nil {
 			result.Errors = append(result.Errors, "failed to check "+commentID+": "+err.Error())
 			continue
 		}
 
-		switch statusResp.BlessingStatus {
-		case "blessed":
+		// Determine status from the relationship record
+		status := "pending"
+		if resp != nil && len(resp.Records) > 0 {
+			status = resp.Records[0].Status
+		}
+
+		switch status {
+		case "granted":
 			// Move to blessed directory (public comments/YYYY/MM/)
 			if err := MoveComment(dataDir, commentID, StatusPending, StatusBlessed); err != nil {
 				result.Errors = append(result.Errors, "failed to move "+commentID+" to blessed: "+err.Error())
@@ -93,7 +103,7 @@ func SyncPendingComments(dataDir string, discoveryClient *discovery.Client, hook
 					Event:         hooks.EventPostComment,
 					Path:          blessedPath,
 					Title:         fm["in_reply_to"],
-					Version:       version,
+					Version:       fm["comment_version"],
 					Timestamp:     time.Now().UTC().Format("2006-01-02T15:04:05Z"),
 					CommitMessage: hooks.GenerateCommitMessage(hooks.EventPostComment, fm["in_reply_to"]),
 				}
@@ -115,7 +125,7 @@ func SyncPendingComments(dataDir string, discoveryClient *discovery.Client, hook
 			result.StillPending = append(result.StillPending, commentID)
 
 		default:
-			result.Errors = append(result.Errors, commentID+": unknown status "+statusResp.BlessingStatus)
+			result.Errors = append(result.Errors, commentID+": unknown status "+status)
 		}
 	}
 
@@ -124,7 +134,7 @@ func SyncPendingComments(dataDir string, discoveryClient *discovery.Client, hook
 
 // SyncSingleComment syncs a single comment by ID.
 func SyncSingleComment(dataDir, commentID string, discoveryClient *discovery.Client, hookConfig *hooks.HookConfig) (string, error) {
-	// Read comment to get version (from .polis/comments/pending/)
+	// Read comment to get URL (from .polis/comments/pending/)
 	commentPath := filepath.Join(dataDir, ".polis", "comments", StatusPending, commentID+".md")
 	data, err := os.ReadFile(commentPath)
 	if err != nil {
@@ -132,19 +142,28 @@ func SyncSingleComment(dataDir, commentID string, discoveryClient *discovery.Cli
 	}
 
 	fm := ParseFrontmatter(string(data))
-	version := fm["comment_version"]
-	if version == "" {
+	commentURL := fm["comment_url"]
+	inReplyTo := fm["in_reply_to"]
+	if commentURL == "" || inReplyTo == "" {
 		return "", nil
 	}
 
-	// Check status
-	statusResp, err := discoveryClient.CheckBlessingStatus(version)
+	// Check status via relationship-query
+	resp, err := discoveryClient.QueryRelationships("polis.blessing", map[string]string{
+		"source_url": commentURL,
+		"target_url": inReplyTo,
+	})
 	if err != nil {
 		return "", err
 	}
 
-	switch statusResp.BlessingStatus {
-	case "blessed":
+	status := "pending"
+	if resp != nil && len(resp.Records) > 0 {
+		status = resp.Records[0].Status
+	}
+
+	switch status {
+	case "granted":
 		if err := MoveComment(dataDir, commentID, StatusPending, StatusBlessed); err != nil {
 			return "", err
 		}
@@ -165,14 +184,14 @@ func SyncSingleComment(dataDir, commentID string, discoveryClient *discovery.Cli
 				Event:         hooks.EventPostComment,
 				Path:          blessedPath,
 				Title:         fm["in_reply_to"],
-				Version:       version,
+				Version:       fm["comment_version"],
 				Timestamp:     time.Now().UTC().Format("2006-01-02T15:04:05Z"),
 				CommitMessage: hooks.GenerateCommitMessage(hooks.EventPostComment, fm["in_reply_to"]),
 			}
 			hooks.RunHook(dataDir, hookConfig, payload)
 		}
 
-		return "blessed", nil
+		return "granted", nil
 
 	case "denied":
 		if err := MoveComment(dataDir, commentID, StatusPending, StatusDenied); err != nil {

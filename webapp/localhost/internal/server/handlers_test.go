@@ -72,12 +72,14 @@ func newConfiguredServer(t *testing.T) *Server {
 	}
 	s.BaseURL = "https://test-site.polis.pub"
 
-	// Create .well-known/polis
+	// Create .well-known/polis (single source of truth for identity)
 	wellKnown := map[string]interface{}{
 		"subdomain":  "test-site",
 		"base_url":   "https://test-site.polis.pub",
 		"site_title": "Test Site",
 		"public_key": string(pubKey),
+		"email":      "test@example.com",
+		"author":     "Test Author",
 	}
 	wellKnownData, _ := json.MarshalIndent(wellKnown, "", "  ")
 	wellKnownPath := filepath.Join(s.DataDir, ".well-known", "polis")
@@ -158,6 +160,39 @@ func TestHandleStatus_Configured(t *testing.T) {
 		t.Error("expected validation object in response")
 	} else if validation["status"] != "valid" {
 		t.Errorf("expected validation status='valid', got %v", validation["status"])
+	}
+
+	// Check base_url is included (required by frontend init for domain display)
+	if resp["base_url"] != "https://test-site.polis.pub" {
+		t.Errorf("expected base_url='https://test-site.polis.pub', got %v", resp["base_url"])
+	}
+
+	// Check show_frontmatter is included
+	if _, exists := resp["show_frontmatter"]; !exists {
+		t.Error("expected show_frontmatter field in status response")
+	}
+}
+
+func TestHandleSettings_DefaultViewModeIsList(t *testing.T) {
+	s := newConfiguredServer(t)
+	// Config has no ViewMode set — should default to "list"
+	s.Config.ViewMode = ""
+
+	req := httptest.NewRequest(http.MethodGet, "/api/settings", nil)
+	rr := httptest.NewRecorder()
+
+	s.handleSettings(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", rr.Code)
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(rr.Body.Bytes(), &resp)
+
+	siteData := resp["site"].(map[string]interface{})
+	if siteData["view_mode"] != "list" {
+		t.Errorf("expected default view_mode='list', got %v", siteData["view_mode"])
 	}
 }
 
@@ -1523,10 +1558,8 @@ func TestHandleBlessingGrant_DiscoveryNotConfigured(t *testing.T) {
 
 func TestHandleBlessingGrant_PrivateKeyNotConfigured(t *testing.T) {
 	s := newTestServer(t)
-	s.Config = &Config{
-		DiscoveryURL: "https://discovery.example.com",
-		DiscoveryKey: "test-key",
-	}
+	s.DiscoveryURL = "https://discovery.example.com"
+	s.DiscoveryKey = "test-key"
 
 	body := jsonBody(t, map[string]string{"comment_version": "abc123"})
 	req := httptest.NewRequest(http.MethodPost, "/api/blessing/grant", body)
@@ -1542,8 +1575,8 @@ func TestHandleBlessingGrant_PrivateKeyNotConfigured(t *testing.T) {
 
 func TestHandleBlessingGrant_MissingCommentVersion(t *testing.T) {
 	s := newConfiguredServer(t)
-	s.Config.DiscoveryURL = "https://discovery.example.com"
-	s.Config.DiscoveryKey = "test-key"
+	s.DiscoveryURL = "https://discovery.example.com"
+	s.DiscoveryKey = "test-key"
 
 	body := jsonBody(t, map[string]string{})
 	req := httptest.NewRequest(http.MethodPost, "/api/blessing/grant", body)
@@ -1576,8 +1609,8 @@ func TestHandleBlessingDeny_MethodNotAllowed(t *testing.T) {
 
 func TestHandleBlessingDeny_MissingCommentVersion(t *testing.T) {
 	s := newConfiguredServer(t)
-	s.Config.DiscoveryURL = "https://discovery.example.com"
-	s.Config.DiscoveryKey = "test-key"
+	s.DiscoveryURL = "https://discovery.example.com"
+	s.DiscoveryKey = "test-key"
 
 	body := jsonBody(t, map[string]string{})
 	req := httptest.NewRequest(http.MethodPost, "/api/blessing/deny", body)
@@ -1691,8 +1724,8 @@ func TestHandleSettings_Unconfigured(t *testing.T) {
 
 func TestHandleSettings_Configured(t *testing.T) {
 	s := newConfiguredServer(t)
-	s.Config.DiscoveryURL = "https://discovery.example.com"
-	s.Config.DiscoveryKey = "test-key"
+	s.DiscoveryURL = "https://discovery.example.com"
+	s.DiscoveryKey = "test-key"
 
 	req := httptest.NewRequest(http.MethodGet, "/api/settings", nil)
 	rr := httptest.NewRecorder()
@@ -2070,10 +2103,8 @@ func TestHandleCommentBeseech_DiscoveryNotConfigured(t *testing.T) {
 
 func TestHandleCommentBeseech_MissingCommentID(t *testing.T) {
 	s := newTestServer(t)
-	s.Config = &Config{
-		DiscoveryURL: "https://discovery.example.com",
-		DiscoveryKey: "test-key",
-	}
+	s.DiscoveryURL = "https://discovery.example.com"
+	s.DiscoveryKey = "test-key"
 
 	body := jsonBody(t, map[string]string{})
 	req := httptest.NewRequest(http.MethodPost, "/api/comments/beseech", body)
@@ -2149,11 +2180,9 @@ func TestLoadConfig_ValidFile(t *testing.T) {
 
 	// Create config file
 	config := Config{
-		SetupCode:    "test-code",
-		Subdomain:    "test-site",
-		SetupAt:      "2026-01-01T00:00:00Z",
-		DiscoveryURL: "https://discovery.example.com",
-		DiscoveryKey: "secret-key",
+		SetupCode: "test-code",
+		Subdomain: "test-site",
+		SetupAt:   "2026-01-01T00:00:00Z",
 	}
 	configData, _ := json.MarshalIndent(config, "", "  ")
 	configPath := filepath.Join(s.DataDir, ".polis", "webapp-config.json")
@@ -2169,9 +2198,6 @@ func TestLoadConfig_ValidFile(t *testing.T) {
 	}
 	if s.Config.Subdomain != "test-site" {
 		t.Errorf("expected Subdomain='test-site', got %s", s.Config.Subdomain)
-	}
-	if s.Config.DiscoveryURL != "https://discovery.example.com" {
-		t.Errorf("expected DiscoveryURL to be set, got %s", s.Config.DiscoveryURL)
 	}
 }
 
@@ -2297,14 +2323,11 @@ DISCOVERY_SERVICE_KEY=test-api-key`
 
 	s.LoadEnv()
 
-	if s.Config == nil {
-		t.Fatal("expected config to be created from .env")
+	if s.DiscoveryURL != "https://test-discovery.com" {
+		t.Errorf("expected DiscoveryURL from .env, got %s", s.DiscoveryURL)
 	}
-	if s.Config.DiscoveryURL != "https://test-discovery.com" {
-		t.Errorf("expected DiscoveryURL from .env, got %s", s.Config.DiscoveryURL)
-	}
-	if s.Config.DiscoveryKey != "test-api-key" {
-		t.Errorf("expected DiscoveryKey from .env, got %s", s.Config.DiscoveryKey)
+	if s.DiscoveryKey != "test-api-key" {
+		t.Errorf("expected DiscoveryKey from .env, got %s", s.DiscoveryKey)
 	}
 }
 
@@ -2319,14 +2342,11 @@ DISCOVERY_SERVICE_KEY='single-quoted-key'`
 
 	s.LoadEnv()
 
-	if s.Config == nil {
-		t.Fatal("expected config to be created from .env")
+	if s.DiscoveryURL != "https://quoted.com" {
+		t.Errorf("expected quotes stripped from URL, got %s", s.DiscoveryURL)
 	}
-	if s.Config.DiscoveryURL != "https://quoted.com" {
-		t.Errorf("expected quotes stripped from URL, got %s", s.Config.DiscoveryURL)
-	}
-	if s.Config.DiscoveryKey != "single-quoted-key" {
-		t.Errorf("expected quotes stripped from key, got %s", s.Config.DiscoveryKey)
+	if s.DiscoveryKey != "single-quoted-key" {
+		t.Errorf("expected quotes stripped from key, got %s", s.DiscoveryKey)
 	}
 }
 
@@ -2344,14 +2364,11 @@ DISCOVERY_SERVICE_KEY=actual-key`
 
 	s.LoadEnv()
 
-	if s.Config == nil {
-		t.Fatal("expected config to be created")
+	if s.DiscoveryURL != "https://actual-url.com" {
+		t.Errorf("expected non-comment URL, got %s", s.DiscoveryURL)
 	}
-	if s.Config.DiscoveryURL != "https://actual-url.com" {
-		t.Errorf("expected non-comment URL, got %s", s.Config.DiscoveryURL)
-	}
-	if s.Config.DiscoveryKey != "actual-key" {
-		t.Errorf("expected non-comment key, got %s", s.Config.DiscoveryKey)
+	if s.DiscoveryKey != "actual-key" {
+		t.Errorf("expected non-comment key, got %s", s.DiscoveryKey)
 	}
 }
 
@@ -2371,11 +2388,8 @@ DISCOVERY_SERVICE_KEY=test-key
 
 	s.LoadEnv()
 
-	if s.Config == nil {
-		t.Fatal("expected config to be created")
-	}
-	if s.Config.DiscoveryURL != "https://test.com" {
-		t.Errorf("expected URL parsed correctly, got %s", s.Config.DiscoveryURL)
+	if s.DiscoveryURL != "https://test.com" {
+		t.Errorf("expected URL parsed correctly, got %s", s.DiscoveryURL)
 	}
 }
 
@@ -2392,15 +2406,12 @@ DISCOVERY_SERVICE_KEY=valid-key
 
 	s.LoadEnv()
 
-	if s.Config == nil {
-		t.Fatal("expected config to be created")
-	}
 	// Valid lines should still be parsed
-	if s.Config.DiscoveryURL != "https://valid.com" {
-		t.Errorf("expected valid URL, got %s", s.Config.DiscoveryURL)
+	if s.DiscoveryURL != "https://valid.com" {
+		t.Errorf("expected valid URL, got %s", s.DiscoveryURL)
 	}
-	if s.Config.DiscoveryKey != "valid-key" {
-		t.Errorf("expected valid key, got %s", s.Config.DiscoveryKey)
+	if s.DiscoveryKey != "valid-key" {
+		t.Errorf("expected valid key, got %s", s.DiscoveryKey)
 	}
 }
 
@@ -2409,10 +2420,10 @@ func TestLoadEnv_OverridesConfig(t *testing.T) {
 
 	// Set up existing config
 	s.Config = &Config{
-		Subdomain:    "existing-site",
-		DiscoveryURL: "https://old-discovery.com",
-		DiscoveryKey: "old-key",
+		Subdomain: "existing-site",
 	}
+	s.DiscoveryURL = "https://old-discovery.com"
+	s.DiscoveryKey = "old-key"
 
 	// Create .env with new values
 	envContent := `DISCOVERY_SERVICE_URL=https://new-discovery.com
@@ -2422,12 +2433,12 @@ DISCOVERY_SERVICE_KEY=new-key`
 
 	s.LoadEnv()
 
-	// .env should override config
-	if s.Config.DiscoveryURL != "https://new-discovery.com" {
-		t.Errorf("expected .env to override config URL, got %s", s.Config.DiscoveryURL)
+	// .env should override previous values
+	if s.DiscoveryURL != "https://new-discovery.com" {
+		t.Errorf("expected .env to override URL, got %s", s.DiscoveryURL)
 	}
-	if s.Config.DiscoveryKey != "new-key" {
-		t.Errorf("expected .env to override config key, got %s", s.Config.DiscoveryKey)
+	if s.DiscoveryKey != "new-key" {
+		t.Errorf("expected .env to override key, got %s", s.DiscoveryKey)
 	}
 	// Non-overridden values should remain
 	if s.Config.Subdomain != "existing-site" {
@@ -2489,11 +2500,8 @@ func TestApplyDiscoveryDefaults_NoConfig(t *testing.T) {
 
 	s.ApplyDiscoveryDefaults()
 
-	if s.Config == nil {
-		t.Fatal("expected config to be created")
-	}
-	if s.Config.DiscoveryURL != DefaultDiscoveryServiceURL {
-		t.Errorf("expected default discovery URL, got %s", s.Config.DiscoveryURL)
+	if s.DiscoveryURL != DefaultDiscoveryServiceURL {
+		t.Errorf("expected default discovery URL, got %s", s.DiscoveryURL)
 	}
 }
 
@@ -2506,22 +2514,19 @@ func TestApplyDiscoveryDefaults_EmptyURL(t *testing.T) {
 
 	s.ApplyDiscoveryDefaults()
 
-	if s.Config.DiscoveryURL != DefaultDiscoveryServiceURL {
-		t.Errorf("expected default discovery URL, got %s", s.Config.DiscoveryURL)
+	if s.DiscoveryURL != DefaultDiscoveryServiceURL {
+		t.Errorf("expected default discovery URL, got %s", s.DiscoveryURL)
 	}
 }
 
 func TestApplyDiscoveryDefaults_ExistingURL(t *testing.T) {
 	s := newTestServer(t)
-	s.Config = &Config{
-		Subdomain:    "test-site",
-		DiscoveryURL: "https://custom-discovery.com",
-	}
+	s.DiscoveryURL = "https://custom-discovery.com"
 
 	s.ApplyDiscoveryDefaults()
 
-	if s.Config.DiscoveryURL != "https://custom-discovery.com" {
-		t.Errorf("expected custom URL not to be overridden, got %s", s.Config.DiscoveryURL)
+	if s.DiscoveryURL != "https://custom-discovery.com" {
+		t.Errorf("expected custom URL not to be overridden, got %s", s.DiscoveryURL)
 	}
 }
 
@@ -2530,12 +2535,9 @@ func TestConfigPersistence_RoundTrip(t *testing.T) {
 
 	// Create and save config
 	s.Config = &Config{
-		SetupCode:    "round-trip",
-		Subdomain:    "persist-test", // Deprecated - should be stripped on save
-		SetupAt:      "2026-01-20T10:00:00Z",
-		DiscoveryURL: "https://persist.com",
-		DiscoveryKey: "persist-key",
-		AuthorEmail:  "author@example.com",
+		SetupCode: "round-trip",
+		Subdomain: "persist-test", // Deprecated - should be stripped on save
+		SetupAt:   "2026-01-20T10:00:00Z",
 	}
 	err := s.SaveConfig()
 	if err != nil {
@@ -2556,14 +2558,37 @@ func TestConfigPersistence_RoundTrip(t *testing.T) {
 	if s2.Config.Subdomain != "" {
 		t.Errorf("expected Subdomain to be empty after round-trip, got %s", s2.Config.Subdomain)
 	}
-	if s2.Config.DiscoveryURL != "https://persist.com" {
-		t.Errorf("DiscoveryURL mismatch")
+}
+
+func TestGetAuthorEmail_FromWellKnown(t *testing.T) {
+	s := newConfiguredServer(t) // has email in .well-known/polis
+	email := s.GetAuthorEmail()
+	if email != "test@example.com" {
+		t.Errorf("expected test@example.com, got %q", email)
 	}
-	if s2.Config.DiscoveryKey != "persist-key" {
-		t.Errorf("DiscoveryKey mismatch")
+}
+
+func TestGetAuthorEmail_NoWellKnown(t *testing.T) {
+	s := newTestServer(t) // no .well-known/polis file
+	email := s.GetAuthorEmail()
+	if email != "" {
+		t.Errorf("expected empty email, got %q", email)
 	}
-	if s2.Config.AuthorEmail != "author@example.com" {
-		t.Errorf("AuthorEmail mismatch")
+}
+
+func TestGetAuthorEmail_NoEmailField(t *testing.T) {
+	s := newTestServer(t)
+	// Create .well-known/polis without email field
+	wellKnown := map[string]interface{}{
+		"public_key": "ssh-ed25519 AAAA...",
+		"site_title": "No Email Site",
+	}
+	data, _ := json.MarshalIndent(wellKnown, "", "  ")
+	os.WriteFile(filepath.Join(s.DataDir, ".well-known", "polis"), data, 0644)
+
+	email := s.GetAuthorEmail()
+	if email != "" {
+		t.Errorf("expected empty email, got %q", email)
 	}
 }
 
@@ -4463,4 +4488,272 @@ func TestExtractHTMLBody(t *testing.T) {
 	}
 }
 
+// ============================================================================
+// handleActivityStream Tests
+// ============================================================================
 
+func TestHandleActivityStream_MethodNotAllowed(t *testing.T) {
+	s := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/activity", nil)
+	rr := httptest.NewRecorder()
+
+	s.handleActivityStream(rr, req)
+
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405, got %d", rr.Code)
+	}
+}
+
+func TestHandleActivityStream_NoFollowing(t *testing.T) {
+	s := newConfiguredServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/activity", nil)
+	rr := httptest.NewRecorder()
+
+	s.handleActivityStream(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(rr.Body).Decode(&resp)
+
+	events, ok := resp["events"].([]interface{})
+	if !ok {
+		t.Fatal("expected events array in response")
+	}
+	if len(events) != 0 {
+		t.Errorf("expected 0 events, got %d", len(events))
+	}
+	if resp["cursor"] != "0" {
+		t.Errorf("expected cursor '0', got %v", resp["cursor"])
+	}
+}
+
+func TestHandleActivityStream_WithFollowingNoDiscovery(t *testing.T) {
+	s := newConfiguredServer(t)
+
+	// Create a following.json with an entry
+	followingPath := following.DefaultPath(s.DataDir)
+	f, _ := following.Load(followingPath)
+	f.Add("https://alice.example.com")
+	following.Save(followingPath, f)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/activity?since=0&limit=10", nil)
+	rr := httptest.NewRecorder()
+
+	s.handleActivityStream(rr, req)
+
+	// Should return 200 with empty events (discovery service not reachable in test)
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(rr.Body).Decode(&resp)
+
+	// Should gracefully return empty on network error
+	events, ok := resp["events"].([]interface{})
+	if !ok {
+		t.Fatal("expected events array in response")
+	}
+	if len(events) != 0 {
+		t.Errorf("expected 0 events (no discovery service), got %d", len(events))
+	}
+}
+
+// ============================================================================
+// handleFollowerCount Tests
+// ============================================================================
+
+func TestHandleFollowerCount_MethodNotAllowed(t *testing.T) {
+	s := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/followers/count", nil)
+	rr := httptest.NewRecorder()
+
+	s.handleFollowerCount(rr, req)
+
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405, got %d", rr.Code)
+	}
+}
+
+func TestHandleFollowerCount_NoBaseURL(t *testing.T) {
+	s := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/followers/count", nil)
+	rr := httptest.NewRecorder()
+
+	s.handleFollowerCount(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(rr.Body).Decode(&resp)
+
+	count, ok := resp["count"].(float64)
+	if !ok || count != 0 {
+		t.Errorf("expected count 0, got %v", resp["count"])
+	}
+}
+
+func TestHandleFollowerCount_Configured(t *testing.T) {
+	s := newConfiguredServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/followers/count", nil)
+	rr := httptest.NewRecorder()
+
+	s.handleFollowerCount(rr, req)
+
+	// Should return 200 with 0 followers (no stream events to project)
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(rr.Body).Decode(&resp)
+
+	count, ok := resp["count"].(float64)
+	if !ok || count != 0 {
+		t.Errorf("expected count 0, got %v", resp["count"])
+	}
+
+	followers, ok := resp["followers"].([]interface{})
+	if !ok {
+		t.Fatal("expected followers array")
+	}
+	if len(followers) != 0 {
+		t.Errorf("expected 0 followers, got %d", len(followers))
+	}
+}
+
+func TestHandleFollowerCount_WithRefresh(t *testing.T) {
+	s := newConfiguredServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/followers/count?refresh=true", nil)
+	rr := httptest.NewRecorder()
+
+	s.handleFollowerCount(rr, req)
+
+	// Should return 200 even with refresh (will try to query stream, get empty)
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// ============================================================================
+// extractDomainFromURL Tests
+// ============================================================================
+
+func TestExtractDomainFromURL(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"https://example.com/path", "example.com"},
+		{"https://sub.example.com", "sub.example.com"},
+		{"http://localhost:8080", "localhost"},
+		{"", ""},
+		{"not-a-url", ""},
+	}
+
+	for _, tt := range tests {
+		got := extractDomainFromURL(tt.input)
+		if got != tt.expected {
+			t.Errorf("extractDomainFromURL(%q) = %q, want %q", tt.input, got, tt.expected)
+		}
+	}
+}
+
+func TestHandleNotificationCount(t *testing.T) {
+	s := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/notifications/count", nil)
+	w := httptest.NewRecorder()
+
+	s.handleNotificationCount(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["unread"] != float64(0) {
+		t.Errorf("expected unread=0, got %v", resp["unread"])
+	}
+}
+
+func TestHandleNotificationCount_MethodNotAllowed(t *testing.T) {
+	s := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/notifications/count", nil)
+	w := httptest.NewRecorder()
+
+	s.handleNotificationCount(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+func TestHandleNotifications_EmptyList(t *testing.T) {
+	s := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/notifications", nil)
+	w := httptest.NewRecorder()
+
+	s.handleNotifications(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+	notifications := resp["notifications"].([]interface{})
+	if len(notifications) != 0 {
+		t.Errorf("expected 0 notifications, got %d", len(notifications))
+	}
+	if resp["total"] != float64(0) {
+		t.Errorf("expected total=0, got %v", resp["total"])
+	}
+}
+
+func TestHandleNotificationRead(t *testing.T) {
+	s := newTestServer(t)
+
+	body := jsonBody(t, map[string]interface{}{"all": true})
+	req := httptest.NewRequest(http.MethodPost, "/api/notifications/read", body)
+	w := httptest.NewRecorder()
+
+	s.handleNotificationRead(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["success"] != true {
+		t.Error("expected success=true")
+	}
+}
+
+func TestHandleNotificationRead_MethodNotAllowed(t *testing.T) {
+	s := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/notifications/read", nil)
+	w := httptest.NewRecorder()
+
+	s.handleNotificationRead(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}

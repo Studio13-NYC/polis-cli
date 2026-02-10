@@ -13,8 +13,8 @@ func TestCheckSiteRegistration_Registered(t *testing.T) {
 		if r.Method != "GET" {
 			t.Errorf("Expected GET request, got %s", r.Method)
 		}
-		if r.URL.Path != "/sites-check" {
-			t.Errorf("Expected /sites-check, got %s", r.URL.Path)
+		if r.URL.Path != "/ds-sites-check" {
+			t.Errorf("Expected /ds-sites-check, got %s", r.URL.Path)
 		}
 		domain := r.URL.Query().Get("domain")
 		if domain != "alice.com" {
@@ -134,8 +134,8 @@ func TestRegisterSite_Success(t *testing.T) {
 		if r.Method != "POST" {
 			t.Errorf("Expected POST request, got %s", r.Method)
 		}
-		if r.URL.Path != "/sites-register" {
-			t.Errorf("Expected /sites-register, got %s", r.URL.Path)
+		if r.URL.Path != "/ds-sites-register" {
+			t.Errorf("Expected /ds-sites-register, got %s", r.URL.Path)
 		}
 
 		// Decode and store the received payload for verification
@@ -208,8 +208,8 @@ func TestUnregisterSite_Success(t *testing.T) {
 		if r.Method != "POST" {
 			t.Errorf("Expected POST request, got %s", r.Method)
 		}
-		if r.URL.Path != "/sites-unregister" {
-			t.Errorf("Expected /sites-unregister, got %s", r.URL.Path)
+		if r.URL.Path != "/ds-sites-unregister" {
+			t.Errorf("Expected /ds-sites-unregister, got %s", r.URL.Path)
 		}
 
 		if err := json.NewDecoder(r.Body).Decode(&receivedPayload); err != nil {

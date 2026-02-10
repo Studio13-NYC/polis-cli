@@ -81,7 +81,7 @@ Currently implemented commands:
 - `polis version` - Show version information
 - `polis help` - Show help message
 
-For the full CLI with all commands, use the bash CLI at `cli-bash/polis`.
+For the full CLI with all commands, use the bash CLI at `cli-bash/bin/polis`.
 
 ## Template System
 

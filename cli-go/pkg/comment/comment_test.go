@@ -90,7 +90,7 @@ func TestMoveComment_AddsToBlessedComments(t *testing.T) {
 title: Re: hello-world
 type: comment
 published: 2026-01-02T10:00:00Z
-generator: polis-webapp/0.1.0
+generator: polis-cli-go/0.1.0
 in-reply-to:
   url: https://alice.polis.pub/posts/20260101/hello-world.md
   root-post: https://alice.polis.pub/posts/20260101/hello-world.md

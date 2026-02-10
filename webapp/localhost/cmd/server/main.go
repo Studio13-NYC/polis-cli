@@ -4,20 +4,29 @@ import (
 	"io/fs"
 	"log"
 	"os"
-	"path/filepath"
 
 	"github.com/vdibart/polis-cli/webapp/localhost/internal/server"
 	"github.com/vdibart/polis-cli/webapp/localhost/internal/webui"
 )
 
+// Version is set at build time with -ldflags
+var Version = "dev"
+
 func main() {
-	// Find data directory relative to executable
-	execPath, err := os.Executable()
-	if err != nil {
-		log.Fatal("Failed to get executable path:", err)
+	// Default to current working directory (matches bundled binary behavior)
+	dataDir := "."
+
+	// Simple flag parsing for --data-dir / -d
+	args := os.Args[1:]
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--data-dir", "-d":
+			if i+1 < len(args) {
+				dataDir = args[i+1]
+				i++
+			}
+		}
 	}
-	execDir := filepath.Dir(execPath)
-	dataDir := filepath.Join(execDir, "data")
 
 	// Get the embedded web UI filesystem
 	webFS, err := fs.Sub(webui.Assets, "www")
@@ -26,5 +35,5 @@ func main() {
 	}
 
 	// Run the server
-	server.Run(webFS, dataDir)
+	server.Run(webFS, dataDir, server.RunOptions{CLIVersion: Version})
 }

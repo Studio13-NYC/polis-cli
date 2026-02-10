@@ -18,6 +18,11 @@ import (
 // Version is set at init time by cmd package.
 var Version = "dev"
 
+// GetGenerator returns the generator identifier for metadata files.
+func GetGenerator() string {
+	return "polis-cli-go/" + Version
+}
+
 // PostEntry represents a post entry in public.jsonl.
 type PostEntry struct {
 	Type      string `json:"type"`
@@ -177,7 +182,7 @@ func rebuildCommentsIndex(dataDir string, opts RebuildOptions) (int, error) {
 		return 0, err
 	}
 
-	// If discovery is configured, fetch blessed comments
+	// If discovery is configured, fetch blessed comments via relationship-query
 	if opts.DiscoveryURL != "" && opts.DiscoveryKey != "" && opts.BaseURL != "" {
 		client := discovery.NewClient(opts.DiscoveryURL, opts.DiscoveryKey)
 
@@ -187,26 +192,28 @@ func rebuildCommentsIndex(dataDir string, opts RebuildOptions) (int, error) {
 		domain = strings.TrimPrefix(domain, "http://")
 		domain = strings.TrimSuffix(domain, "/")
 
-		comments, err := client.GetBlessedComments(domain)
-		if err == nil && len(comments) > 0 {
+		resp, err := client.QueryRelationships("polis.blessing", map[string]string{
+			"actor":  domain,
+			"status": "granted",
+		})
+		if err == nil && len(resp.Records) > 0 {
 			// Build fresh blessed-comments.json
 			bc := &metadata.BlessedComments{
-				Version:  Version,
+				Version:  GetGenerator(),
 				Comments: []metadata.PostComments{},
 			}
 
-			// Group by post
+			// Group by post (target_url)
 			postMap := make(map[string][]metadata.BlessedComment)
-			for _, c := range comments {
-				postPath := c.InReplyTo
+			for _, rel := range resp.Records {
+				postPath := rel.TargetURL
 				// Extract relative path
 				if idx := strings.Index(postPath, "/posts/"); idx >= 0 {
 					postPath = postPath[idx+1:]
 				}
 				postMap[postPath] = append(postMap[postPath], metadata.BlessedComment{
-					URL:       c.CommentURL,
-					Version:   c.CommentVersion,
-					BlessedAt: c.BlessedAt,
+					URL:       rel.SourceURL,
+					BlessedAt: rel.UpdatedAt,
 				})
 			}
 
@@ -221,7 +228,7 @@ func rebuildCommentsIndex(dataDir string, opts RebuildOptions) (int, error) {
 				return 0, err
 			}
 
-			return len(comments), nil
+			return len(resp.Records), nil
 		}
 		// If fetch fails, fall through to empty file
 	}
@@ -230,7 +237,7 @@ func rebuildCommentsIndex(dataDir string, opts RebuildOptions) (int, error) {
 	blessedPath := filepath.Join(metadataDir, "blessed-comments.json")
 	if _, err := os.Stat(blessedPath); os.IsNotExist(err) {
 		bc := &metadata.BlessedComments{
-			Version:  Version,
+			Version:  GetGenerator(),
 			Comments: []metadata.PostComments{},
 		}
 		if err := metadata.SaveBlessedComments(dataDir, bc); err != nil {
@@ -291,7 +298,7 @@ func regenerateManifest(dataDir string) error {
 	})
 
 	manifest := map[string]interface{}{
-		"version":        Version,
+		"version":        GetGenerator(),
 		"last_published": time.Now().UTC().Format("2006-01-02T15:04:05Z"),
 		"post_count":     postCount,
 		"comment_count":  commentCount,

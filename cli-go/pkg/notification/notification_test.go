@@ -6,46 +6,6 @@ import (
 	"testing"
 )
 
-func TestManager(t *testing.T) {
-	tmpDir := t.TempDir()
-	mgr := NewManager(tmpDir)
-
-	// Test InitManifest
-	if err := mgr.InitManifest(); err != nil {
-		t.Fatalf("InitManifest failed: %v", err)
-	}
-
-	// Test GetPreferences
-	prefs, err := mgr.GetPreferences()
-	if err != nil {
-		t.Fatalf("GetPreferences failed: %v", err)
-	}
-
-	if prefs.PollIntervalMinutes != 60 {
-		t.Errorf("Expected default poll interval 60, got %d", prefs.PollIntervalMinutes)
-	}
-
-	// Test SetPollInterval
-	if err := mgr.SetPollInterval(30); err != nil {
-		t.Fatalf("SetPollInterval failed: %v", err)
-	}
-
-	prefs, _ = mgr.GetPreferences()
-	if prefs.PollIntervalMinutes != 30 {
-		t.Errorf("Expected poll interval 30, got %d", prefs.PollIntervalMinutes)
-	}
-
-	// Test minimum poll interval
-	if err := mgr.SetPollInterval(5); err != nil {
-		t.Fatalf("SetPollInterval failed: %v", err)
-	}
-
-	prefs, _ = mgr.GetPreferences()
-	if prefs.PollIntervalMinutes != 15 {
-		t.Errorf("Expected minimum poll interval 15, got %d", prefs.PollIntervalMinutes)
-	}
-}
-
 func TestNotifications(t *testing.T) {
 	tmpDir := t.TempDir()
 	mgr := NewManager(tmpDir)
@@ -83,16 +43,6 @@ func TestNotifications(t *testing.T) {
 	if count != 1 {
 		t.Errorf("Expected count 1, got %d", count)
 	}
-
-	// Test Remove
-	if err := mgr.Remove(id); err != nil {
-		t.Fatalf("Remove failed: %v", err)
-	}
-
-	count, _ = mgr.Count()
-	if count != 0 {
-		t.Errorf("Expected count 0 after remove, got %d", count)
-	}
 }
 
 func TestDeduplication(t *testing.T) {
@@ -122,43 +72,7 @@ func TestDeduplication(t *testing.T) {
 	}
 }
 
-func TestMuteDomain(t *testing.T) {
-	tmpDir := t.TempDir()
-	mgr := NewManager(tmpDir)
-	mgr.InitManifest()
-
-	// Mute a domain
-	if err := mgr.MuteDomain("example.com"); err != nil {
-		t.Fatalf("MuteDomain failed: %v", err)
-	}
-
-	prefs, _ := mgr.GetPreferences()
-	found := false
-	for _, d := range prefs.MutedDomains {
-		if d == "example.com" {
-			found = true
-			break
-		}
-	}
-
-	if !found {
-		t.Error("Expected domain to be muted")
-	}
-
-	// Unmute the domain
-	if err := mgr.UnmuteDomain("example.com"); err != nil {
-		t.Fatalf("UnmuteDomain failed: %v", err)
-	}
-
-	prefs, _ = mgr.GetPreferences()
-	for _, d := range prefs.MutedDomains {
-		if d == "example.com" {
-			t.Error("Expected domain to be unmuted")
-		}
-	}
-}
-
-func TestInitManifest_UsesPackageVersion(t *testing.T) {
+func TestInitManifest_UsesGeneratorVersion(t *testing.T) {
 	tmpDir := t.TempDir()
 	mgr := NewManager(tmpDir)
 
@@ -171,23 +85,145 @@ func TestInitManifest_UsesPackageVersion(t *testing.T) {
 		t.Fatalf("LoadManifest failed: %v", err)
 	}
 
-	if manifest.Version != Version {
-		t.Errorf("InitManifest version = %q, want %q", manifest.Version, Version)
+	expected := GetGenerator()
+	if manifest.Version != expected {
+		t.Errorf("InitManifest version = %q, want %q", manifest.Version, expected)
 	}
 }
 
-func TestLoadManifest_DefaultUsesPackageVersion(t *testing.T) {
+func TestLoadManifest_DefaultUsesGeneratorVersion(t *testing.T) {
 	tmpDir := t.TempDir()
 	mgr := NewManager(tmpDir)
 
-	// Load without init — should return defaults with package version
+	// Load without init — should return defaults with generator version
 	manifest, err := mgr.LoadManifest()
 	if err != nil {
 		t.Fatalf("LoadManifest failed: %v", err)
 	}
 
-	if manifest.Version != Version {
-		t.Errorf("default manifest version = %q, want %q", manifest.Version, Version)
+	expected := GetGenerator()
+	if manifest.Version != expected {
+		t.Errorf("default manifest version = %q, want %q", manifest.Version, expected)
+	}
+}
+
+func TestMarkRead(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr := NewManager(tmpDir)
+	mgr.InitManifest()
+
+	payload, _ := json.Marshal(map[string]string{"message": "test"})
+	id1, _ := mgr.Add("test_type", "source1", payload, "notif1")
+	id2, _ := mgr.Add("test_type", "source2", payload, "notif2")
+	mgr.Add("test_type", "source3", payload, "notif3")
+
+	// Mark specific IDs
+	marked, err := mgr.MarkRead([]string{id1, id2}, false)
+	if err != nil {
+		t.Fatalf("MarkRead failed: %v", err)
+	}
+	if marked != 2 {
+		t.Errorf("Expected 2 marked, got %d", marked)
+	}
+
+	// Verify unread count
+	unread, _ := mgr.CountUnread()
+	if unread != 1 {
+		t.Errorf("Expected 1 unread, got %d", unread)
+	}
+
+	// Mark all
+	marked, err = mgr.MarkRead(nil, true)
+	if err != nil {
+		t.Fatalf("MarkRead all failed: %v", err)
+	}
+	if marked != 1 {
+		t.Errorf("Expected 1 marked, got %d", marked)
+	}
+
+	unread, _ = mgr.CountUnread()
+	if unread != 0 {
+		t.Errorf("Expected 0 unread, got %d", unread)
+	}
+}
+
+func TestCountUnread(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr := NewManager(tmpDir)
+	mgr.InitManifest()
+
+	// Empty = 0 unread
+	count, _ := mgr.CountUnread()
+	if count != 0 {
+		t.Errorf("Expected 0, got %d", count)
+	}
+
+	payload, _ := json.Marshal(map[string]string{"message": "test"})
+	mgr.Add("test_type", "source", payload, "n1")
+	mgr.Add("test_type", "source", payload, "n2")
+
+	count, _ = mgr.CountUnread()
+	if count != 2 {
+		t.Errorf("Expected 2, got %d", count)
+	}
+
+	mgr.MarkRead([]string{"n1"}, false)
+	count, _ = mgr.CountUnread()
+	if count != 1 {
+		t.Errorf("Expected 1, got %d", count)
+	}
+}
+
+func TestListPaginated(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr := NewManager(tmpDir)
+	mgr.InitManifest()
+
+	payload, _ := json.Marshal(map[string]string{"message": "test"})
+	mgr.Add("test_type", "source", payload, "n1")
+	mgr.Add("test_type", "source", payload, "n2")
+	mgr.Add("test_type", "source", payload, "n3")
+	mgr.Add("test_type", "source", payload, "n4")
+	mgr.Add("test_type", "source", payload, "n5")
+
+	// Mark some as read
+	mgr.MarkRead([]string{"n1", "n2"}, false)
+
+	// Unread only, first page
+	items, total, err := mgr.ListPaginated(0, 2, false)
+	if err != nil {
+		t.Fatalf("ListPaginated failed: %v", err)
+	}
+	if total != 3 {
+		t.Errorf("Expected total 3 unread, got %d", total)
+	}
+	if len(items) != 2 {
+		t.Errorf("Expected 2 items, got %d", len(items))
+	}
+	// Newest first — n5 should be first
+	if items[0].ID != "n5" {
+		t.Errorf("Expected n5 first, got %s", items[0].ID)
+	}
+
+	// Second page
+	items, _, _ = mgr.ListPaginated(2, 2, false)
+	if len(items) != 1 {
+		t.Errorf("Expected 1 item on second page, got %d", len(items))
+	}
+
+	// Include read
+	items, total, _ = mgr.ListPaginated(0, 10, true)
+	if total != 5 {
+		t.Errorf("Expected total 5 with read, got %d", total)
+	}
+	if len(items) != 5 {
+		t.Errorf("Expected 5 items, got %d", len(items))
+	}
+
+	// Offset beyond range
+	items, _, _ = mgr.ListPaginated(100, 10, true)
+	if len(items) != 0 {
+		t.Errorf("Expected 0 items for large offset, got %d", len(items))
 	}
 }
 

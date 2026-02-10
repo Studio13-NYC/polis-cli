@@ -20,25 +20,27 @@ type IncomingRequest struct {
 }
 
 // FetchPendingRequests retrieves all pending blessing requests for the given domain.
-// These are comments from other users awaiting our blessing decision.
+// Uses the unified relationship-query endpoint with status=pending.
 func FetchPendingRequests(client *discovery.Client, domain string) ([]IncomingRequest, error) {
-	requests, err := client.GetPendingRequests(domain)
+	resp, err := client.QueryRelationships("polis.blessing", map[string]string{
+		"actor":  domain,
+		"status": "pending",
+	})
 	if err != nil {
 		return nil, err
 	}
 
-	// Convert discovery.BlessingRequest to IncomingRequest
-	result := make([]IncomingRequest, len(requests))
-	for i, r := range requests {
+	// Convert RelationshipRecord to IncomingRequest
+	result := make([]IncomingRequest, len(resp.Records))
+	for i, r := range resp.Records {
+		// Extract author from metadata if available
+		author, _ := r.Metadata["author"].(string)
+
 		result[i] = IncomingRequest{
-			ID:             r.ID,
-			CommentURL:     r.CommentURL,
-			CommentVersion: r.CommentVersion,
-			InReplyTo:      r.InReplyTo,
-			RootPost:       r.RootPost,
-			Author:         r.Author,
-			Timestamp:      r.Timestamp,
-			CreatedAt:      r.CreatedAt,
+			CommentURL: r.SourceURL,
+			InReplyTo:  r.TargetURL,
+			Author:     author,
+			CreatedAt:  r.CreatedAt,
 		}
 	}
 

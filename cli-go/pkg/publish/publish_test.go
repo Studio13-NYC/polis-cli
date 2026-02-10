@@ -18,14 +18,14 @@ func TestGetGenerator_UsesVersion(t *testing.T) {
 	}
 }
 
-func TestDefaultVersion_UsesVersion(t *testing.T) {
+func TestDefaultVersion_UsesGenerator(t *testing.T) {
 	old := Version
 	defer func() { Version = old }()
 
 	Version = "0.47.0"
 	got := DefaultVersion()
-	if got != "0.47.0" {
-		t.Errorf("DefaultVersion() = %q, want %q", got, "0.47.0")
+	if got != "polis-cli-go/0.47.0" {
+		t.Errorf("DefaultVersion() = %q, want %q", got, "polis-cli-go/0.47.0")
 	}
 }
 

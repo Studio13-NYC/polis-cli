@@ -1,0 +1,77 @@
+package publish
+
+import (
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/vdibart/polis-cli/cli-go/pkg/discovery"
+	"github.com/vdibart/polis-cli/cli-go/pkg/signing"
+	"github.com/vdibart/polis-cli/cli-go/pkg/site"
+)
+
+// Discovery service configuration. Set by the calling application
+// (CLI or webapp) during initialization. If any are empty, registration
+// is silently skipped.
+var (
+	DiscoveryURL string
+	DiscoveryKey string
+	BaseURL      string
+)
+
+// RegisterPost registers a published post with the discovery service.
+// Called automatically by PublishPost/RepublishPost when discovery is configured.
+// Returns nil if discovery is not configured (silent skip) or on success.
+func RegisterPost(dataDir string, result *PublishResult, privateKey []byte) error {
+	if DiscoveryURL == "" || DiscoveryKey == "" || BaseURL == "" {
+		return nil
+	}
+
+	// Read author email from .well-known/polis (single source of truth)
+	wk, err := site.LoadWellKnown(dataDir)
+	if err != nil {
+		return fmt.Errorf("load .well-known/polis: %w", err)
+	}
+	if wk.Email == "" {
+		return fmt.Errorf("no email in .well-known/polis")
+	}
+
+	// Build post URL from base URL + path
+	postURL := strings.TrimRight(BaseURL, "/") + "/" + result.Path
+
+	now := time.Now().UTC().Format("2006-01-02T15:04:05Z")
+	metadata := map[string]interface{}{
+		"title":           result.Title,
+		"published_at":    now,
+		"last_updated_at": now,
+	}
+
+	// Build canonical JSON for signing
+	canonical, err := discovery.MakeContentCanonicalJSON(
+		"polis.post", postURL, result.Version, wk.Email, metadata,
+	)
+	if err != nil {
+		return fmt.Errorf("canonical JSON: %w", err)
+	}
+
+	sig, err := signing.SignContent(canonical, privateKey)
+	if err != nil {
+		return fmt.Errorf("sign: %w", err)
+	}
+
+	client := discovery.NewClient(DiscoveryURL, DiscoveryKey)
+	req := &discovery.ContentRegisterRequest{
+		Type:      "polis.post",
+		URL:       postURL,
+		Version:   result.Version,
+		Author:    wk.Email,
+		Metadata:  metadata,
+		Signature: sig,
+	}
+
+	if _, err := client.RegisterContent(req); err != nil {
+		return fmt.Errorf("register: %w", err)
+	}
+
+	return nil
+}

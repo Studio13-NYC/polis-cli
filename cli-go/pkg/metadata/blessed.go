@@ -14,6 +14,11 @@ import (
 // Version is set at startup by the cmd package.
 var Version = "dev"
 
+// GetGenerator returns the generator identifier for metadata files.
+func GetGenerator() string {
+	return "polis-cli-go/" + Version
+}
+
 const (
 	// BlessedCommentsFilename is the name of the blessed comments index file.
 	BlessedCommentsFilename = "blessed-comments.json"
@@ -121,7 +126,7 @@ func AddBlessedComment(siteDir string, postPath string, comment BlessedComment) 
 		// If file doesn't exist, create new structure
 		if errors.Is(err, os.ErrNotExist) {
 			bc = &BlessedComments{
-				Version:  Version,
+				Version:  GetGenerator(),
 				Comments: []PostComments{},
 			}
 		} else {

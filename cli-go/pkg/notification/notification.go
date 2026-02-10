@@ -13,6 +13,11 @@ import (
 // Version is set at init time by cmd package.
 var Version = "dev"
 
+// GetGenerator returns the generator identifier for metadata files.
+func GetGenerator() string {
+	return "polis-cli-go/" + Version
+}
+
 // Notification represents a single notification entry.
 type Notification struct {
 	ID        string          `json:"id"`
@@ -68,7 +73,7 @@ func (m *Manager) InitManifest() error {
 	}
 
 	manifest := Manifest{
-		Version:  Version,
+		Version:  GetGenerator(),
 		LastSync: "1970-01-01T00:00:00Z",
 		Preferences: Preferences{
 			PollIntervalMinutes: 60,
@@ -87,7 +92,7 @@ func (m *Manager) LoadManifest() (*Manifest, error) {
 		if os.IsNotExist(err) {
 			// Return defaults
 			return &Manifest{
-				Version:  Version,
+				Version:  GetGenerator(),
 				LastSync: "1970-01-01T00:00:00Z",
 				Preferences: Preferences{
 					PollIntervalMinutes: 60,
@@ -128,117 +133,6 @@ func (m *Manager) GetPreferences() (*Preferences, error) {
 		return nil, err
 	}
 	return &manifest.Preferences, nil
-}
-
-// SetPollInterval sets the poll interval in minutes.
-func (m *Manager) SetPollInterval(minutes int) error {
-	if minutes < 15 {
-		minutes = 15
-	}
-
-	manifest, err := m.LoadManifest()
-	if err != nil {
-		return err
-	}
-
-	manifest.Preferences.PollIntervalMinutes = minutes
-	return m.saveManifest(manifest)
-}
-
-// EnableType enables a notification type.
-func (m *Manager) EnableType(notifType string) error {
-	manifest, err := m.LoadManifest()
-	if err != nil {
-		return err
-	}
-
-	// Check if already enabled
-	for _, t := range manifest.Preferences.EnabledTypes {
-		if t == notifType {
-			return nil
-		}
-	}
-
-	manifest.Preferences.EnabledTypes = append(manifest.Preferences.EnabledTypes, notifType)
-	return m.saveManifest(manifest)
-}
-
-// DisableType disables a notification type.
-func (m *Manager) DisableType(notifType string) error {
-	manifest, err := m.LoadManifest()
-	if err != nil {
-		return err
-	}
-
-	var newTypes []string
-	for _, t := range manifest.Preferences.EnabledTypes {
-		if t != notifType {
-			newTypes = append(newTypes, t)
-		}
-	}
-
-	manifest.Preferences.EnabledTypes = newTypes
-	return m.saveManifest(manifest)
-}
-
-// IsTypeEnabled checks if a notification type is enabled.
-func (m *Manager) IsTypeEnabled(notifType string) (bool, error) {
-	prefs, err := m.GetPreferences()
-	if err != nil {
-		return false, err
-	}
-
-	for _, t := range prefs.EnabledTypes {
-		if t == notifType {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
-// MuteDomain mutes notifications from a domain.
-func (m *Manager) MuteDomain(domain string) error {
-	manifest, err := m.LoadManifest()
-	if err != nil {
-		return err
-	}
-
-	// Check if already muted
-	for _, d := range manifest.Preferences.MutedDomains {
-		if d == domain {
-			return nil
-		}
-	}
-
-	manifest.Preferences.MutedDomains = append(manifest.Preferences.MutedDomains, domain)
-	return m.saveManifest(manifest)
-}
-
-// UnmuteDomain unmutes a domain.
-func (m *Manager) UnmuteDomain(domain string) error {
-	manifest, err := m.LoadManifest()
-	if err != nil {
-		return err
-	}
-
-	var newDomains []string
-	for _, d := range manifest.Preferences.MutedDomains {
-		if d != domain {
-			newDomains = append(newDomains, d)
-		}
-	}
-
-	manifest.Preferences.MutedDomains = newDomains
-	return m.saveManifest(manifest)
-}
-
-// GetWatermark returns the last sync timestamp.
-func (m *Manager) GetWatermark() (string, error) {
-	manifest, err := m.LoadManifest()
-	if err != nil {
-		return "1970-01-01T00:00:00Z", nil
-	}
-	return manifest.LastSync, nil
 }
 
 // UpdateWatermark updates the last sync timestamp.
@@ -365,53 +259,89 @@ func (m *Manager) Add(notifType, source string, payload json.RawMessage, dedupeK
 	return id, nil
 }
 
-// Remove removes a notification by ID.
-func (m *Manager) Remove(id string) error {
-	notifications, err := m.List()
-	if err != nil {
-		return err
-	}
-
-	var remaining []Notification
-	for _, n := range notifications {
-		if n.ID != id {
-			remaining = append(remaining, n)
-		}
-	}
-
-	return m.writeAll(remaining)
-}
-
-// RemoveAll removes all notifications.
-func (m *Manager) RemoveAll() error {
-	return m.writeAll([]Notification{})
-}
-
-// RemoveOlderThan removes notifications older than the given number of days.
-func (m *Manager) RemoveOlderThan(days int) (int, error) {
+// MarkRead sets the ReadAt timestamp on matching notification IDs.
+// If markAll is true, all notifications are marked as read.
+func (m *Manager) MarkRead(ids []string, markAll bool) (int, error) {
 	notifications, err := m.List()
 	if err != nil {
 		return 0, err
 	}
 
-	cutoff := time.Now().AddDate(0, 0, -days)
-	var remaining []Notification
-	removed := 0
+	idSet := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		idSet[id] = true
+	}
 
-	for _, n := range notifications {
-		t, err := time.Parse("2006-01-02T15:04:05Z", n.CreatedAt)
-		if err != nil || t.After(cutoff) {
-			remaining = append(remaining, n)
-		} else {
-			removed++
+	now := time.Now().UTC().Format("2006-01-02T15:04:05Z")
+	marked := 0
+	for i := range notifications {
+		if notifications[i].ReadAt != "" {
+			continue // already read
+		}
+		if markAll || idSet[notifications[i].ID] {
+			notifications[i].ReadAt = now
+			marked++
 		}
 	}
 
-	if err := m.writeAll(remaining); err != nil {
+	if marked > 0 {
+		if err := m.writeAll(notifications); err != nil {
+			return 0, err
+		}
+	}
+	return marked, nil
+}
+
+// CountUnread returns the number of unread notifications.
+func (m *Manager) CountUnread() (int, error) {
+	notifications, err := m.List()
+	if err != nil {
 		return 0, err
 	}
 
-	return removed, nil
+	count := 0
+	for _, n := range notifications {
+		if n.ReadAt == "" {
+			count++
+		}
+	}
+	return count, nil
+}
+
+// ListPaginated returns a page of notifications sorted newest-first.
+// If includeRead is false, only unread notifications are returned.
+// Returns the page of notifications and the total count matching the filter.
+func (m *Manager) ListPaginated(offset, limit int, includeRead bool) ([]Notification, int, error) {
+	all, err := m.List()
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// Filter
+	var filtered []Notification
+	for _, n := range all {
+		if includeRead || n.ReadAt == "" {
+			filtered = append(filtered, n)
+		}
+	}
+
+	// Sort newest-first (reverse order since JSONL appends newest last)
+	for i, j := 0, len(filtered)-1; i < j; i, j = i+1, j-1 {
+		filtered[i], filtered[j] = filtered[j], filtered[i]
+	}
+
+	total := len(filtered)
+
+	// Paginate
+	if offset >= len(filtered) {
+		return []Notification{}, total, nil
+	}
+	filtered = filtered[offset:]
+	if limit > 0 && limit < len(filtered) {
+		filtered = filtered[:limit]
+	}
+
+	return filtered, total, nil
 }
 
 // writeAll rewrites all notifications to the file.

@@ -449,8 +449,8 @@ func TestCacheManager_VersionPropagation(t *testing.T) {
 
 	var manifest CacheManifest
 	json.Unmarshal(data, &manifest)
-	if manifest.Version != "0.49.0" {
-		t.Errorf("expected version 0.49.0, got %s", manifest.Version)
+	if manifest.Version != "polis-cli-go/0.49.0" {
+		t.Errorf("expected version polis-cli-go/0.49.0, got %s", manifest.Version)
 	}
 }
 

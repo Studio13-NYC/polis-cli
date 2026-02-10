@@ -528,8 +528,8 @@ func TestLoadLegacyWebappWellKnown(t *testing.T) {
 	if wk.PublicKeyPath != ".polis/keys/id_ed25519.pub" {
 		t.Errorf("PublicKeyPath = %q, want %q", wk.PublicKeyPath, ".polis/keys/id_ed25519.pub")
 	}
-	if wk.Generator != "polis-webapp/0.1.0" {
-		t.Errorf("Generator = %q, want %q", wk.Generator, "polis-webapp/0.1.0")
+	if wk.Generator != "polis-cli-go/0.1.0" {
+		t.Errorf("Generator = %q, want %q", wk.Generator, "polis-cli-go/0.1.0")
 	}
 	if wk.CreatedAt != "2026-01-01T00:00:00Z" {
 		t.Errorf("CreatedAt = %q, want %q", wk.CreatedAt, "2026-01-01T00:00:00Z")
@@ -975,7 +975,7 @@ func TestUpgradeWellKnown_ClearsDeprecatedFields(t *testing.T) {
 		PublicKey:     "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKeyXXXXXXXXXXXXXXXXXXXXXXXX polis-local",
 		Created:       "2026-01-01T00:00:00Z",
 		PublicKeyPath: ".polis/keys/id_ed25519.pub",
-		Generator:     "polis-webapp/0.1.0",
+		Generator:     "polis-cli-go/0.1.0",
 	}
 	writeTestWellKnown(t, dir, wk)
 

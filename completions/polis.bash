@@ -19,14 +19,10 @@ _polis_completion() {
     # Subcommands for specific commands
     local blessing_subcommands="beseech deny grant requests sync"
     local migrations_subcommands="apply"
-    local notifications_subcommands="list read dismiss sync config"
+    local notifications_subcommands="list"
 
     # Options for specific commands
-    local notifications_list_opts="--type --all --json"
-    local notifications_read_opts="--all --json"
-    local notifications_dismiss_opts="--older-than --json"
-    local notifications_sync_opts="--reset --json"
-    local notifications_config_opts="--poll-interval --enable --disable --mute --unmute --json"
+    local notifications_list_opts="--type --json"
     local follow_opts="--announce --json"
     local unfollow_opts="--announce --json"
     local render_opts="--force --init-templates --json"
@@ -89,18 +85,6 @@ _polis_completion() {
                         case $subcmd in
                             list)
                                 [[ "$cur" == -* ]] && COMPREPLY=($(compgen -W "$notifications_list_opts" -- "$cur"))
-                                ;;
-                            read)
-                                [[ "$cur" == -* ]] && COMPREPLY=($(compgen -W "$notifications_read_opts" -- "$cur"))
-                                ;;
-                            dismiss)
-                                [[ "$cur" == -* ]] && COMPREPLY=($(compgen -W "$notifications_dismiss_opts" -- "$cur"))
-                                ;;
-                            sync)
-                                [[ "$cur" == -* ]] && COMPREPLY=($(compgen -W "$notifications_sync_opts" -- "$cur"))
-                                ;;
-                            config)
-                                [[ "$cur" == -* ]] && COMPREPLY=($(compgen -W "$notifications_config_opts" -- "$cur"))
                                 ;;
                         esac
                     fi

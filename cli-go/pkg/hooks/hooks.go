@@ -18,7 +18,9 @@ const (
 	EventPostPublish HookEvent = "post-publish"
 	// EventPostRepublish is triggered when an existing post is updated.
 	EventPostRepublish HookEvent = "post-republish"
-	// EventPostComment is triggered when a comment is blessed.
+	// EventPostComment is triggered when a comment becomes blessed.
+	// This includes explicit grant, blessing sync, and auto-bless on beseech.
+	// The hook typically re-renders the post page to include the new comment.
 	EventPostComment HookEvent = "post-comment"
 )
 

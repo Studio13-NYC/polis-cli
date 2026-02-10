@@ -14,6 +14,11 @@ import (
 // Version is set at init time by cmd package.
 var Version = "dev"
 
+// GetGenerator returns the generator identifier for metadata files.
+func GetGenerator() string {
+	return "polis-cli-go/" + Version
+}
+
 // CachedFeedItem represents a single item in the feed cache.
 type CachedFeedItem struct {
 	ID           string `json:"id"`
@@ -385,7 +390,7 @@ func (cm *CacheManager) saveManifest(manifest *CacheManifest) error {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
 
-	manifest.Version = Version
+	manifest.Version = GetGenerator()
 
 	data, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {

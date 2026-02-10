@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,12 +19,14 @@ import (
 	"github.com/vdibart/polis-cli/cli-go/pkg/following"
 	"github.com/vdibart/polis-cli/cli-go/pkg/hooks"
 	"github.com/vdibart/polis-cli/cli-go/pkg/metadata"
+	"github.com/vdibart/polis-cli/cli-go/pkg/notification"
 	"github.com/vdibart/polis-cli/cli-go/pkg/publish"
 	"github.com/vdibart/polis-cli/cli-go/pkg/remote"
 	"github.com/vdibart/polis-cli/cli-go/pkg/render"
 	"github.com/vdibart/polis-cli/cli-go/pkg/signing"
 	"github.com/vdibart/polis-cli/cli-go/pkg/site"
 	"github.com/vdibart/polis-cli/cli-go/pkg/snippet"
+	"github.com/vdibart/polis-cli/cli-go/pkg/stream"
 	polisurl "github.com/vdibart/polis-cli/cli-go/pkg/url"
 )
 
@@ -91,6 +94,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	response := map[string]interface{}{
 		"configured": configured,
 		"site_title": s.GetSiteTitle(),
+		"base_url":   s.GetBaseURL(),
 		"validation": map[string]interface{}{
 			"status": validation.Status,
 			"errors": validation.Errors,
@@ -101,6 +105,13 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if validation.SiteInfo != nil {
 		response["site_info"] = validation.SiteInfo
 	}
+
+	// Include view mode settings
+	showFrontmatter := true
+	if s.Config != nil && s.Config.ShowFrontmatter != nil {
+		showFrontmatter = *s.Config.ShowFrontmatter
+	}
+	response["show_frontmatter"] = showFrontmatter
 
 	json.NewEncoder(w).Encode(response)
 }
@@ -830,19 +841,10 @@ func (s *Server) handleCommentSign(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Get author email from config or .well-known/polis
-	authorEmail := ""
-	if s.Config != nil {
-		authorEmail = s.Config.AuthorEmail
-	}
+	// Get author email from .well-known/polis (single source of truth)
+	authorEmail := s.GetAuthorEmail()
 	if authorEmail == "" {
-		// Fall back to email from .well-known/polis (matches bash CLI behavior)
-		if wk, err := site.LoadWellKnown(s.DataDir); err == nil && wk.Email != "" {
-			authorEmail = wk.Email
-		}
-	}
-	if authorEmail == "" {
-		http.Error(w, "Author email not configured - set email in .well-known/polis or .env file", http.StatusBadRequest)
+		http.Error(w, "Author email not configured - set email in .well-known/polis", http.StatusBadRequest)
 		return
 	}
 
@@ -874,11 +876,6 @@ func (s *Server) handleCommentBeseech(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if s.Config == nil || s.Config.DiscoveryURL == "" {
-		http.Error(w, "Discovery service not configured", http.StatusBadRequest)
-		return
-	}
-
 	var req struct {
 		CommentID string `json:"comment_id"`
 	}
@@ -892,109 +889,46 @@ func (s *Server) handleCommentBeseech(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get the pending comment
-	signed, err := comment.GetComment(s.DataDir, req.CommentID, comment.StatusPending)
+	// Business logic is in the comment package
+	result, err := comment.BeseechComment(s.DataDir, req.CommentID, s.PrivateKey)
 	if err != nil {
-		http.Error(w, "Comment not found in pending", http.StatusNotFound)
-		return
-	}
-
-	// Compute comment_url dynamically (like bash CLI does)
-	// Get base_url from POLIS_BASE_URL env var (matches bash CLI behavior)
-	baseURL := s.GetBaseURL()
-	if baseURL == "" {
-		http.Error(w, "POLIS_BASE_URL not configured - set it in .env file", http.StatusBadRequest)
-		return
-	}
-
-	// Parse timestamp to get date directory (YYYYMMDD format)
-	ts, err := time.Parse("2006-01-02T15:04:05Z", signed.Meta.Timestamp)
-	if err != nil {
-		s.LogError("invalid timestamp in comment: %v", err)
-		http.Error(w, "Invalid timestamp in comment", http.StatusInternalServerError)
-		return
-	}
-	dateDir := ts.Format("20060102")
-
-	// Construct comment URL: base_url/comments/YYYYMMDD/comment_id.md
-	commentURL := fmt.Sprintf("%s/comments/%s/%s.md", baseURL, dateDir, req.CommentID)
-
-	// Build canonical JSON payload for signing (must match bash CLI field order exactly)
-	// Order: comment_url, comment_version, in_reply_to, [in_reply_to_version], root_post, author, timestamp
-	var canonicalPayload string
-	if signed.Meta.InReplyToVersion != "" {
-		canonicalPayload = fmt.Sprintf(`{"comment_url":"%s","comment_version":"%s","in_reply_to":"%s","in_reply_to_version":"%s","root_post":"%s","author":"%s","timestamp":"%s"}`,
-			commentURL, signed.Meta.CommentVersion, signed.Meta.InReplyTo,
-			signed.Meta.InReplyToVersion, signed.Meta.RootPost, signed.Meta.Author, signed.Meta.Timestamp)
-	} else {
-		canonicalPayload = fmt.Sprintf(`{"comment_url":"%s","comment_version":"%s","in_reply_to":"%s","root_post":"%s","author":"%s","timestamp":"%s"}`,
-			commentURL, signed.Meta.CommentVersion, signed.Meta.InReplyTo,
-			signed.Meta.RootPost, signed.Meta.Author, signed.Meta.Timestamp)
-	}
-
-	// Sign the canonical payload (NOT the file signature)
-	beseechSig, err := signing.SignContent([]byte(canonicalPayload), s.PrivateKey)
-	if err != nil {
-		s.LogError("failed to sign beseech payload: %v", err)
-		http.Error(w, "Failed to sign beseech payload", http.StatusInternalServerError)
-		return
-	}
-
-	// Create discovery client
-	client := discovery.NewClient(s.Config.DiscoveryURL, s.Config.DiscoveryKey)
-
-	// Send blessing request with the beseech payload signature
-	beseechReq := &discovery.BeseechRequest{
-		CommentURL:     commentURL,
-		CommentVersion: signed.Meta.CommentVersion,
-		InReplyTo:      signed.Meta.InReplyTo,
-		RootPost:       signed.Meta.RootPost,
-		Author:         signed.Meta.Author,
-		Timestamp:      signed.Meta.Timestamp,
-		Signature:      beseechSig,
-	}
-
-	resp, err := client.BeseechBlessing(beseechReq)
-	if err != nil {
-		s.LogError("failed to send blessing request: %v", err)
-		http.Error(w, "Failed to send blessing request", http.StatusInternalServerError)
-		return
-	}
-
-	// If auto-blessed, move to blessed directory and re-render
-	if resp.Status == "blessed" {
-		if err := comment.MoveComment(s.DataDir, req.CommentID, comment.StatusPending, comment.StatusBlessed); err != nil {
-			log.Printf("[warning] Failed to move auto-blessed comment: %v", err)
+		s.LogError("beseech failed: %v", err)
+		// Config issues → 400, runtime errors → 500
+		status := http.StatusInternalServerError
+		errMsg := err.Error()
+		if strings.Contains(errMsg, "not configured") || strings.Contains(errMsg, "not found in pending") {
+			status = http.StatusBadRequest
 		}
+		http.Error(w, errMsg, status)
+		return
+	}
 
-		// Re-render site so HTML includes the new blessed comment
+	// Webapp-specific: re-render and run hooks if auto-blessed
+	if result.AutoBlessed {
 		if err := s.RenderSite(); err != nil {
 			log.Printf("[warning] post-beseech render failed: %v", err)
 		}
 
-		// Run post-comment hook (checks explicit config, then auto-discovers .polis/hooks/)
-		{
-			var hc *hooks.HookConfig
-			if s.Config != nil {
-				hc = s.Config.Hooks
-			}
-			payload := &hooks.HookPayload{
-				Event:         hooks.EventPostComment,
-				Path:          fmt.Sprintf("comments/blessed/%s.md", req.CommentID),
-				Title:         signed.Meta.InReplyTo,
-				Version:       signed.Meta.CommentVersion,
-				Timestamp:     time.Now().UTC().Format("2006-01-02T15:04:05Z"),
-				CommitMessage: hooks.GenerateCommitMessage(hooks.EventPostComment, signed.Meta.InReplyTo),
-			}
-			hooks.RunHook(s.DataDir, hc, payload)
+		var hc *hooks.HookConfig
+		if s.Config != nil {
+			hc = s.Config.Hooks
 		}
+		payload := &hooks.HookPayload{
+			Event:         hooks.EventPostComment,
+			Path:          fmt.Sprintf("comments/blessed/%s.md", req.CommentID),
+			Title:         result.Comment.InReplyTo,
+			Version:       result.Comment.CommentVersion,
+			Timestamp:     time.Now().UTC().Format("2006-01-02T15:04:05Z"),
+			CommitMessage: hooks.GenerateCommitMessage(hooks.EventPostComment, result.Comment.InReplyTo),
+		}
+		hooks.RunHook(s.DataDir, hc, payload)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success": resp.Success,
-		"status":  resp.Status,
-		"message": resp.Message,
+		"success": result.Success,
+		"status":  result.Status,
+		"message": result.Message,
 	})
 }
 
@@ -1106,13 +1040,13 @@ func (s *Server) handleCommentsSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if s.Config == nil || s.Config.DiscoveryURL == "" {
+	if s.DiscoveryURL == "" {
 		http.Error(w, "Discovery service not configured", http.StatusBadRequest)
 		return
 	}
 
 	// Create discovery client
-	client := discovery.NewClient(s.Config.DiscoveryURL, s.Config.DiscoveryKey)
+	client := discovery.NewClient(s.DiscoveryURL, s.DiscoveryKey)
 
 	// Sync pending comments
 	result, err := comment.SyncPendingComments(s.DataDir, client, s.Config.Hooks)
@@ -1134,13 +1068,13 @@ func (s *Server) handleBlessingRequests(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if s.Config == nil || s.Config.DiscoveryURL == "" {
+	if s.DiscoveryURL == "" {
 		http.Error(w, "Discovery service not configured", http.StatusBadRequest)
 		return
 	}
 
 	// Create discovery client
-	client := discovery.NewClient(s.Config.DiscoveryURL, s.Config.DiscoveryKey)
+	client := discovery.NewClient(s.DiscoveryURL, s.DiscoveryKey)
 
 	// Get domain from base URL
 	domain := s.GetSubdomain()
@@ -1165,7 +1099,7 @@ func (s *Server) handleBlessingGrant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if s.Config == nil || s.Config.DiscoveryURL == "" {
+	if s.DiscoveryURL == "" {
 		http.Error(w, "Discovery service not configured", http.StatusBadRequest)
 		return
 	}
@@ -1191,7 +1125,7 @@ func (s *Server) handleBlessingGrant(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create discovery client
-	client := discovery.NewClient(s.Config.DiscoveryURL, s.Config.DiscoveryKey)
+	client := discovery.NewClient(s.DiscoveryURL, s.DiscoveryKey)
 
 	// Grant the blessing (with signed request)
 	// Normalize URLs to .md format for consistent storage
@@ -1228,7 +1162,7 @@ func (s *Server) handleBlessingDeny(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if s.Config == nil || s.Config.DiscoveryURL == "" {
+	if s.DiscoveryURL == "" {
 		http.Error(w, "Discovery service not configured", http.StatusBadRequest)
 		return
 	}
@@ -1239,30 +1173,31 @@ func (s *Server) handleBlessingDeny(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		CommentVersion string `json:"comment_version"`
+		CommentURL string `json:"comment_url"`
+		InReplyTo  string `json:"in_reply_to"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid request", http.StatusBadRequest)
 		return
 	}
 
-	if req.CommentVersion == "" {
-		http.Error(w, "comment_version is required", http.StatusBadRequest)
+	if req.CommentURL == "" || req.InReplyTo == "" {
+		http.Error(w, "comment_url and in_reply_to are required", http.StatusBadRequest)
 		return
 	}
 
 	// Create discovery client
-	client := discovery.NewClient(s.Config.DiscoveryURL, s.Config.DiscoveryKey)
+	client := discovery.NewClient(s.DiscoveryURL, s.DiscoveryKey)
 
 	// Deny the blessing (with signed request)
-	s.LogDebug("Denying blessing for comment version: %s", req.CommentVersion)
-	result, err := blessing.Deny(req.CommentVersion, client, s.PrivateKey)
+	s.LogDebug("Denying blessing for comment: %s", req.CommentURL)
+	result, err := blessing.Deny(req.CommentURL, req.InReplyTo, client, s.PrivateKey)
 	if err != nil {
 		s.LogError("Failed to deny blessing: %v", err)
 		http.Error(w, "Failed to deny blessing", http.StatusInternalServerError)
 		return
 	}
-	s.LogInfo("Denied blessing for comment version: %s", req.CommentVersion)
+	s.LogInfo("Denied blessing for comment: %s", req.CommentURL)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(result)
@@ -1354,8 +1289,8 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	// Build site info from .well-known/polis and config
 	subdomain := ""
 	publicKey := ""
-	discoveryURL := ""
-	discoveryConfigured := false
+	discoveryURL := s.DiscoveryURL
+	discoveryConfigured := s.DiscoveryURL != "" && s.DiscoveryKey != ""
 	siteTitle := s.GetSiteTitle() // From .well-known/polis with fallback to base_url
 	viewMode := "list"            // Default to list mode
 	showFrontmatter := true       // Default to showing frontmatter
@@ -1363,8 +1298,6 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 
 	if s.Config != nil {
 		subdomain = s.GetSubdomain()
-		discoveryURL = s.Config.DiscoveryURL
-		discoveryConfigured = s.Config.DiscoveryURL != "" && s.Config.DiscoveryKey != ""
 		if s.Config.ViewMode != "" {
 			viewMode = s.Config.ViewMode
 		}
@@ -1419,7 +1352,7 @@ func (s *Server) getAutomations() []Automation {
 	allHooks := []hookInfo{
 		{hooks.EventPostPublish, "post-publish", "Post-publish hook", "Runs after each publish"},
 		{hooks.EventPostRepublish, "post-republish", "Post-republish hook", "Runs after each republish"},
-		{hooks.EventPostComment, "post-comment", "Post-comment hook", "Runs after you bless a comment on your site"},
+		{hooks.EventPostComment, "post-comment", "Post-comment hook", "Runs when a comment becomes blessed (grant, sync, or auto-bless)"},
 	}
 
 	for _, h := range allHooks {
@@ -1986,7 +1919,7 @@ func (s *Server) handleSiteRegistrationStatus(w http.ResponseWriter, r *http.Req
 	}
 
 	// Check if discovery service is configured
-	if s.Config == nil || s.Config.DiscoveryURL == "" || s.Config.DiscoveryKey == "" {
+	if s.DiscoveryURL == "" || s.DiscoveryKey == "" {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"configured": false,
@@ -2017,7 +1950,7 @@ func (s *Server) handleSiteRegistrationStatus(w http.ResponseWriter, r *http.Req
 	}
 
 	// Query discovery service for registration status
-	client := discovery.NewClient(s.Config.DiscoveryURL, s.Config.DiscoveryKey)
+	client := discovery.NewClient(s.DiscoveryURL, s.DiscoveryKey)
 	result, err := client.CheckSiteRegistration(domain)
 	if err != nil {
 		s.LogWarn("Failed to check registration status: %v", err)
@@ -2048,7 +1981,7 @@ func (s *Server) handleSiteRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate discovery service is configured
-	if s.Config == nil || s.Config.DiscoveryURL == "" || s.Config.DiscoveryKey == "" {
+	if s.DiscoveryURL == "" || s.DiscoveryKey == "" {
 		http.Error(w, "Discovery service not configured", http.StatusBadRequest)
 		return
 	}
@@ -2072,31 +2005,15 @@ func (s *Server) handleSiteRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get email and author_name from .well-known/polis
+	// Get email and author_name from .well-known/polis (single source of truth)
 	var email, authorName string
-	wkp, err := s.LoadWellKnownPolis()
-	if err == nil {
-		// Try to get email and author from .well-known/polis if available
-		// The WellKnownPolis struct currently doesn't have these fields,
-		// so we'll read the raw JSON
-		wellKnownPath := filepath.Join(s.DataDir, ".well-known", "polis")
-		data, readErr := os.ReadFile(wellKnownPath)
-		if readErr == nil {
-			var rawWKP map[string]interface{}
-			if json.Unmarshal(data, &rawWKP) == nil {
-				if e, ok := rawWKP["email"].(string); ok {
-					email = e
-				}
-				if a, ok := rawWKP["author_name"].(string); ok {
-					authorName = a
-				}
-			}
-		}
-		_ = wkp // silence unused warning
+	if wk, err := site.LoadWellKnown(s.DataDir); err == nil {
+		email = wk.Email
+		authorName = wk.Author
 	}
 
 	// Register with discovery service
-	client := discovery.NewClient(s.Config.DiscoveryURL, s.Config.DiscoveryKey)
+	client := discovery.NewClient(s.DiscoveryURL, s.DiscoveryKey)
 	result, err := client.RegisterSite(domain, s.PrivateKey, email, authorName)
 	if err != nil {
 		s.LogError("Failed to register site: %v", err)
@@ -2123,7 +2040,7 @@ func (s *Server) handleSiteUnregister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate discovery service is configured
-	if s.Config == nil || s.Config.DiscoveryURL == "" || s.Config.DiscoveryKey == "" {
+	if s.DiscoveryURL == "" || s.DiscoveryKey == "" {
 		http.Error(w, "Discovery service not configured", http.StatusBadRequest)
 		return
 	}
@@ -2148,7 +2065,7 @@ func (s *Server) handleSiteUnregister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Unregister from discovery service
-	client := discovery.NewClient(s.Config.DiscoveryURL, s.Config.DiscoveryKey)
+	client := discovery.NewClient(s.DiscoveryURL, s.DiscoveryKey)
 	result, err := client.UnregisterSite(domain, s.PrivateKey)
 	if err != nil {
 		s.LogError("Failed to unregister site: %v", err)
@@ -2399,15 +2316,7 @@ func (s *Server) handleFollowing(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		discoveryURL := DefaultDiscoveryServiceURL
-		apiKey := ""
-		if s.Config != nil {
-			if s.Config.DiscoveryURL != "" {
-				discoveryURL = s.Config.DiscoveryURL
-			}
-			apiKey = s.Config.DiscoveryKey
-		}
-		discoveryClient := discovery.NewClient(discoveryURL, apiKey)
+		discoveryClient := discovery.NewClient(s.DiscoveryURL, s.DiscoveryKey)
 		remoteClient := remote.NewClient()
 
 		result, err := following.FollowWithBlessing(followingPath, req.URL, discoveryClient, remoteClient, s.PrivateKey)
@@ -2444,15 +2353,7 @@ func (s *Server) handleFollowing(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		discoveryURL := DefaultDiscoveryServiceURL
-		apiKey := ""
-		if s.Config != nil {
-			if s.Config.DiscoveryURL != "" {
-				discoveryURL = s.Config.DiscoveryURL
-			}
-			apiKey = s.Config.DiscoveryKey
-		}
-		discoveryClient := discovery.NewClient(discoveryURL, apiKey)
+		discoveryClient := discovery.NewClient(s.DiscoveryURL, s.DiscoveryKey)
 		remoteClient := remote.NewClient()
 
 		result, err := following.UnfollowWithDenial(followingPath, req.URL, discoveryClient, remoteClient, s.PrivateKey)
@@ -2774,4 +2675,290 @@ func extractHTMLBody(content string) string {
 	}
 
 	return content
+}
+
+// handleActivityStream returns stream events from followed authors.
+// GET /api/activity?since=<cursor>&limit=100
+func (s *Server) handleActivityStream(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	discoveryURL := s.DiscoveryURL
+	apiKey := s.DiscoveryKey
+
+	// Load following list to get followed domains
+	followingPath := following.DefaultPath(s.DataDir)
+	f, err := following.Load(followingPath)
+	if err != nil {
+		// No following.json yet — return empty
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"events":   []interface{}{},
+			"cursor":   "0",
+			"has_more": false,
+		})
+		return
+	}
+
+	// Build actor list from followed domains
+	var domains []string
+	for _, entry := range f.All() {
+		d := discovery.ExtractDomainFromURL(entry.URL)
+		if d != "" {
+			domains = append(domains, d)
+		}
+	}
+
+	if len(domains) == 0 {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"events":   []interface{}{},
+			"cursor":   "0",
+			"has_more": false,
+		})
+		return
+	}
+
+	since := r.URL.Query().Get("since")
+	if since == "" {
+		since = "0"
+	}
+	limitStr := r.URL.Query().Get("limit")
+	limit := 100
+	if limitStr != "" {
+		if n, err := fmt.Sscanf(limitStr, "%d", &limit); n == 0 || err != nil {
+			limit = 100
+		}
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+
+	client := discovery.NewClient(discoveryURL, apiKey)
+	actorFilter := discovery.JoinDomains(domains)
+	result, err := client.StreamQuery(since, limit, "", actorFilter)
+	if err != nil {
+		s.LogWarn("activity stream query failed: %v", err)
+		// Return empty on error rather than failing
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"events":   []interface{}{},
+			"cursor":   since,
+			"has_more": false,
+		})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result)
+}
+
+// handleFollowerCount returns the current follower count by projecting follow events.
+// GET /api/followers/count?refresh=false
+func (s *Server) handleFollowerCount(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	discoveryURL := s.DiscoveryURL
+	apiKey := s.DiscoveryKey
+
+	baseURL := s.GetBaseURL()
+	if baseURL == "" {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"count":     0,
+			"followers": []string{},
+		})
+		return
+	}
+
+	myDomain := extractDomainFromURL(baseURL)
+	if myDomain == "" {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"count":     0,
+			"followers": []string{},
+		})
+		return
+	}
+
+	// Get discovery service domain for store namespace
+	discoveryDomain := extractDomainFromURL(discoveryURL)
+	if discoveryDomain == "" {
+		discoveryDomain = "default"
+	}
+
+	store := stream.NewStore(s.DataDir, discoveryDomain)
+
+	// Set up follow handler
+	handler := &stream.FollowHandler{MyDomain: myDomain}
+
+	// Check if full refresh requested
+	if r.URL.Query().Get("refresh") == "true" {
+		_ = store.SetCursor(handler.TypePrefix(), "0")
+	}
+
+	// Run projection loop
+	cursor, _ := store.GetCursor(handler.TypePrefix())
+
+	client := discovery.NewClient(discoveryURL, apiKey)
+	typeFilter := discovery.JoinDomains(handler.EventTypes())
+	result, err := client.StreamQuery(cursor, 1000, typeFilter, "")
+	if err != nil {
+		s.LogWarn("follower count stream query failed: %v", err)
+		// Try to return existing state
+		var state stream.FollowerState
+		if loadErr := store.LoadState(handler.TypePrefix(), &state); loadErr == nil {
+			followers := state.Followers
+			if followers == nil {
+				followers = []string{}
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"count":     state.Count,
+				"followers": followers,
+			})
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"count":     0,
+			"followers": []string{},
+		})
+		return
+	}
+
+	// Load existing state
+	state := handler.NewState()
+	_ = store.LoadState(handler.TypePrefix(), state)
+
+	// Process events
+	newState, err := handler.Process(result.Events, state)
+	if err != nil {
+		s.LogWarn("follower projection failed: %v", err)
+		// Return existing state
+		fs := state.(*stream.FollowerState)
+		followers := fs.Followers
+		if followers == nil {
+			followers = []string{}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"count":     fs.Count,
+			"followers": followers,
+		})
+		return
+	}
+
+	// Save updated state and cursor
+	_ = store.SaveState(handler.TypePrefix(), newState)
+	if result.Cursor != "" {
+		_ = store.SetCursor(handler.TypePrefix(), result.Cursor)
+	}
+
+	fs := newState.(*stream.FollowerState)
+	followers := fs.Followers
+	if followers == nil {
+		followers = []string{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"count":     fs.Count,
+		"followers": followers,
+	})
+}
+
+// handleNotifications returns a paginated list of notifications.
+// GET /api/notifications?offset=0&limit=20&include_read=false
+func (s *Server) handleNotifications(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	mgr := notification.NewManager(s.DataDir)
+
+	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if limit <= 0 {
+		limit = 20
+	}
+	includeRead := r.URL.Query().Get("include_read") == "true"
+
+	items, total, err := mgr.ListPaginated(offset, limit, includeRead)
+	if err != nil {
+		s.LogError("Failed to list notifications: %v", err)
+		http.Error(w, "Failed to list notifications", http.StatusInternalServerError)
+		return
+	}
+
+	if items == nil {
+		items = []notification.Notification{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"notifications": items,
+		"total":         total,
+		"offset":        offset,
+		"limit":         limit,
+	})
+}
+
+// handleNotificationCount returns the unread notification count.
+// GET /api/notifications/count
+func (s *Server) handleNotificationCount(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	mgr := notification.NewManager(s.DataDir)
+	unread, err := mgr.CountUnread()
+	if err != nil {
+		s.LogError("Failed to count notifications: %v", err)
+		http.Error(w, "Failed to count notifications", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"unread": unread,
+	})
+}
+
+// handleNotificationRead marks notifications as read.
+// POST /api/notifications/read  body: {"ids": [...]} or {"all": true}
+func (s *Server) handleNotificationRead(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		IDs []string `json:"ids"`
+		All bool     `json:"all"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	mgr := notification.NewManager(s.DataDir)
+	marked, err := mgr.MarkRead(req.IDs, req.All)
+	if err != nil {
+		s.LogError("Failed to mark notifications as read: %v", err)
+		http.Error(w, "Failed to mark as read", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"marked":  marked,
+	})
 }

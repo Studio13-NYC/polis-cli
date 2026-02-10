@@ -396,6 +396,47 @@ button.success:hover {
     font-size: 0.85rem;
 }
 
+.header-right {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.domain-display {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+}
+
+.notification-bell {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 4px;
+    position: relative;
+    display: flex;
+    align-items: center;
+    transition: color 0.2s;
+}
+
+.notification-bell:hover {
+    color: var(--accent-color);
+}
+
+.notification-dot {
+    position: absolute;
+    top: 2px;
+    right: 0;
+    width: 8px;
+    height: 8px;
+    background: #e74c3c;
+    border-radius: 50%;
+}
+
+.notification-dot.hidden {
+    display: none;
+}
+
 /* Main Container */
 .main-container {
     display: flex;
@@ -4017,4 +4058,157 @@ textarea:focus-visible,
 
 .remote-post-body .parchment-preview em {
     color: #c0c0c0;
+}
+
+/* ==================== Activity Stream ==================== */
+
+.activity-event .item-title {
+    font-size: 0.9rem;
+}
+
+.activity-actor {
+    color: var(--accent-color);
+    font-weight: 600;
+}
+
+.activity-type-badge {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    background: rgba(95, 175, 175, 0.15);
+    color: var(--accent-color);
+}
+
+.activity-detail {
+    color: #999;
+    font-size: 0.8rem;
+    margin-left: 6px;
+}
+
+.activity-load-more {
+    text-align: center;
+    padding: 12px;
+}
+
+/* ==================== Followers ==================== */
+
+.followers-summary {
+    padding: 12px 16px;
+    font-size: 0.9rem;
+    color: #999;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.follower-item .item-title {
+    color: var(--accent-color);
+}
+
+/* Notification Panel */
+.notification-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.notification-toggle-btn {
+    background: none;
+    border: 1px solid var(--border-color);
+    color: var(--text-muted);
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.notification-toggle-btn:hover {
+    border-color: var(--accent-color);
+    color: var(--accent-color);
+}
+
+.notification-toggle-btn.active {
+    background: var(--accent-color);
+    color: #fff;
+    border-color: var(--accent-color);
+}
+
+.notification-list {
+    overflow-y: auto;
+}
+
+.notification-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 12px 16px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    cursor: pointer;
+    transition: background 0.15s;
+}
+
+.notification-item:hover {
+    background: rgba(255, 255, 255, 0.04);
+}
+
+.notification-item.unread {
+    border-left: 3px solid var(--accent-color);
+}
+
+.notification-type-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    font-size: 0.85rem;
+}
+
+.notification-type-badge.blessing_request {
+    background: rgba(218, 165, 32, 0.2);
+    color: #daa520;
+}
+
+.notification-type-badge.comment_blessed {
+    background: rgba(46, 204, 113, 0.2);
+    color: #2ecc71;
+}
+
+.notification-type-badge.default {
+    background: rgba(95, 175, 175, 0.2);
+    color: var(--accent-color);
+}
+
+.notification-body {
+    flex: 1;
+    min-width: 0;
+}
+
+.notification-message {
+    font-size: 0.9rem;
+    color: var(--text-color);
+    margin-bottom: 4px;
+}
+
+.notification-meta {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+}
+
+.notification-empty {
+    padding: 2rem;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+.notification-loading {
+    padding: 1rem;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 0.85rem;
 }

@@ -13,6 +13,8 @@ import (
 	"github.com/vdibart/polis-cli/cli-go/pkg/metadata"
 	"github.com/vdibart/polis-cli/cli-go/pkg/notification"
 	"github.com/vdibart/polis-cli/cli-go/pkg/publish"
+	"github.com/vdibart/polis-cli/cli-go/pkg/site"
+	"github.com/vdibart/polis-cli/cli-go/pkg/stream"
 	"github.com/vdibart/polis-cli/cli-go/pkg/theme"
 )
 
@@ -25,6 +27,9 @@ var (
 	jsonOutput bool
 )
 
+// DefaultDiscoveryServiceURL is the default discovery service URL.
+const DefaultDiscoveryServiceURL = "https://ltfpezriiaqvjupxbttw.supabase.co/functions/v1"
+
 // Execute is the main entry point for the CLI.
 func Execute(args []string) {
 	// Propagate CLI version to all packages that embed it in metadata
@@ -36,6 +41,27 @@ func Execute(args []string) {
 	notification.Version = Version
 	theme.Version = Version
 	feed.Version = Version
+	site.Version = Version
+
+	// Propagate discovery config to packages that register with discovery
+	discoveryURL := os.Getenv("DISCOVERY_SERVICE_URL")
+	if discoveryURL == "" {
+		discoveryURL = DefaultDiscoveryServiceURL
+	}
+	discoveryKey := os.Getenv("DISCOVERY_SERVICE_KEY")
+	baseURL := os.Getenv("POLIS_BASE_URL")
+
+	publish.DiscoveryURL = discoveryURL
+	publish.DiscoveryKey = discoveryKey
+	publish.BaseURL = baseURL
+
+	comment.DiscoveryURL = discoveryURL
+	comment.DiscoveryKey = discoveryKey
+	comment.BaseURL = baseURL
+
+	stream.DiscoveryURL = discoveryURL
+	stream.DiscoveryKey = discoveryKey
+	stream.BaseURL = baseURL
 
 	if len(args) < 1 {
 		printUsage()
@@ -174,11 +200,7 @@ Commands related to content discovery:
 
 Commands related to notifications:
   polis notifications             List unread notifications
-  polis notifications list        List notifications (--type <types>, --all)
-  polis notifications read <id>   Mark notification as read (--all for all)
-  polis notifications dismiss <id> Dismiss notification
-  polis notifications sync        Sync notifications from discovery service
-  polis notifications config      Configure preferences
+  polis notifications list        List notifications (--type <types>)
 
 Commands related to site administration:
   polis register                  Register site with discovery service

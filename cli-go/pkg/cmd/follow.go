@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/vdibart/polis-cli/cli-go/pkg/blessing"
 	"github.com/vdibart/polis-cli/cli-go/pkg/discovery"
 	"github.com/vdibart/polis-cli/cli-go/pkg/following"
 	"github.com/vdibart/polis-cli/cli-go/pkg/remote"
@@ -52,13 +51,32 @@ func handleFollow(args []string) {
 	apiKey := os.Getenv("DISCOVERY_SERVICE_KEY")
 	client := discovery.NewClient(discoveryURL, apiKey)
 
-	// Fetch unblessed comments from this author on our posts
-	pendingComments, _ := client.GetCommentsByAuthor(authorEmail, "pending")
-	deniedComments, _ := client.GetCommentsByAuthor(authorEmail, "denied")
+	// Fetch unblessed comments from this author on our posts via relationship-query
+	authorDomain := discovery.ExtractDomainFromURL(authorURL)
 
-	var allUnblessed []discovery.Comment
-	allUnblessed = append(allUnblessed, pendingComments...)
-	allUnblessed = append(allUnblessed, deniedComments...)
+	pendingResp, _ := client.QueryRelationships("polis.blessing", map[string]string{
+		"status": "pending",
+	})
+	deniedResp, _ := client.QueryRelationships("polis.blessing", map[string]string{
+		"status": "denied",
+	})
+
+	// Filter to relationships where source is from the author's domain
+	var allUnblessed []discovery.RelationshipRecord
+	if pendingResp != nil {
+		for _, r := range pendingResp.Records {
+			if discovery.ExtractDomainFromURL(r.SourceURL) == authorDomain {
+				allUnblessed = append(allUnblessed, r)
+			}
+		}
+	}
+	if deniedResp != nil {
+		for _, r := range deniedResp.Records {
+			if discovery.ExtractDomainFromURL(r.SourceURL) == authorDomain {
+				allUnblessed = append(allUnblessed, r)
+			}
+		}
+	}
 
 	// Bless all unblessed comments
 	blessedCount := 0
@@ -69,9 +87,9 @@ func handleFollow(args []string) {
 		exitError("Failed to load private key: %v", err)
 	}
 
-	for _, comment := range allUnblessed {
-		// Grant blessing via discovery service
-		if err := client.GrantBlessing(comment.CommentVersion, privKey); err != nil {
+	for _, rel := range allUnblessed {
+		// Grant blessing via relationship-update
+		if err := client.UpdateRelationship("polis.blessing", rel.SourceURL, rel.TargetURL, "grant", privKey); err != nil {
 			failedCount++
 			continue
 		}
@@ -119,5 +137,4 @@ func handleFollow(args []string) {
 
 	// Suppress unused variable warning
 	_ = blessedBy
-	_ = blessing.SyncBlessedComments
 }

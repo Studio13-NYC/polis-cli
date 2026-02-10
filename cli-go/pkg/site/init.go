@@ -12,6 +12,14 @@ import (
 	"github.com/vdibart/polis-cli/cli-go/pkg/signing"
 )
 
+// Version is set at startup by the cmd package.
+var Version = "dev"
+
+// GetGenerator returns the generator identifier for metadata files.
+func GetGenerator() string {
+	return "polis-cli-go/" + Version
+}
+
 // InitOptions contains options for initializing a new polis site.
 type InitOptions struct {
 	SiteTitle string // Optional site title
@@ -163,7 +171,7 @@ func Init(siteDir string, opts InitOptions) (*InitResult, error) {
 	email := getGitConfig("user.email")
 
 	wk := &WellKnown{
-		Version:   opts.Version,
+		Version:   GetGenerator(),
 		Author:    author,
 		Email:     email,
 		PublicKey: strings.TrimSpace(string(pubKey)),
@@ -239,7 +247,7 @@ func initMetadataFiles(siteDir, version string, opts InitOptions, filesCreated *
 	manifestPath := filepath.Join(metadataDir, "manifest.json")
 	if _, err := os.Stat(manifestPath); os.IsNotExist(err) {
 		manifest := map[string]interface{}{
-			"version":        version,
+			"version":        GetGenerator(),
 			"last_published": "",
 			"post_count":     0,
 			"comment_count":  0,
@@ -259,7 +267,7 @@ func initMetadataFiles(siteDir, version string, opts InitOptions, filesCreated *
 	}
 	if _, err := os.Stat(followingPath); os.IsNotExist(err) {
 		following := map[string]interface{}{
-			"version":   version,
+			"version":   GetGenerator(),
 			"following": []interface{}{},
 		}
 		data, _ := json.MarshalIndent(following, "", "  ")
@@ -276,7 +284,7 @@ func initMetadataFiles(siteDir, version string, opts InitOptions, filesCreated *
 	}
 	if _, err := os.Stat(blessedPath); os.IsNotExist(err) {
 		blessed := map[string]interface{}{
-			"version":  version,
+			"version":  GetGenerator(),
 			"comments": []interface{}{},
 		}
 		data, _ := json.MarshalIndent(blessed, "", "  ")

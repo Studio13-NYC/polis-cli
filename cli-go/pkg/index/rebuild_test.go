@@ -76,8 +76,8 @@ func TestRebuildCommentsIndex_UsesPackageVersion(t *testing.T) {
 		t.Fatalf("failed to read blessed-comments.json: %v", err)
 	}
 
-	if !strings.Contains(string(data), `"version": "`+Version+`"`) {
-		t.Errorf("blessed-comments.json should contain version %q, got: %s", Version, string(data))
+	if !strings.Contains(string(data), `"version": "`+GetGenerator()+`"`) {
+		t.Errorf("blessed-comments.json should contain version %q, got: %s", GetGenerator(), string(data))
 	}
 }
 
@@ -100,7 +100,7 @@ func TestRegenerateManifest_UsesPackageVersion(t *testing.T) {
 		t.Fatalf("failed to parse manifest.json: %v", err)
 	}
 
-	if manifest["version"] != Version {
-		t.Errorf("manifest.json version = %q, want %q", manifest["version"], Version)
+	if manifest["version"] != GetGenerator() {
+		t.Errorf("manifest.json version = %q, want %q", manifest["version"], GetGenerator())
 	}
 }

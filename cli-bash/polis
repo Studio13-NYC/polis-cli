@@ -28,7 +28,7 @@ set -e
 #   4. Hardcoded defaults
 
 # Fixed constants (never configurable - required for discovery)
-VERSION="0.49.0"
+VERSION="0.50.0"
 WELL_KNOWN_DIR=".well-known"
 WELL_KNOWN_FILE="polis"
 
@@ -98,12 +98,13 @@ apply_defaults() {
     : "${DISCOVERY_SERVICE_URL:=https://ltfpezriiaqvjupxbttw.supabase.co/functions/v1}"
     : "${DISCOVERY_SERVICE_KEY:=}"
 
-    # Derived endpoints (always computed from base)
-    POLIS_BESEECH_ENDPOINT="${DISCOVERY_SERVICE_URL}/comments-blessing-beseech"
-    POLIS_BLESSING_REQUESTS_ENDPOINT="${DISCOVERY_SERVICE_URL}/comments-blessing-requests"
-    POLIS_BLESS_ENDPOINT="${DISCOVERY_SERVICE_URL}/comments-blessing-grant"
-    POLIS_DENY_ENDPOINT="${DISCOVERY_SERVICE_URL}/comments-blessing-deny"
-    POLIS_COMMENTS_ENDPOINT="${DISCOVERY_SERVICE_URL}/comments"
+    # Derived endpoints (always computed from base) — unified content/relationship API
+    POLIS_CONTENT_REGISTER_ENDPOINT="${DISCOVERY_SERVICE_URL}/ds-content-register"
+    POLIS_CONTENT_QUERY_ENDPOINT="${DISCOVERY_SERVICE_URL}/ds-content-query"
+    POLIS_CONTENT_CHECK_ENDPOINT="${DISCOVERY_SERVICE_URL}/ds-content-check"
+    POLIS_RELATIONSHIP_UPDATE_ENDPOINT="${DISCOVERY_SERVICE_URL}/ds-relationship-update"
+    POLIS_RELATIONSHIP_QUERY_ENDPOINT="${DISCOVERY_SERVICE_URL}/ds-relationship-query"
+    POLIS_STREAM_PUBLISH_ENDPOINT="${DISCOVERY_SERVICE_URL}/ds-stream-publish"
 
     # User directory defaults
     : "${KEYS_DIR:=.polis/keys}"
@@ -351,7 +352,7 @@ cmd_init() {
     # Create .well-known/polis metadata file with config section
     local wellknown_json
     wellknown_json=$(jq -n \
-        --arg version "$VERSION" \
+        --arg version "polis-cli/$VERSION" \
         --arg author "$(git config user.name || echo 'Unknown')" \
         --arg email "$(git config user.email || echo 'unknown@example.com')" \
         --arg public_key "$PUBKEY" \
@@ -405,7 +406,7 @@ cmd_init() {
     # Create empty blessed-comments.json
     cat > "$blessed_comments" << EOF
 {
-  "version": "$VERSION",
+  "version": "polis-cli/$VERSION",
   "comments": []
 }
 EOF
@@ -415,7 +416,7 @@ EOF
     # Create empty following.json
     cat > "$following_index" << EOF
 {
-  "version": "$VERSION",
+  "version": "polis-cli/$VERSION",
   "following": []
 }
 EOF
@@ -425,7 +426,7 @@ EOF
     # Create initial manifest.json (no site_title - stored in .well-known/polis)
     local manifest_path="$metadata_dir/manifest.json"
     jq -n \
-        --arg version "$VERSION" \
+        --arg version "polis-cli/$VERSION" \
         --arg last_published "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
         '{
             version: $version,
@@ -1158,32 +1159,33 @@ fetch_root_post_for_comment() {
     # URL-encode the comment URL
     local encoded_url=$(jq -rn --arg url "$comment_url" '$url | @uri')
 
+    # Query the blessing relationship for this comment (source_url = comment URL)
     local response=$(curl -s --max-time 10 \
         --header "Authorization: Bearer $DISCOVERY_SERVICE_KEY" \
-        "${POLIS_COMMENTS_ENDPOINT}?url=${encoded_url}" 2>/dev/null)
+        "${POLIS_RELATIONSHIP_QUERY_ENDPOINT}?type=polis.blessing&source_url=${encoded_url}" 2>/dev/null)
 
     if [ -z "$response" ]; then
         return 1
     fi
 
-    # Check for error response (comment not found in database)
+    # Check for error response
     local error_msg=$(echo "$response" | jq -r '.error // empty' 2>/dev/null)
     if [ -n "$error_msg" ]; then
         return 1
     fi
 
-    # Try to extract root_post from response
-    local root_post=$(echo "$response" | jq -r '.root_post // empty' 2>/dev/null)
+    # Try to extract root_post from relationship metadata
+    local root_post=$(echo "$response" | jq -r '.records[0].metadata.root_post // empty' 2>/dev/null)
 
     if [ -n "$root_post" ] && [ "$root_post" != "null" ]; then
         echo "$root_post"
         return 0
     fi
 
-    # Fallback: try in_reply_to (for older comments before nested threads)
-    local in_reply_to=$(echo "$response" | jq -r '.in_reply_to // empty' 2>/dev/null)
-    if [ -n "$in_reply_to" ] && [ "$in_reply_to" != "null" ]; then
-        echo "$in_reply_to"
+    # Fallback: use target_url (in_reply_to) from the relationship
+    local target_url=$(echo "$response" | jq -r '.records[0].target_url // empty' 2>/dev/null)
+    if [ -n "$target_url" ] && [ "$target_url" != "null" ]; then
+        echo "$target_url"
         return 0
     fi
 
@@ -1259,7 +1261,7 @@ query_domain_migrations() {
         return 1
     fi
 
-    local endpoint="${DISCOVERY_SERVICE_URL}/migrations"
+    local endpoint="${DISCOVERY_SERVICE_URL}/ds-migrations"
     local response=$(curl -s --max-time 30 \
         --header "Authorization: Bearer $DISCOVERY_SERVICE_KEY" \
         "${endpoint}?domains=${domains}" 2>/dev/null)
@@ -1406,6 +1408,26 @@ format_short_hash() {
     echo "${hash:0:6}-${hash: -6}"
 }
 
+# Fetch pending blessing relationships for a domain
+# Returns: JSON response from relationship-query (with .records[] array)
+_fetch_pending_relationships() {
+    local domain="$1"
+
+    curl -s \
+        --header "Authorization: Bearer $DISCOVERY_SERVICE_KEY" \
+        "${POLIS_RELATIONSHIP_QUERY_ENDPOINT}?type=polis.blessing&actor=${domain}&status=pending"
+}
+
+# Fetch comment content records for a domain (for version lookup)
+# Returns: JSON response from content-query (with .records[] array)
+_fetch_comment_records_for_domain() {
+    local domain="$1"
+
+    curl -s \
+        --header "Authorization: Bearer $DISCOVERY_SERVICE_KEY" \
+        "${POLIS_CONTENT_QUERY_ENDPOINT}?type=polis.comment&actor=${domain}"
+}
+
 # Resolve short hash to full comment_version
 # Searches pending requests for a matching hash prefix/suffix
 resolve_short_hash() {
@@ -1415,52 +1437,100 @@ resolve_short_hash() {
     # Normalize: remove dash if present, lowercase
     local normalized=$(echo "$short_hash" | tr -d '-' | tr '[:upper:]' '[:lower:]')
 
-    # Fetch all pending requests for this domain
-    local response=$(curl -s \
-        --header "Authorization: Bearer $DISCOVERY_SERVICE_KEY" \
-        "${POLIS_BLESSING_REQUESTS_ENDPOINT}?in_reply_to_domain=${domain}&blessing_status=pending")
+    # Fetch pending relationships for this domain
+    local rel_response=$(_fetch_pending_relationships "$domain")
 
-    # Search for matching comment_version
-    # Match if hash starts with first 6 chars or ends with last 6 chars or contains both parts
-    local full_version=$(echo "$response" | jq -r --arg hash "$normalized" '
-        .requests[] |
+    # Get comment URLs from pending relationships
+    local comment_urls=$(echo "$rel_response" | jq -r '.records[].source_url' 2>/dev/null)
+
+    if [ -z "$comment_urls" ]; then
+        echo ""
+        return
+    fi
+
+    # Fetch content records for this domain to get versions
+    local content_response=$(_fetch_comment_records_for_domain "$domain")
+
+    # Build a lookup of url->version from content records, then match against
+    # pending relationship source_urls, filtering by hash
+    local full_version=$(echo "$content_response" | jq -r --arg hash "$normalized" --argjson urls "$(echo "$rel_response" | jq '[.records[].source_url]')" '
+        .records[] |
+        select(.url as $u | $urls | index($u)) |
         select(
-            (.comment_version | gsub("sha256:"; "") | ascii_downcase) |
+            (.version | gsub("sha256:"; "") | ascii_downcase) |
             (startswith($hash[0:6]) and endswith($hash | .[-6:]))
             or startswith($hash)
             or endswith($hash)
         ) |
-        .comment_version
+        .version
     ' 2>/dev/null | head -1)
 
     echo "$full_version"
 }
 
-# Fetch request details from blessing-requests API by comment_version
+# Fetch request details by comment_version
+# Returns: JSON object with comment_url, comment_version, in_reply_to, author, timestamp fields
 fetch_request_details() {
     local comment_version="$1"
 
     # Extract domain from POLIS_BASE_URL to filter requests
     local domain=$(echo "$POLIS_BASE_URL" | sed 's|https\?://||' | sed 's|/.*||')
 
-    # Fetch pending requests for this domain
-    local response=$(curl -s \
-        --header "Authorization: Bearer $DISCOVERY_SERVICE_KEY" \
-        "${POLIS_BLESSING_REQUESTS_ENDPOINT}?in_reply_to_domain=${domain}&blessing_status=pending")
-
-    # Filter by comment_version - encode the version for URL safety
-    local request_data=$(echo "$response" | jq -r --arg ver "$comment_version" '
-        .requests[] | select(.comment_version == $ver)
-    ' 2>/dev/null)
+    # Fetch pending relationships for this domain
+    local rel_response=$(_fetch_pending_relationships "$domain")
 
     # Check for API errors
-    local error_msg=$(echo "$response" | jq -r '.error // empty' 2>/dev/null)
+    local error_msg=$(echo "$rel_response" | jq -r '.error // empty' 2>/dev/null)
     if [ -n "$error_msg" ]; then
         echo "ERROR: API returned error: $error_msg" >&2
         return 1
     fi
 
-    echo "$request_data"
+    # Fetch content records for this domain to find the one with matching version
+    local content_response=$(_fetch_comment_records_for_domain "$domain")
+
+    # Find the content record matching this version
+    local content_record=$(echo "$content_response" | jq -c --arg ver "$comment_version" '
+        .records[] | select(.version == $ver)
+    ' 2>/dev/null)
+
+    if [ -z "$content_record" ] || [ "$content_record" = "null" ]; then
+        return 1
+    fi
+
+    local comment_url=$(echo "$content_record" | jq -r '.url')
+
+    # Find the relationship record for this comment URL
+    local rel_record=$(echo "$rel_response" | jq -c --arg url "$comment_url" '
+        .records[] | select(.source_url == $url)
+    ' 2>/dev/null)
+
+    # Build a response in the format expected by callers
+    # Map unified API fields back to the legacy field names used throughout the CLI
+    local author=$(echo "$content_record" | jq -r '.author // empty')
+    if [ -z "$author" ] || [ "$author" = "null" ]; then
+        author=$(echo "$rel_record" | jq -r '.metadata.comment_author // empty' 2>/dev/null)
+    fi
+
+    local in_reply_to=$(echo "$rel_record" | jq -r '.target_url // empty' 2>/dev/null)
+    local timestamp=$(echo "$content_record" | jq -r '.metadata.timestamp // .created_at // empty' 2>/dev/null)
+    local blessing_status=$(echo "$rel_record" | jq -r '.status // "unknown"' 2>/dev/null)
+
+    jq -n \
+        --arg comment_url "$comment_url" \
+        --arg comment_version "$comment_version" \
+        --arg in_reply_to "$in_reply_to" \
+        --arg author "$author" \
+        --arg timestamp "$timestamp" \
+        --arg blessing_status "$blessing_status" \
+        '{
+            comment_url: $comment_url,
+            comment_version: $comment_version,
+            in_reply_to: $in_reply_to,
+            author: $author,
+            timestamp: $timestamp,
+            blessing_status: $blessing_status
+        }'
 }
 
 # Prompt user for confirmation
@@ -1620,12 +1690,12 @@ Author may not have Polis properly configured."
     echo "$email"
 }
 
-# Fetch all blessing requests for a specific author on current user's posts
-# Args: $1 = author_email, $2 = blessing_status_filter (optional: "pending", "blessed", "denied", or empty for all)
-# Returns: JSON array of request objects (echoed to stdout)
+# Fetch all blessing relationships for a specific author on current user's posts
+# Args: $1 = author_email, $2 = status_filter (optional: "pending", "granted", "denied", or empty for all)
+# Returns: JSON array of relationship records (echoed to stdout)
 fetch_comments_by_author() {
     local author_email="$1"
-    local status_filter="$2"  # optional
+    local status_filter="$2"  # optional: "pending", "granted", "denied"
 
     # Extract current user's domain
     local user_domain=$(extract_domain_from_url "$POLIS_BASE_URL")
@@ -1634,24 +1704,29 @@ fetch_comments_by_author() {
         error "Invalid POLIS_BASE_URL. Cannot extract domain."
     fi
 
-    # Fetch all requests for user's domain
+    # Build query params for relationship-query
+    local query_params="type=polis.blessing&actor=${user_domain}"
+    if [ -n "$status_filter" ]; then
+        # Map legacy status names to unified API
+        case "$status_filter" in
+            blessed) status_filter="granted" ;;
+        esac
+        query_params="${query_params}&status=${status_filter}"
+    fi
+
+    # Fetch blessing relationships for user's domain
     local response=$(curl -s \
         --header "Authorization: Bearer $DISCOVERY_SERVICE_KEY" \
-        "${POLIS_BLESSING_REQUESTS_ENDPOINT}?in_reply_to_domain=${user_domain}")
+        "${POLIS_RELATIONSHIP_QUERY_ENDPOINT}?${query_params}")
 
     if [ $? -ne 0 ]; then
-        error "Failed to connect to blessing requests endpoint"
+        error "Failed to connect to relationship query endpoint"
     fi
 
-    # Filter by author email (and optionally blessing_status)
-    local filtered_result
-    if [ -n "$status_filter" ]; then
-        filtered_result=$(echo "$response" | jq --arg author "$author_email" --arg status "$status_filter" \
-            '.requests | map(select(.author == $author and .blessing_status == $status))')
-    else
-        filtered_result=$(echo "$response" | jq --arg author "$author_email" \
-            '.requests | map(select(.author == $author))')
-    fi
+    # Filter by author email from relationship metadata
+    local filtered_result=$(echo "$response" | jq --arg author "$author_email" '
+        [.records[] | select(.metadata.comment_author == $author)]
+    ' 2>/dev/null)
 
     echo "$filtered_result"
 }
@@ -1879,7 +1954,7 @@ init_notifications_manifest() {
     if [ ! -f "$manifest" ]; then
         local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
         jq -n \
-            --arg version "$VERSION" \
+            --arg version "polis-cli/$VERSION" \
             --arg ts "$timestamp" \
             '{
                 version: $version,
@@ -1894,59 +1969,6 @@ init_notifications_manifest() {
 }
 
 # Get last_requested_ts from notifications manifest
-get_notifications_watermark() {
-    local manifest="$NOTIFICATIONS_MANIFEST"
-
-    if [ ! -f "$manifest" ]; then
-        # Return epoch if no manifest
-        echo "1970-01-01T00:00:00Z"
-        return
-    fi
-
-    jq -r '.last_requested_ts // "1970-01-01T00:00:00Z"' "$manifest"
-}
-
-# Update last_requested_ts in notifications manifest
-update_notifications_watermark() {
-    local new_ts="$1"
-    local manifest="$NOTIFICATIONS_MANIFEST"
-
-    if [ ! -f "$manifest" ]; then
-        init_notifications_manifest
-    fi
-
-    local temp_file="${manifest}.tmp"
-    jq --arg ts "$new_ts" '.last_requested_ts = $ts' "$manifest" > "$temp_file"
-    mv "$temp_file" "$manifest"
-}
-
-# Get notification preferences
-get_notification_preferences() {
-    local manifest="$NOTIFICATIONS_MANIFEST"
-
-    if [ ! -f "$manifest" ]; then
-        echo '{}'
-        return
-    fi
-
-    jq -c '.preferences // {}' "$manifest"
-}
-
-# Update notification preference
-update_notification_preference() {
-    local key="$1"
-    local value="$2"
-    local manifest="$NOTIFICATIONS_MANIFEST"
-
-    if [ ! -f "$manifest" ]; then
-        init_notifications_manifest
-    fi
-
-    local temp_file="${manifest}.tmp"
-    jq --arg key "$key" --argjson value "$value" '.preferences[$key] = $value' "$manifest" > "$temp_file"
-    mv "$temp_file" "$manifest"
-}
-
 # Add a notification to the JSONL file
 add_notification() {
     local type="$1"
@@ -2019,80 +2041,6 @@ get_notification_count() {
     wc -l < "$notif_file" | tr -d ' '
 }
 
-# Remove notification by ID (mark as read/dismissed)
-remove_notification() {
-    local id="$1"
-    local notif_file="$NOTIFICATIONS_FILE"
-
-    if [ ! -f "$notif_file" ]; then
-        return 1
-    fi
-
-    local temp_file="${notif_file}.tmp"
-
-    # Filter out the notification with matching ID
-    grep -v "\"id\":\"$id\"" "$notif_file" > "$temp_file" 2>/dev/null || true
-    mv "$temp_file" "$notif_file"
-}
-
-# Remove notifications older than N days
-remove_old_notifications() {
-    local days="$1"
-    local notif_file="$NOTIFICATIONS_FILE"
-
-    if [ ! -f "$notif_file" ]; then
-        return 0
-    fi
-
-    # Calculate cutoff timestamp
-    local cutoff_epoch
-    if [[ "$OSTYPE" == "darwin"* ]]; then
-        cutoff_epoch=$(date -v-${days}d +%s)
-    else
-        cutoff_epoch=$(date -d "$days days ago" +%s)
-    fi
-
-    local temp_file="${notif_file}.tmp"
-    local removed=0
-
-    # Filter notifications newer than cutoff
-    while IFS= read -r line; do
-        local created_at=$(echo "$line" | jq -r '.created_at // empty')
-        if [ -n "$created_at" ]; then
-            local entry_epoch
-            if [[ "$OSTYPE" == "darwin"* ]]; then
-                entry_epoch=$(date -jf "%Y-%m-%dT%H:%M:%SZ" "$created_at" +%s 2>/dev/null || echo "0")
-            else
-                entry_epoch=$(date -d "$created_at" +%s 2>/dev/null || echo "0")
-            fi
-
-            if [ "$entry_epoch" -ge "$cutoff_epoch" ]; then
-                echo "$line" >> "$temp_file"
-            else
-                removed=$((removed + 1))
-            fi
-        fi
-    done < "$notif_file"
-
-    if [ -f "$temp_file" ]; then
-        mv "$temp_file" "$notif_file"
-    else
-        # All notifications were old, create empty file
-        : > "$notif_file"
-    fi
-
-    echo "$removed"
-}
-
-# Remove all notifications
-remove_all_notifications() {
-    local notif_file="$NOTIFICATIONS_FILE"
-
-    if [ -f "$notif_file" ]; then
-        : > "$notif_file"
-    fi
-}
-
 # Check if notification type is enabled
 is_notification_type_enabled() {
     local type="$1"
@@ -2155,51 +2103,11 @@ compare_versions() {
 # Returns JSON with version info or empty on failure
 # Sets global variables: LATEST_VERSION, UPGRADE_AVAILABLE, LATEST_DOWNLOAD_URL
 check_version_update() {
-    # Skip if discovery service not configured
-    if [ -z "$DISCOVERY_SERVICE_URL" ]; then
-        LATEST_VERSION=""
-        UPGRADE_AVAILABLE=false
-        return 1
-    fi
-
-    local endpoint="${DISCOVERY_SERVICE_URL}/polis-version?current=${VERSION}&component=cli"
-
-    # Make request (no auth required for version check)
-    local response
-    response=$(curl -s --max-time 10 -w "\n%{http_code}" \
-        --location --request GET "$endpoint" \
-        --header 'Content-Type: application/json' 2>/dev/null)
-
-    local http_code=$(echo "$response" | tail -n 1)
-    local body=$(echo "$response" | sed '$d')
-
-    if [ "$http_code" != "200" ]; then
-        LATEST_VERSION=""
-        UPGRADE_AVAILABLE=false
-        return 1
-    fi
-
-    # Parse response
-    LATEST_VERSION=$(echo "$body" | jq -r '.latest // empty' 2>/dev/null)
-    UPGRADE_AVAILABLE=$(echo "$body" | jq -r '.upgrade_available // false' 2>/dev/null)
-    LATEST_DOWNLOAD_URL=$(echo "$body" | jq -r '.download_url // empty' 2>/dev/null)
-    LATEST_RELEASE_NOTES=$(echo "$body" | jq -r '.release_notes // empty' 2>/dev/null)
-
-    # Store notification if upgrade available
-    if [ "$UPGRADE_AVAILABLE" = "true" ] && is_notification_type_enabled "version_available"; then
-        local payload=$(jq -n \
-            --arg current "$VERSION" \
-            --arg latest "$LATEST_VERSION" \
-            --arg url "$LATEST_DOWNLOAD_URL" \
-            '{
-                current_version: $current,
-                latest_version: $latest,
-                download_url: $url
-            }')
-        add_notification "version_available" "discovery" "$payload" "version_available:${LATEST_VERSION}" > /dev/null
-    fi
-
-    return 0
+    # Version check endpoint (polis-version) has been removed.
+    # Version checking will be handled differently in the future.
+    LATEST_VERSION=""
+    UPGRADE_AVAILABLE=false
+    return 1
 }
 
 # Check for version pending apply (CLI newer than metadata files)
@@ -2381,40 +2289,40 @@ rebuild_blessed_comments_full() {
 
     info "Rebuilding blessed-comments.json from discovery service..."
 
-    # Fetch all blessed comments for our posts
+    # Fetch all granted blessing relationships for our domain
     local response=$(curl -s \
         --header "Authorization: Bearer $DISCOVERY_SERVICE_KEY" \
-        "${POLIS_BLESSING_REQUESTS_ENDPOINT}?in_reply_to_domain=${domain}&blessing_status=blessed" 2>/dev/null)
+        "${POLIS_RELATIONSHIP_QUERY_ENDPOINT}?type=polis.blessing&actor=${domain}&status=granted" 2>/dev/null)
 
     # Initialize fresh blessed-comments.json
     jq -n --arg v "$VERSION" '{version: $v, comments: []}' > "$BLESSED_COMMENTS"
 
-    # Check if response is valid JSON with requests
-    local request_count=$(echo "$response" | jq -r '.count // 0' 2>/dev/null)
-    if [ -z "$request_count" ] || [ "$request_count" = "0" ] || [ "$request_count" = "null" ]; then
+    # Check if response is valid JSON with records
+    local record_count=$(echo "$response" | jq -r '.count // 0' 2>/dev/null)
+    if [ -z "$record_count" ] || [ "$record_count" = "0" ] || [ "$record_count" = "null" ]; then
         success "Rebuilt blessed-comments.json (0 blessed comments)"
         return
     fi
 
     local added_count=0
 
-    # Process each blessed comment
-    while IFS= read -r request; do
-        [ -z "$request" ] && continue
+    # Process each granted blessing relationship
+    # source_url = comment URL, target_url = post URL (in_reply_to)
+    while IFS= read -r record; do
+        [ -z "$record" ] && continue
 
-        local comment_url=$(echo "$request" | jq -r '.comment_url')
-        local comment_version=$(echo "$request" | jq -r '.comment_version')
-        local in_reply_to=$(echo "$request" | jq -r '.in_reply_to')
-        local blessed_at=$(echo "$request" | jq -r '.blessed_at // empty')
+        local comment_url=$(echo "$record" | jq -r '.source_url')
+        local in_reply_to=$(echo "$record" | jq -r '.target_url')
+        local blessed_at=$(echo "$record" | jq -r '.updated_at // empty')
 
-        # Use current timestamp if blessed_at is empty
+        # Use current timestamp if updated_at is empty
         if [ -z "$blessed_at" ]; then
             blessed_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
         fi
 
-        update_blessed_comments_json "$comment_url" "$comment_version" "$in_reply_to" "$blessed_at"
+        update_blessed_comments_json "$comment_url" "" "$in_reply_to" "$blessed_at"
         added_count=$((added_count + 1))
-    done < <(echo "$response" | jq -c '.requests[]' 2>/dev/null)
+    done < <(echo "$response" | jq -c '.records[]' 2>/dev/null)
 
     success "Rebuilt blessed-comments.json ($added_count blessed comments)"
 }
@@ -2427,67 +2335,71 @@ sync_blessed_comments() {
         return
     fi
 
-    # Fetch all blessed comments for our posts from discovery service
+    # Fetch all granted blessing relationships for our domain
     local response=$(curl -s \
         --header "Authorization: Bearer $DISCOVERY_SERVICE_KEY" \
-        "${POLIS_BLESSING_REQUESTS_ENDPOINT}?in_reply_to_domain=${domain}&blessing_status=blessed" 2>/dev/null)
+        "${POLIS_RELATIONSHIP_QUERY_ENDPOINT}?type=polis.blessing&actor=${domain}&status=granted" 2>/dev/null)
 
-    # Check if response is valid JSON with requests
-    local request_count=$(echo "$response" | jq -r '.count // 0' 2>/dev/null)
-    if [ -z "$request_count" ] || [ "$request_count" = "0" ] || [ "$request_count" = "null" ]; then
+    # Check if response is valid JSON with records
+    local record_count=$(echo "$response" | jq -r '.count // 0' 2>/dev/null)
+    if [ -z "$record_count" ] || [ "$record_count" = "0" ] || [ "$record_count" = "null" ]; then
         echo "0"
         return
     fi
 
     local synced_count=0
 
-    # Process each blessed comment
-    # Note: Using process substitution to avoid subshell variable scope issues
-    while IFS= read -r request; do
-        [ -z "$request" ] && continue
+    # Process each granted blessing relationship
+    # source_url = comment URL, target_url = post URL (in_reply_to)
+    while IFS= read -r record; do
+        [ -z "$record" ] && continue
 
-        local comment_url=$(echo "$request" | jq -r '.comment_url')
-        local comment_version=$(echo "$request" | jq -r '.comment_version')
-        local in_reply_to=$(echo "$request" | jq -r '.in_reply_to')
-        local blessed_at=$(echo "$request" | jq -r '.blessed_at // empty')
+        local comment_url=$(echo "$record" | jq -r '.source_url')
+        local in_reply_to=$(echo "$record" | jq -r '.target_url')
+        local blessed_at=$(echo "$record" | jq -r '.updated_at // empty')
 
-        # Use current timestamp if blessed_at is empty
+        # Use current timestamp if updated_at is empty
         if [ -z "$blessed_at" ]; then
             blessed_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
         fi
+
+        # We don't have comment_version directly from relationship records
+        # Pass empty string; update_blessed_comments_json handles it
+        local comment_version=""
 
         # Check if already in blessed-comments.json
         if ! is_comment_blessed "$comment_url"; then
             update_blessed_comments_json "$comment_url" "$comment_version" "$in_reply_to" "$blessed_at"
             synced_count=$((synced_count + 1))
         fi
-    done < <(echo "$response" | jq -c '.requests[]' 2>/dev/null)
+    done < <(echo "$response" | jq -c '.records[]' 2>/dev/null)
 
     echo "$synced_count"
 }
 
-# Get comment ID by URL
+# Check if a comment URL exists in the discovery service
 # Args: $1 = comment_url
-# Returns: comment id (echoed to stdout), or empty string if not found
+# Returns: the comment URL itself if found (used as identifier in unified API), or empty
 get_comment_id_by_url() {
     local comment_url="$1"
 
     # URL encode the comment_url
     local encoded_url=$(jq -rn --arg url "$comment_url" '$url | @uri')
 
-    # Call comments endpoint
+    # Use content-check to verify the comment exists
     local response=$(curl -s \
         --header "Authorization: Bearer $DISCOVERY_SERVICE_KEY" \
-        "${POLIS_COMMENTS_ENDPOINT}?url=${encoded_url}")
+        "${POLIS_CONTENT_CHECK_ENDPOINT}?type=polis.comment&url=${encoded_url}")
 
-    # Check if we got a valid response
-    local comment_id=$(echo "$response" | jq -r '.id // empty' 2>/dev/null)
+    # Check if we got a valid response with exists=true
+    local exists=$(echo "$response" | jq -r '.exists // false' 2>/dev/null)
 
-    if [ -z "$comment_id" ] || [ "$comment_id" = "null" ]; then
+    if [ "$exists" != "true" ]; then
         return 1
     fi
 
-    echo "$comment_id"
+    # In the unified API, the comment URL is the identifier (no numeric IDs)
+    echo "$comment_url"
 }
 
 # Get all blessed comment URLs from a specific author domain
@@ -2512,10 +2424,11 @@ get_blessed_comment_urls_by_author() {
 }
 
 # Format blessing requests as a table
+# Expects enriched JSON with .records[] containing: source_url, author, version, created_at
 format_blessing_table() {
     local requests_json="$1"
 
-    # Validate JSON and check if there are any requests
+    # Validate JSON and check if there are any records
     local count=$(echo "$requests_json" | jq -r '.count // 0' 2>/dev/null)
 
     # Handle invalid JSON or null count
@@ -2534,20 +2447,25 @@ format_blessing_table() {
     printf "%.s─" {1..120}
     echo ""
 
-    # Process each request (with null check)
-    local requests_data=$(echo "$requests_json" | jq -r '.requests // [] | .[] | "\(.comment_version)|\(.author)|\(.comment_url)|\(.timestamp)"' 2>/dev/null)
+    # Process each record
+    local records_data=$(echo "$requests_json" | jq -r '.records // [] | .[] | "\(.version // "")|\(.author // .metadata.comment_author // "")|\(.source_url // "")|\(.created_at // "")"' 2>/dev/null)
 
-    if [ -z "$requests_data" ]; then
+    if [ -z "$records_data" ]; then
         info "No pending blessing requests found"
         return
     fi
 
-    echo "$requests_data" | while IFS='|' read -r version author url timestamp; do
+    echo "$records_data" | while IFS='|' read -r version author url timestamp; do
         # Skip empty lines
-        [ -z "$version" ] && continue
+        [ -z "$url" ] && continue
 
-        # Format short hash from comment_version
-        local short_hash=$(format_short_hash "$version")
+        # Format short hash from version (may be empty if no content record)
+        local short_hash=""
+        if [ -n "$version" ] && [ "$version" != "null" ]; then
+            short_hash=$(format_short_hash "$version")
+        else
+            short_hash="[no version]"
+        fi
         # Truncate long fields for display
         local display_author=$(echo "$author" | cut -c1-20)
         local display_url=$(echo "$url" | cut -c1-60)
@@ -2702,7 +2620,7 @@ generate_manifest() {
     # Build base manifest
     local manifest_json
     manifest_json=$(jq -n \
-        --arg version "$VERSION" \
+        --arg version "polis-cli/$VERSION" \
         --argjson last_published "$last_published" \
         --argjson post_count "$post_count" \
         --argjson comment_count "$comment_count" \
@@ -2921,6 +2839,179 @@ update_wellknown_pubkey() {
     return 0
 }
 
+# Register a published post with the discovery service (non-fatal).
+# Matches Go CLI's publish.RegisterPost() — silently skips if not configured.
+# Usage: _register_post_with_discovery "$post_path" "$content_hash" "$title"
+_register_post_with_discovery() {
+    local post_path="$1"
+    local content_hash="$2"
+    local title="$3"
+
+    # Silently skip if discovery is not configured
+    if [ -z "$POLIS_BASE_URL" ] || [ -z "$DISCOVERY_SERVICE_URL" ] || [ -z "$DISCOVERY_SERVICE_KEY" ]; then
+        return 0
+    fi
+
+    # Get author email from .well-known/polis
+    local author=""
+    if [ -f "$WELL_KNOWN_DIR/polis" ]; then
+        author=$(jq -r '.email // empty' "$WELL_KNOWN_DIR/polis" 2>/dev/null)
+    fi
+    if [ -z "$author" ]; then
+        info_human "Warning: No email in .well-known/polis, skipping discovery registration"
+        return 0
+    fi
+
+    # Build post URL
+    local post_url="${POLIS_BASE_URL%/}/$post_path"
+    local now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+    # Build metadata — keys sorted alphabetically to match Go json.Marshal
+    local metadata_json=$(jq -n -c \
+        --arg last_updated_at "$now" \
+        --arg published_at "$now" \
+        --arg title "$title" \
+        '{last_updated_at: $last_updated_at, published_at: $published_at, title: $title}')
+
+    # Build canonical JSON for signing
+    # CRITICAL: Field order must match Go's json.Marshal output for contentCanonicalPayload
+    # Order: type, url, version, author, metadata
+    local canonical_payload=$(jq -n -c \
+        --arg type "polis.post" \
+        --arg url "$post_url" \
+        --arg version "sha256:$content_hash" \
+        --arg author "$author" \
+        --argjson metadata "$metadata_json" \
+        '{type: $type, url: $url, version: $version, author: $author, metadata: $metadata}')
+
+    # Sign the canonical JSON
+    local temp_file=$(mktemp)
+    echo -n "$canonical_payload" > "$temp_file"
+
+    local keyfile="$KEYS_DIR/id_ed25519"
+    if [ ! -f "$keyfile" ]; then
+        rm -f "$temp_file"
+        return 0
+    fi
+
+    ssh-keygen -Y sign -f "$keyfile" -n file "$temp_file" > /dev/null 2>&1
+    if [ $? -ne 0 ]; then
+        rm -f "$temp_file" "$temp_file.sig"
+        info_human "Warning: Failed to sign post registration payload"
+        return 0
+    fi
+
+    local signature=""
+    if [ -f "$temp_file.sig" ]; then
+        signature=$(cat "$temp_file.sig")
+    fi
+    rm -f "$temp_file" "$temp_file.sig"
+
+    if [ -z "$signature" ]; then
+        return 0
+    fi
+
+    # Build final payload with signature
+    local final_payload=$(jq -n \
+        --arg type "polis.post" \
+        --arg url "$post_url" \
+        --arg version "sha256:$content_hash" \
+        --arg author "$author" \
+        --argjson metadata "$metadata_json" \
+        --arg signature "$signature" \
+        '{type: $type, url: $url, version: $version, author: $author, metadata: $metadata, signature: $signature}')
+
+    # POST to discovery service (fire-and-forget, non-fatal)
+    local response
+    local http_code
+    response=$(curl -s -w "\n%{http_code}" \
+        --location --request POST "$POLIS_CONTENT_REGISTER_ENDPOINT" \
+        --header "${DISCOVERY_SERVICE_KEY:+Authorization: Bearer $DISCOVERY_SERVICE_KEY}" \
+        --header 'Content-Type: application/json' \
+        --data "$final_payload" 2>&1)
+
+    http_code=$(echo "$response" | tail -n 1)
+
+    case "$http_code" in
+        201|200)
+            info_human "Post registered with discovery service"
+            ;;
+        *)
+            info_human "Warning: Discovery registration returned HTTP $http_code (non-fatal)"
+            ;;
+    esac
+
+    return 0
+}
+
+# Emit a stream event to the discovery service (non-fatal, fire-and-forget).
+# Matches Go CLI's stream.PublishEvent().
+# Usage: _emit_stream_event "event.type" '{"key":"value"}'
+_emit_stream_event() {
+    local event_type="$1"
+    local payload_json="$2"
+
+    # Silently skip if discovery is not configured
+    if [ -z "$POLIS_BASE_URL" ] || [ -z "$DISCOVERY_SERVICE_URL" ] || [ -z "$DISCOVERY_SERVICE_KEY" ]; then
+        return 0
+    fi
+
+    local keyfile="$KEYS_DIR/id_ed25519"
+    if [ ! -f "$keyfile" ]; then
+        return 0
+    fi
+
+    local actor=$(extract_domain_from_url "$POLIS_BASE_URL")
+    if [ -z "$actor" ]; then
+        return 0
+    fi
+
+    # Build canonical JSON for signing
+    # CRITICAL: Field order must match Go's json.Marshal output for streamCanonicalPayload
+    # Order: type, payload
+    local canonical_payload=$(jq -n -c \
+        --arg type "$event_type" \
+        --argjson payload "$payload_json" \
+        '{type: $type, payload: $payload}')
+
+    # Sign the canonical JSON
+    local temp_file=$(mktemp)
+    echo -n "$canonical_payload" > "$temp_file"
+
+    ssh-keygen -Y sign -f "$keyfile" -n file "$temp_file" > /dev/null 2>&1
+    if [ $? -ne 0 ]; then
+        rm -f "$temp_file" "$temp_file.sig"
+        return 0
+    fi
+
+    local signature=""
+    if [ -f "$temp_file.sig" ]; then
+        signature=$(cat "$temp_file.sig")
+    fi
+    rm -f "$temp_file" "$temp_file.sig"
+
+    if [ -z "$signature" ]; then
+        return 0
+    fi
+
+    # Build final payload for ds-stream-publish
+    local final_payload=$(jq -n \
+        --arg type "$event_type" \
+        --arg actor "$actor" \
+        --argjson payload "$payload_json" \
+        --arg signature "$signature" \
+        '{type: $type, actor: $actor, payload: $payload, signature: $signature}')
+
+    # POST to stream endpoint (fire-and-forget, non-fatal)
+    curl -s \
+        --location --request POST "$POLIS_STREAM_PUBLISH_ENDPOINT" \
+        --header "${DISCOVERY_SERVICE_KEY:+Authorization: Bearer $DISCOVERY_SERVICE_KEY}" \
+        --header 'Content-Type: application/json' \
+        --data "$final_payload" > /dev/null 2>&1
+
+    return 0
+}
+
 # Command: polis beseech <filename>
 # Request blessing from post author for a comment
 # Internal function for file-based beseech (used by auto-beseech in comment/republish)
@@ -2990,14 +3081,14 @@ _internal_beseech_from_file() {
 
     # Get configuration from environment variables
     local base_url="$POLIS_BASE_URL"
-    local discovery_endpoint="$POLIS_BESEECH_ENDPOINT"
+    local discovery_endpoint="$POLIS_CONTENT_REGISTER_ENDPOINT"
 
     if [ -z "$base_url" ]; then
         json_error "beseech" "INVALID_INPUT" "POLIS_BASE_URL not set. Set it with: export POLIS_BASE_URL=https://yourdomain.com"
     fi
 
     if [ -z "$discovery_endpoint" ]; then
-        json_error "beseech" "INVALID_INPUT" "POLIS_BESEECH_ENDPOINT not set. Set it with: export POLIS_BESEECH_ENDPOINT=https://xxx.supabase.co/functions/v1/beseech"
+        json_error "beseech" "INVALID_INPUT" "POLIS_CONTENT_REGISTER_ENDPOINT not set. Check your DISCOVERY_SERVICE_URL."
     fi
 
     # Construct proper HTTPS comment URL
@@ -3006,16 +3097,33 @@ _internal_beseech_from_file() {
     local comment_url="${base_url%/}/$input_file"
 
     # Build canonical JSON payload (WITHOUT signature field)
-    # This is what we'll sign
-    # IMPORTANT: Use printf (not heredoc) to avoid trailing newline
-    local canonical_payload
+    # This is what we'll sign — unified content registration format
+    # CRITICAL: Field order must match Go's json.Marshal output for contentCanonicalPayload
+    # Order: type, url, version, author, metadata (with metadata keys sorted alphabetically)
+    local metadata_json
     if [ -n "$reply_version" ]; then
-        canonical_payload=$(printf '{"comment_url":"%s","comment_version":"%s","in_reply_to":"%s","in_reply_to_version":"%s","root_post":"%s","author":"%s","timestamp":"%s"}' \
-            "$comment_url" "$version" "$reply_url" "$reply_version" "$root_post" "$author" "$published")
+        metadata_json=$(jq -n -c \
+            --arg in_reply_to "$reply_url" \
+            --arg in_reply_to_version "$reply_version" \
+            --arg root_post "$root_post" \
+            --arg timestamp "$published" \
+            '{in_reply_to: $in_reply_to, in_reply_to_version: $in_reply_to_version, root_post: $root_post, timestamp: $timestamp}')
     else
-        canonical_payload=$(printf '{"comment_url":"%s","comment_version":"%s","in_reply_to":"%s","root_post":"%s","author":"%s","timestamp":"%s"}' \
-            "$comment_url" "$version" "$reply_url" "$root_post" "$author" "$published")
+        metadata_json=$(jq -n -c \
+            --arg in_reply_to "$reply_url" \
+            --arg in_reply_to_version "" \
+            --arg root_post "$root_post" \
+            --arg timestamp "$published" \
+            '{in_reply_to: $in_reply_to, in_reply_to_version: $in_reply_to_version, root_post: $root_post, timestamp: $timestamp}')
     fi
+
+    local canonical_payload=$(jq -n -c \
+        --arg type "polis.comment" \
+        --arg url "$comment_url" \
+        --arg version "$version" \
+        --arg author "$author" \
+        --argjson metadata "$metadata_json" \
+        '{type: $type, url: $url, version: $version, author: $author, metadata: $metadata}')
 
     # Sign the canonical JSON
     # Create a temporary file with the canonical payload
@@ -3048,39 +3156,15 @@ _internal_beseech_from_file() {
         json_error "beseech" "SIGNATURE_ERROR" "Failed to generate signature"
     fi
 
-    # Build final JSON payload with signature
-    # Need to escape the signature properly for JSON
-    local signature_escaped=$(echo "$signature" | sed ':a;N;$!ba;s/\n/\\n/g' | sed 's/"/\\"/g')
-
-    local final_payload
-    if [ -n "$reply_version" ]; then
-        final_payload=$(cat << EOF
-{
-  "comment_url": "$comment_url",
-  "comment_version": "$version",
-  "in_reply_to": "$reply_url",
-  "in_reply_to_version": "$reply_version",
-  "root_post": "$root_post",
-  "author": "$author",
-  "timestamp": "$published",
-  "signature": "$signature_escaped"
-}
-EOF
-)
-    else
-        final_payload=$(cat << EOF
-{
-  "comment_url": "$comment_url",
-  "comment_version": "$version",
-  "in_reply_to": "$reply_url",
-  "root_post": "$root_post",
-  "author": "$author",
-  "timestamp": "$published",
-  "signature": "$signature_escaped"
-}
-EOF
-)
-    fi
+    # Build final JSON payload with signature — unified content-register format
+    local final_payload=$(jq -n \
+        --arg type "polis.comment" \
+        --arg url "$comment_url" \
+        --arg version "$version" \
+        --arg author "$author" \
+        --argjson metadata "$metadata_json" \
+        --arg signature "$signature" \
+        '{type: $type, url: $url, version: $version, author: $author, metadata: $metadata, signature: $signature}')
 
     # Send HTTP POST request to discovery service
     info_human "Sending blessing request to discovery service..."
@@ -3108,11 +3192,11 @@ EOF
     # Handle response based on HTTP status code
     case "$http_code" in
         201)
-            # Parse status from server response (blessed or pending)
-            local response_status=$(echo "$response" | jq -r '.status // "pending"')
+            # Parse relationship_status from server response (granted or pending)
+            local response_status=$(echo "$response" | jq -r '.relationship_status // "pending"')
             local blessed_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-            if [ "$response_status" = "blessed" ]; then
+            if [ "$response_status" = "granted" ]; then
                 # Auto-blessed! Update blessed-comments.json
                 update_blessed_comments_json "$comment_url" "$version" "$reply_url" "$blessed_at"
 
@@ -3122,7 +3206,7 @@ EOF
                         --arg version "$version" \
                         --arg reply_to "$reply_url" \
                         --arg msg "Comment automatically blessed" \
-                        --arg status "blessed" \
+                        --arg status "granted" \
                         --argjson auto_blessed "true" \
                         '{
                             comment_url: $url,
@@ -3223,7 +3307,7 @@ EOF
             ;;
         *)
             if [ -z "$http_code" ] || [ "$http_code" = "000" ]; then
-                json_error "beseech" "API_ERROR" "Failed to connect to discovery service. Check your internet connection and POLIS_BESEECH_ENDPOINT."
+                json_error "beseech" "API_ERROR" "Failed to connect to discovery service. Check your internet connection and DISCOVERY_SERVICE_URL."
             else
                 json_error "beseech" "API_ERROR" "Unexpected response from discovery service (HTTP $http_code): $response"
             fi
@@ -3244,9 +3328,9 @@ cmd_blessing_beseech() {
     fi
 
     # Check prerequisites
-    if [ -z "$POLIS_BESEECH_ENDPOINT" ]; then
+    if [ -z "$POLIS_CONTENT_REGISTER_ENDPOINT" ]; then
         json_error "blessing-beseech" "INVALID_STATE" \
-            "POLIS_BESEECH_ENDPOINT not set. See 'polis help' for configuration."
+            "POLIS_CONTENT_REGISTER_ENDPOINT not set. Check your DISCOVERY_SERVICE_URL."
     fi
 
     if [ -z "$POLIS_BASE_URL" ]; then
@@ -3289,12 +3373,12 @@ cmd_blessing_beseech() {
     info_human "Comment: $comment_url"
     info_human "Reply to: $in_reply_to"
 
-    # Display current status (if already blessed/denied)
-    if [ "$blessing_status" = "blessed" ]; then
+    # Display current status (if already granted/denied)
+    if [ "$blessing_status" = "granted" ]; then
         success_human "This request is already blessed!"
         info_human "No action needed - comment is approved."
         if [ "$JSON_MODE" = true ]; then
-            json_success "blessing-beseech" "$(jq -n --arg hash "$short_hash" '{status:"already_blessed",hash:$hash}')"
+            json_success "blessing-beseech" "$(jq -n --arg hash "$short_hash" '{status:"already_granted",hash:$hash}')"
         fi
         return 0
     fi
@@ -4144,6 +4228,11 @@ signature: $signature
         _internal_beseech_from_file "$input_file"
     fi
 
+    # Register post with discovery service (non-fatal, matches Go CLI)
+    if [ "$content_type" = "post" ]; then
+        _register_post_with_discovery "$input_file" "$new_hash" "$title"
+    fi
+
     # Output results
     if [ "$JSON_MODE" = true ]; then
         local result=$(jq -n \
@@ -4543,7 +4632,7 @@ cmd_about() {
     if [ -n "$DISCOVERY_SERVICE_URL" ] && [ -n "$DISCOVERY_SERVICE_KEY" ] && [ -n "$POLIS_BASE_URL" ]; then
         local domain=$(extract_domain_from_url "$POLIS_BASE_URL")
         if [ -n "$domain" ]; then
-            local check_endpoint="${DISCOVERY_SERVICE_URL}/sites-check?domain=$domain"
+            local check_endpoint="${DISCOVERY_SERVICE_URL}/ds-sites-check?domain=$domain"
             local check_response=$(curl -s -w "\n%{http_code}" \
                 --location --request GET "$check_endpoint" \
                 --header "Authorization: Bearer $DISCOVERY_SERVICE_KEY" \
@@ -4967,18 +5056,15 @@ cmd_blessing_requests() {
     local author=$(extract_author_from_wellknown)
     local domain=$(extract_domain_from_url "$POLIS_BASE_URL")
 
-    # Construct endpoint URL
-    local endpoint="${POLIS_BLESSING_REQUESTS_ENDPOINT}"
+    info_human "Fetching pending blessing requests for ${author}..."
 
-    info_human "Fetching pending blessing requests for ${author} from ${endpoint} ..."
-
-    # Fetch requests
+    # Fetch pending relationships via unified relationship-query
     local response=$(curl -s \
         --header "Authorization: Bearer $DISCOVERY_SERVICE_KEY" \
-        "${endpoint}?in_reply_to_domain=${domain}")
+        "${POLIS_RELATIONSHIP_QUERY_ENDPOINT}?type=polis.blessing&actor=${domain}&status=pending")
 
     if [ $? -ne 0 ]; then
-        json_error "blessing-requests" "API_ERROR" "Failed to connect to discovery service. Check your internet connection and POLIS_BESEECH_ENDPOINT."
+        json_error "blessing-requests" "API_ERROR" "Failed to connect to discovery service. Check your internet connection and DISCOVERY_SERVICE_URL."
     fi
 
     # Check if jq is available
@@ -4992,23 +5078,39 @@ cmd_blessing_requests() {
         json_error "blessing-requests" "API_ERROR" "API error: $error_msg"
     fi
 
-    # In JSON mode, return the API response directly
+    # Enrich relationship records with version data from content-query
+    # This is needed for hash display in the table and for grant/deny operations
+    local content_response=$(_fetch_comment_records_for_domain "$domain")
+
+    # Merge version info from content records into relationship records
+    local enriched_response=$(echo "$response" | jq -c \
+        --argjson content_records "$(echo "$content_response" | jq '.records // []')" '
+        .records |= map(
+            . as $rel |
+            ($content_records | map(select(.url == $rel.source_url)) | .[0]) as $content |
+            . + {
+                version: ($content.version // null),
+                author: ($content.author // .metadata.comment_author // null)
+            }
+        )
+    ' 2>/dev/null)
+
+    # In JSON mode, return the enriched response
     if [ "$JSON_MODE" = true ]; then
-        # Extract requests array and count
-        local requests=$(echo "$response" | jq -c '.requests // []')
-        local count=$(echo "$response" | jq -r '.count // 0')
+        local records=$(echo "$enriched_response" | jq -c '.records // []')
+        local count=$(echo "$enriched_response" | jq -r '.count // 0')
 
         local result=$(jq -n \
             --argjson count "$count" \
-            --argjson requests "$requests" \
+            --argjson records "$records" \
             '{
                 count: $count,
-                requests: $requests
+                records: $records
             }')
         json_success "blessing-requests" "$result"
     else
         # Format and display table
-        format_blessing_table "$response"
+        format_blessing_table "$enriched_response"
     fi
 }
 
@@ -5073,14 +5175,21 @@ cmd_blessing_grant() {
         fi
     fi
 
-    # Create signed payload for authentication
-    # The signature proves the requester controls the post author's domain
+    # Extract source_url (comment URL) and target_url (in_reply_to) from request
+    local comment_url=$(echo "$request_json" | jq -r '.comment_url')
+    local in_reply_to=$(echo "$request_json" | jq -r '.in_reply_to')
+    local author=$(echo "$request_json" | jq -r '.author')
+
+    # Create signed payload for authentication — unified relationship update format
+    # CRITICAL: Field order must match Go's json.Marshal for relationshipCanonicalPayload
     local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
     local canonical_payload=$(jq -n -c \
+        --arg type "polis.blessing" \
+        --arg source_url "$comment_url" \
+        --arg target_url "$in_reply_to" \
         --arg action "grant" \
-        --arg version "$comment_version" \
         --arg ts "$timestamp" \
-        '{action: $action, comment_version: $version, timestamp: $ts}')
+        '{type: $type, source_url: $source_url, target_url: $target_url, action: $action, timestamp: $ts}')
 
     # Sign the payload
     local temp_file=$(mktemp)
@@ -5090,17 +5199,18 @@ cmd_blessing_grant() {
     local signature=$(cat "$temp_file.sig")
     rm -f "$temp_file" "$temp_file.sig"
 
-    # Prepare POST payload with signature
+    # Prepare POST payload with signature — unified relationship-update format
     local payload=$(jq -n \
-        --arg version "$comment_version" \
+        --arg type "polis.blessing" \
+        --arg source_url "$comment_url" \
+        --arg target_url "$in_reply_to" \
         --arg action "grant" \
-        --arg ts "$timestamp" \
         --arg sig "$signature" \
-        '{comment_version: $version, action: $action, timestamp: $ts, signature: $sig}')
+        '{type: $type, source_url: $source_url, target_url: $target_url, action: $action, signature: $sig}')
 
-    # Call bless endpoint
+    # Call relationship-update endpoint
     local response=$(curl -s -w "\n%{http_code}" \
-        --location --request POST "$POLIS_BLESS_ENDPOINT" \
+        --location --request POST "$POLIS_RELATIONSHIP_UPDATE_ENDPOINT" \
         --header "Authorization: Bearer $DISCOVERY_SERVICE_KEY" \
         --header 'Content-Type: application/json' \
         --data "$payload")
@@ -5112,30 +5222,20 @@ cmd_blessing_grant() {
     # Handle response
     case "$http_code" in
         200)
-            # Extract comment details from response
-            local comment_url=$(echo "$body" | jq -r '.request.comment_url')
-            local resp_version=$(echo "$body" | jq -r '.request.comment_version')
-            local in_reply_to=$(echo "$body" | jq -r '.request.in_reply_to')
-            local blessed_at=$(echo "$body" | jq -r '.request.blessed_at')
-            local author=$(echo "$body" | jq -r '.request.author')
+            local blessed_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
             # Update blessed-comments.json
-            update_blessed_comments_json "$comment_url" "$resp_version" "$in_reply_to" "$blessed_at"
-
-            # Extract blessed_by from server response (server determines this from verified domain)
-            local blessed_by=$(echo "$body" | jq -r '.request.blessed_by // empty')
+            update_blessed_comments_json "$comment_url" "$comment_version" "$in_reply_to" "$blessed_at"
 
             if [ "$JSON_MODE" = true ]; then
                 local result=$(jq -n \
                     --arg version "$comment_version" \
                     --arg url "$comment_url" \
                     --arg blessed_at "$blessed_at" \
-                    --arg blessed_by "$blessed_by" \
                     '{
                         comment_version: $version,
                         comment_url: $url,
-                        blessed_at: $blessed_at,
-                        blessed_by: $blessed_by
+                        blessed_at: $blessed_at
                     }')
                 json_success "blessing-grant" "$result"
             else
@@ -5218,14 +5318,20 @@ cmd_blessing_deny() {
         fi
     fi
 
-    # Create signed payload for authentication
-    # The signature proves the requester controls the post author's domain
+    # Extract source_url (comment URL) and target_url (in_reply_to) from request
+    local comment_url=$(echo "$request_json" | jq -r '.comment_url')
+    local in_reply_to=$(echo "$request_json" | jq -r '.in_reply_to')
+    local author=$(echo "$request_json" | jq -r '.author')
+
+    # Create signed payload for authentication — unified relationship update format
     local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
     local canonical_payload=$(jq -n -c \
+        --arg type "polis.blessing" \
+        --arg source_url "$comment_url" \
+        --arg target_url "$in_reply_to" \
         --arg action "deny" \
-        --arg version "$comment_version" \
         --arg ts "$timestamp" \
-        '{action: $action, comment_version: $version, timestamp: $ts}')
+        '{type: $type, source_url: $source_url, target_url: $target_url, action: $action, timestamp: $ts}')
 
     # Sign the payload
     local temp_file=$(mktemp)
@@ -5235,17 +5341,18 @@ cmd_blessing_deny() {
     local signature=$(cat "$temp_file.sig")
     rm -f "$temp_file" "$temp_file.sig"
 
-    # Prepare POST payload with signature
+    # Prepare POST payload with signature — unified relationship-update format
     local payload=$(jq -n \
-        --arg version "$comment_version" \
+        --arg type "polis.blessing" \
+        --arg source_url "$comment_url" \
+        --arg target_url "$in_reply_to" \
         --arg action "deny" \
-        --arg ts "$timestamp" \
         --arg sig "$signature" \
-        '{comment_version: $version, action: $action, timestamp: $ts, signature: $sig}')
+        '{type: $type, source_url: $source_url, target_url: $target_url, action: $action, signature: $sig}')
 
-    # Call deny endpoint
+    # Call relationship-update endpoint
     local response=$(curl -s -w "\n%{http_code}" \
-        --location --request POST "$POLIS_DENY_ENDPOINT" \
+        --location --request POST "$POLIS_RELATIONSHIP_UPDATE_ENDPOINT" \
         --header "Authorization: Bearer $DISCOVERY_SERVICE_KEY" \
         --header 'Content-Type: application/json' \
         --data "$payload")
@@ -5257,29 +5364,20 @@ cmd_blessing_deny() {
     # Handle response
     case "$http_code" in
         200)
-            # Extract comment details from response
-            local comment_url=$(echo "$body" | jq -r '.request.comment_url')
-            local in_reply_to=$(echo "$body" | jq -r '.request.in_reply_to')
-            local denied_at=$(echo "$body" | jq -r '.request.denied_at // .request.blessed_at // ""')
-            local author=$(echo "$body" | jq -r '.request.author')
+            local denied_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
             # Remove from blessed-comments.json if it was previously blessed
             remove_from_blessed_comments_json "$comment_url" "$in_reply_to"
-
-            # Extract denied_by from server response (server determines this from verified domain)
-            local denied_by=$(echo "$body" | jq -r '.request.blessed_by // empty')
 
             if [ "$JSON_MODE" = true ]; then
                 local result=$(jq -n \
                     --arg version "$comment_version" \
                     --arg url "$comment_url" \
                     --arg denied_at "$denied_at" \
-                    --arg denied_by "$denied_by" \
                     '{
                         comment_version: $version,
                         comment_url: $url,
-                        denied_at: $denied_at,
-                        denied_by: $denied_by
+                        denied_at: $denied_at
                     }')
                 json_success "blessing-deny" "$result"
             else
@@ -5391,7 +5489,7 @@ cmd_follow() {
             fi
 
             echo "$unblessed_comments" | jq -r --arg count "$preview_count" \
-                'limit($count | tonumber; .[]) | "  - Request #\(.id): \(.comment_url | split("/")[-1]) (\(.timestamp[:10]))"'
+                'limit($count | tonumber; .[]) | "  - \(.source_url | split("/")[-1]) (\(.created_at[:10] // ""))"'
 
             if [ "$comment_count" -gt 5 ]; then
                 echo "  ... and $((comment_count - 5)) more"
@@ -5406,58 +5504,76 @@ cmd_follow() {
         echo ""
     fi
 
-    # Bless all unblessed comments
+    # Bless all unblessed comments via relationship-update
     local blessed_count=0
     local failed_count=0
 
     if [ "$comment_count" -gt 0 ]; then
         info_human "Blessing $comment_count comment(s)..."
 
-        # Loop through each comment
-        while IFS= read -r comment_id; do
-            if [ -z "$comment_id" ] || [ "$comment_id" = "null" ]; then
+        local keyfile="$KEYS_DIR/id_ed25519"
+
+        # Loop through each relationship record
+        while IFS= read -r record; do
+            if [ -z "$record" ] || [ "$record" = "null" ]; then
                 continue
             fi
 
-            # Prepare POST payload
-            local payload=$(jq -n \
-                --argjson id "$comment_id" \
-                --arg by "$blessed_by" \
-                '{comment_id: $id, blessed_by: $by}')
+            local source_url=$(echo "$record" | jq -r '.source_url')
+            local target_url=$(echo "$record" | jq -r '.target_url')
 
-            # Call bless endpoint
+            # Create signed grant payload
+            local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+            local canonical_payload=$(jq -n -c \
+                --arg type "polis.blessing" \
+                --arg source_url "$source_url" \
+                --arg target_url "$target_url" \
+                --arg action "grant" \
+                --arg ts "$timestamp" \
+                '{type: $type, source_url: $source_url, target_url: $target_url, action: $action, timestamp: $ts}')
+
+            local temp_file=$(mktemp)
+            echo -n "$canonical_payload" > "$temp_file"
+            ssh-keygen -Y sign -f "$keyfile" -n file "$temp_file" > /dev/null 2>&1
+            local signature=$(cat "$temp_file.sig" 2>/dev/null)
+            rm -f "$temp_file" "$temp_file.sig"
+
+            local payload=$(jq -n \
+                --arg type "polis.blessing" \
+                --arg source_url "$source_url" \
+                --arg target_url "$target_url" \
+                --arg action "grant" \
+                --arg sig "$signature" \
+                '{type: $type, source_url: $source_url, target_url: $target_url, action: $action, signature: $sig}')
+
+            # Call relationship-update endpoint
             local response=$(curl -s -w "\n%{http_code}" \
-                --location --request POST "$POLIS_BLESS_ENDPOINT" \
+                --location --request POST "$POLIS_RELATIONSHIP_UPDATE_ENDPOINT" \
                 --header "Authorization: Bearer $DISCOVERY_SERVICE_KEY" \
                 --header 'Content-Type: application/json' \
                 --data "$payload")
 
-            # Extract HTTP status code
             local http_code=$(echo "$response" | tail -n 1)
             local body=$(echo "$response" | sed '$d')
 
-            # Handle response
             if [ "$http_code" = "200" ]; then
-                # Extract comment details from response
-                local comment_url=$(echo "$body" | jq -r '.request.comment_url')
-                local comment_version=$(echo "$body" | jq -r '.request.comment_version')
-                local in_reply_to=$(echo "$body" | jq -r '.request.in_reply_to')
-                local blessed_at=$(echo "$body" | jq -r '.request.blessed_at')
-
-                # Update blessed-comments.json
-                update_blessed_comments_json "$comment_url" "$comment_version" "$in_reply_to" "$blessed_at"
-
+                local blessed_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+                update_blessed_comments_json "$source_url" "" "$target_url" "$blessed_at"
                 blessed_count=$((blessed_count + 1))
             else
                 failed_count=$((failed_count + 1))
-                info_human "Warning: Failed to bless request #$comment_id (HTTP $http_code)"
+                info_human "Warning: Failed to bless comment $source_url (HTTP $http_code)"
             fi
-        done < <(echo "$unblessed_comments" | jq -r '.[].id')
+        done < <(echo "$unblessed_comments" | jq -c '.[]')
     fi
 
     # Add to following.json
     local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
     add_to_following_json "$author_url" "$timestamp"
+
+    # Emit follow event to discovery stream (non-fatal, matches Go CLI)
+    local target_domain=$(extract_domain_from_url "$author_url")
+    _emit_stream_event "polis.follow.announced" "$(jq -n -c --arg target_domain "$target_domain" '{target_domain: $target_domain}')"
 
     # Output results
     if [ "$JSON_MODE" = true ]; then
@@ -5509,9 +5625,6 @@ cmd_unfollow() {
         json_error "unfollow" "INVALID_STATE" "Polis not initialized. Run 'polis init' first."
     fi
 
-    # Extract blessed_by (current user's email)
-    local blessed_by=$(extract_author_from_wellknown)
-
     # Get blessed comment URLs from this author
     # Check both local blessed-comments.json AND server (for unsynced auto-blessed)
     info_human "Finding blessed comments from $author_url..."
@@ -5526,9 +5639,9 @@ cmd_unfollow() {
     author_email=$(fetch_author_email_from_wellknown "$author_url" 2>/dev/null) || true
 
     if [ -n "$author_email" ]; then
-        local server_blessed=$(fetch_comments_by_author "$author_email" "blessed" 2>/dev/null) || true
+        local server_blessed=$(fetch_comments_by_author "$author_email" "granted" 2>/dev/null) || true
         if [ -n "$server_blessed" ] && [ "$server_blessed" != "[]" ] && [ "$server_blessed" != "null" ]; then
-            server_urls_list=$(echo "$server_blessed" | jq -r '.[].comment_url' 2>/dev/null || echo "")
+            server_urls_list=$(echo "$server_blessed" | jq -r '.[].source_url' 2>/dev/null || echo "")
         fi
     fi
 
@@ -5557,80 +5670,91 @@ cmd_unfollow() {
         exit 0
     fi
 
-    info_human "Found $url_count blessed comment(s), looking up IDs..."
-
-    # Lookup comment ID for each blessed comment URL
-    local comment_ids=()
-    local lookup_failures=0
-
-    while IFS= read -r comment_url; do
-        if [ -z "$comment_url" ] || [ "$comment_url" = "null" ]; then
-            continue
-        fi
-
-        local comment_id=$(get_comment_id_by_url "$comment_url")
-        if [ -n "$comment_id" ] && [ "$comment_id" != "null" ]; then
-            comment_ids+=("$comment_id")
-        else
-            lookup_failures=$((lookup_failures + 1))
-            info_human "Warning: Could not find ID for $comment_url"
-        fi
-    done < <(echo "$blessed_urls" | jq -r '.[]')
-
-    local comment_count=${#comment_ids[@]}
-
     # Display summary in human mode
     if [ "$JSON_MODE" = false ]; then
         echo ""
         info "Unfollowing: $author_url"
-        echo "Found $comment_count blessed comment(s) to deny"
-        if [ $lookup_failures -gt 0 ]; then
-            echo "Warning: $lookup_failures comment(s) could not be looked up"
-        fi
+        echo "Found $url_count blessed comment(s) to deny"
         echo ""
     fi
 
-    # Deny each comment
+    # Deny each comment via relationship-update
     local denied_count=0
     local failed_count=0
+    local keyfile="$KEYS_DIR/id_ed25519"
 
-    if [ $comment_count -gt 0 ]; then
-        info_human "Denying $comment_count blessed comment(s)..."
+    if [ "$url_count" -gt 0 ]; then
+        info_human "Denying $url_count blessed comment(s)..."
 
-        for comment_id in "${comment_ids[@]}"; do
-            # Prepare POST payload
+        while IFS= read -r comment_url; do
+            if [ -z "$comment_url" ] || [ "$comment_url" = "null" ]; then
+                continue
+            fi
+
+            # We need the target_url (in_reply_to) for the relationship-update.
+            # Query the relationship record to get it.
+            local encoded_url=$(jq -rn --arg url "$comment_url" '$url | @uri')
+            local rel_response=$(curl -s \
+                --header "Authorization: Bearer $DISCOVERY_SERVICE_KEY" \
+                "${POLIS_RELATIONSHIP_QUERY_ENDPOINT}?type=polis.blessing&source_url=${encoded_url}" 2>/dev/null)
+
+            local target_url=$(echo "$rel_response" | jq -r '.records[0].target_url // empty' 2>/dev/null)
+
+            if [ -z "$target_url" ] || [ "$target_url" = "null" ]; then
+                failed_count=$((failed_count + 1))
+                info_human "Warning: Could not find relationship for $comment_url"
+                continue
+            fi
+
+            # Create signed deny payload
+            local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+            local canonical_payload=$(jq -n -c \
+                --arg type "polis.blessing" \
+                --arg source_url "$comment_url" \
+                --arg target_url "$target_url" \
+                --arg action "deny" \
+                --arg ts "$timestamp" \
+                '{type: $type, source_url: $source_url, target_url: $target_url, action: $action, timestamp: $ts}')
+
+            local temp_file=$(mktemp)
+            echo -n "$canonical_payload" > "$temp_file"
+            ssh-keygen -Y sign -f "$keyfile" -n file "$temp_file" > /dev/null 2>&1
+            local signature=$(cat "$temp_file.sig" 2>/dev/null)
+            rm -f "$temp_file" "$temp_file.sig"
+
             local payload=$(jq -n \
-                --argjson id "$comment_id" \
-                --arg by "$blessed_by" \
-                '{comment_id: $id, blessed_by: $by}')
+                --arg type "polis.blessing" \
+                --arg source_url "$comment_url" \
+                --arg target_url "$target_url" \
+                --arg action "deny" \
+                --arg sig "$signature" \
+                '{type: $type, source_url: $source_url, target_url: $target_url, action: $action, signature: $sig}')
 
-            # Call deny endpoint
             local response=$(curl -s -w "\n%{http_code}" \
-                --location --request POST "$POLIS_DENY_ENDPOINT" \
+                --location --request POST "$POLIS_RELATIONSHIP_UPDATE_ENDPOINT" \
                 --header "Authorization: Bearer $DISCOVERY_SERVICE_KEY" \
                 --header 'Content-Type: application/json' \
                 --data "$payload")
 
             local http_code=$(echo "$response" | tail -n 1)
-            local body=$(echo "$response" | sed '$d')
 
             if [ "$http_code" = "200" ]; then
-                local comment_url=$(echo "$body" | jq -r '.request.comment_url')
-                local in_reply_to=$(echo "$body" | jq -r '.request.in_reply_to')
-
                 # Remove from blessed-comments.json
-                remove_from_blessed_comments_json "$comment_url" "$in_reply_to"
-
+                remove_from_blessed_comments_json "$comment_url" "$target_url"
                 denied_count=$((denied_count + 1))
             else
                 failed_count=$((failed_count + 1))
-                info_human "Warning: Failed to deny comment #$comment_id (HTTP $http_code)"
+                info_human "Warning: Failed to deny comment $comment_url (HTTP $http_code)"
             fi
-        done
+        done < <(echo "$blessed_urls" | jq -r '.[]')
     fi
 
     # Remove from following.json
     remove_from_following_json "$author_url"
+
+    # Emit unfollow event to discovery stream (non-fatal, matches Go CLI)
+    local target_domain=$(extract_domain_from_url "$author_url")
+    _emit_stream_event "polis.follow.removed" "$(jq -n -c --arg target_domain "$target_domain" '{target_domain: $target_domain}')"
 
     # Output results
     if [ "$JSON_MODE" = true ]; then
@@ -5651,11 +5775,11 @@ cmd_unfollow() {
         success "Successfully unfollowed $author_url"
         echo "  - Removed from following.json"
 
-        if [ $comment_count -gt 0 ]; then
+        if [ "$url_count" -gt 0 ]; then
             if [ $failed_count -eq 0 ]; then
                 echo "  - Denied $denied_count blessed comment(s)"
             else
-                echo "  - Denied $denied_count/$comment_count comment(s) ($failed_count failed)"
+                echo "  - Denied $denied_count/$url_count comment(s) ($failed_count failed)"
             fi
         fi
     fi
@@ -5907,6 +6031,9 @@ signature: $signature
 
     # Regenerate manifest.json
     generate_manifest true
+
+    # Register post with discovery service (non-fatal, matches Go CLI)
+    _register_post_with_discovery "$canonical_path" "$content_hash" "$title"
 
     # Output results
     if [ "$JSON_MODE" = true ]; then
@@ -6287,7 +6414,7 @@ cmd_migrate() {
             '{old_domain: $old, new_domain: $new, signature: $sig}')
 
         # Call edge function
-        local migrate_endpoint="${DISCOVERY_SERVICE_URL}/migrations"
+        local migrate_endpoint="${DISCOVERY_SERVICE_URL}/ds-migrations"
         local response=$(curl -s -w "\n%{http_code}" \
             --location --request POST "$migrate_endpoint" \
             --header "Authorization: Bearer $DISCOVERY_SERVICE_KEY" \
@@ -6390,7 +6517,7 @@ cmd_register() {
     info_human "Checking registration status for $domain..."
 
     # Check if already registered via sites-check endpoint
-    local check_endpoint="${DISCOVERY_SERVICE_URL}/sites-check?domain=$domain"
+    local check_endpoint="${DISCOVERY_SERVICE_URL}/ds-sites-check?domain=$domain"
     local check_response=$(curl -s -w "\n%{http_code}" \
         --location --request GET "$check_endpoint" \
         --header "Authorization: Bearer $DISCOVERY_SERVICE_KEY" \
@@ -6420,7 +6547,7 @@ cmd_register() {
         local attestation_verified="unknown"
         if [ -n "$service_attestation" ] && [ "$service_attestation" != "null" ]; then
             # Fetch discovery service public key
-            local pubkey_endpoint="${DISCOVERY_SERVICE_URL}/sites-public-key"
+            local pubkey_endpoint="${DISCOVERY_SERVICE_URL}/ds-sites-public-key"
             local pubkey_response=$(curl -s -w "\n%{http_code}" \
                 --location --request GET "$pubkey_endpoint" \
                 --header "Authorization: Bearer $DISCOVERY_SERVICE_KEY" 2>&1)
@@ -6525,7 +6652,7 @@ cmd_register() {
 
     # Get optional metadata from .well-known/polis
     local email=$(jq -r '.email // empty' "$WELL_KNOWN_DIR/polis" 2>/dev/null || true)
-    local author_name=$(jq -r '.author_name // empty' "$WELL_KNOWN_DIR/polis" 2>/dev/null || true)
+    local author_name=$(jq -r '.author // empty' "$WELL_KNOWN_DIR/polis" 2>/dev/null || true)
 
     # Create final payload with signature and optional fields
     local final_payload=$(jq -n \
@@ -6535,12 +6662,12 @@ cmd_register() {
         --arg sig "$signature" \
         --arg email "$email" \
         --arg author "$author_name" \
-        '{version: $ver, action: $act, domain: $dom, owner_signature: $sig} +
+        '{version: $ver, action: $act, domain: $dom, signature: $sig} +
          (if $email != "" then {email: $email} else {} end) +
          (if $author != "" then {author_name: $author} else {} end)')
 
     # Call sites-register endpoint
-    local register_endpoint="${DISCOVERY_SERVICE_URL}/sites-register"
+    local register_endpoint="${DISCOVERY_SERVICE_URL}/ds-sites-register"
     local response=$(curl -s -w "\n%{http_code}" \
         --location --request POST "$register_endpoint" \
         --header "Authorization: Bearer $DISCOVERY_SERVICE_KEY" \
@@ -6650,7 +6777,7 @@ cmd_unregister() {
     # Check if registered
     info_human "Checking registration status for $domain..."
 
-    local check_endpoint="${DISCOVERY_SERVICE_URL}/sites-check?domain=$domain"
+    local check_endpoint="${DISCOVERY_SERVICE_URL}/ds-sites-check?domain=$domain"
     local check_response=$(curl -s -w "\n%{http_code}" \
         --location --request GET "$check_endpoint" \
         --header "Authorization: Bearer $DISCOVERY_SERVICE_KEY" \
@@ -6728,10 +6855,10 @@ cmd_unregister() {
         --arg act "unregister" \
         --arg dom "$domain" \
         --arg sig "$signature" \
-        '{version: $ver, action: $act, domain: $dom, owner_signature: $sig}')
+        '{version: $ver, action: $act, domain: $dom, signature: $sig}')
 
     # Call sites-unregister endpoint
-    local unregister_endpoint="${DISCOVERY_SERVICE_URL}/sites-unregister"
+    local unregister_endpoint="${DISCOVERY_SERVICE_URL}/ds-sites-unregister"
     local response=$(curl -s -w "\n%{http_code}" \
         --location --request POST "$unregister_endpoint" \
         --header "Authorization: Bearer $DISCOVERY_SERVICE_KEY" \
@@ -6829,12 +6956,12 @@ cmd_notifications_list() {
         if [ -n "$domain" ]; then
             local blessing_response=$(curl -s --max-time 30 \
                 --header "Authorization: Bearer $DISCOVERY_SERVICE_KEY" \
-                "${POLIS_BLESSING_REQUESTS_ENDPOINT}?in_reply_to_domain=${domain}" 2>/dev/null)
+                "${POLIS_RELATIONSHIP_QUERY_ENDPOINT}?type=polis.blessing&actor=${domain}&status=pending" 2>/dev/null)
 
             if [ -n "$blessing_response" ]; then
                 pending_count=$(echo "$blessing_response" | jq -r '.count // 0' 2>/dev/null)
                 if [ "$pending_count" -gt 0 ]; then
-                    pending_blessings=$(echo "$blessing_response" | jq -c '.requests // []' 2>/dev/null)
+                    pending_blessings=$(echo "$blessing_response" | jq -c '.records // []' 2>/dev/null)
                 fi
             fi
         fi
@@ -6898,242 +7025,6 @@ cmd_notifications_list() {
 }
 
 # Read/dismiss notifications
-cmd_notifications_read() {
-    local id="$1"
-    local all=false
-
-    if [ "$id" = "--all" ] || [ "$id" = "-a" ]; then
-        all=true
-    fi
-
-    if [ "$all" = true ]; then
-        remove_all_notifications
-        if [ "$JSON_MODE" = true ]; then
-            json_success "notifications-read" '{"removed": "all"}'
-        else
-            success "All notifications marked as read"
-        fi
-    elif [ -n "$id" ]; then
-        remove_notification "$id"
-        if [ "$JSON_MODE" = true ]; then
-            json_success "notifications-read" "{\"removed\": \"$id\"}"
-        else
-            success "Notification $id marked as read"
-        fi
-    else
-        if [ "$JSON_MODE" = true ]; then
-            json_error "notifications-read" "INVALID_INPUT" "Notification ID required. Use --all to mark all as read."
-        else
-            error "Notification ID required. Use --all to mark all as read."
-        fi
-    fi
-}
-
-# Dismiss notifications (same as read, but named differently for UX)
-cmd_notifications_dismiss() {
-    local id="$1"
-    shift || true
-
-    # Check for --older-than option
-    while [ $# -gt 0 ]; do
-        case "$1" in
-            --older-than)
-                local days="${2%d}"  # Remove 'd' suffix if present
-                shift 2
-                local removed=$(remove_old_notifications "$days")
-                if [ "$JSON_MODE" = true ]; then
-                    json_success "notifications-dismiss" "{\"removed\": $removed, \"older_than_days\": $days}"
-                else
-                    success "Dismissed $removed notifications older than $days days"
-                fi
-                return
-                ;;
-            *)
-                shift
-                ;;
-        esac
-    done
-
-    # If no --older-than, behave like read
-    cmd_notifications_read "$id"
-}
-
-# Sync notifications from discovery service (placeholder for Phase 2+)
-cmd_notifications_sync() {
-    local reset=false
-
-    while [ $# -gt 0 ]; do
-        case "$1" in
-            --reset)
-                reset=true
-                shift
-                ;;
-            *)
-                shift
-                ;;
-        esac
-    done
-
-    # Initialize manifest
-    init_notifications_manifest
-
-    if [ "$reset" = true ]; then
-        update_notifications_watermark "1970-01-01T00:00:00Z"
-        info_human "Reset watermark. Next sync will fetch all notifications."
-    fi
-
-    local last_ts=$(get_notifications_watermark)
-    local new_ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-
-    # Check for version updates (Phase 1)
-    local version_notification_added=false
-    if [ -n "$DISCOVERY_SERVICE_URL" ]; then
-        local version_endpoint="${DISCOVERY_SERVICE_URL}/polis-version"
-        local version_response=$(curl -s --max-time 10 \
-            "${version_endpoint}?current=${VERSION}" 2>/dev/null)
-
-        if [ -n "$version_response" ]; then
-            local latest=$(echo "$version_response" | jq -r '.latest // empty')
-            local upgrade=$(echo "$version_response" | jq -r '.upgrade_available // false')
-
-            if [ "$upgrade" = "true" ] && [ -n "$latest" ]; then
-                # Check if we should add this notification
-                if is_notification_type_enabled "version_available"; then
-                    local payload=$(echo "$version_response" | jq -c \
-                        --arg current "$VERSION" \
-                        '{current_version: $current, latest_version: .latest, released_at: .released_at, download_url: .download_url}')
-                    add_notification "version_available" "discovery" "$payload" "version_available:$latest" > /dev/null
-                    version_notification_added=true
-                fi
-            fi
-        fi
-    fi
-
-    # Update watermark
-    update_notifications_watermark "$new_ts"
-
-    # Output
-    if [ "$JSON_MODE" = true ]; then
-        local result=$(jq -n \
-            --arg last "$last_ts" \
-            --arg new "$new_ts" \
-            --argjson version_added "$version_notification_added" \
-            '{
-                synced_from: $last,
-                synced_to: $new,
-                version_notification_added: $version_added
-            }')
-        json_success "notifications-sync" "$result"
-    else
-        success "Synced notifications"
-        if [ "$version_notification_added" = true ]; then
-            info "New version available notification added"
-        fi
-    fi
-}
-
-# Configure notification preferences
-cmd_notifications_config() {
-    local action=""
-    local value=""
-
-    while [ $# -gt 0 ]; do
-        case "$1" in
-            --poll-interval)
-                action="poll_interval"
-                value="$2"
-                shift 2
-                ;;
-            --enable)
-                action="enable"
-                value="$2"
-                shift 2
-                ;;
-            --disable)
-                action="disable"
-                value="$2"
-                shift 2
-                ;;
-            --mute)
-                action="mute"
-                value="$2"
-                shift 2
-                ;;
-            --unmute)
-                action="unmute"
-                value="$2"
-                shift 2
-                ;;
-            *)
-                shift
-                ;;
-        esac
-    done
-
-    # Initialize manifest
-    init_notifications_manifest
-
-    if [ -z "$action" ]; then
-        # Show current config
-        local prefs=$(get_notification_preferences)
-        if [ "$JSON_MODE" = true ]; then
-            json_success "notifications-config" "$prefs"
-        else
-            echo ""
-            info "Notification Preferences:"
-            echo "$prefs" | jq -r '
-                "  Poll interval: \(.poll_interval_minutes // 60) minutes",
-                "  Enabled types: \(.enabled_types // [] | join(", "))",
-                "  Muted domains: \(.muted_domains // [] | if length == 0 then "(none)" else join(", ") end)"
-            '
-            echo ""
-        fi
-        return
-    fi
-
-    local manifest="$NOTIFICATIONS_MANIFEST"
-    local temp_file="${manifest}.tmp"
-
-    case "$action" in
-        poll_interval)
-            # Parse interval (e.g., "30m" -> 30)
-            local minutes="${value%m}"
-            if [ "$minutes" -lt 15 ]; then
-                minutes=15
-                info_human "Minimum poll interval is 15 minutes. Setting to 15."
-            fi
-            jq --argjson mins "$minutes" '.preferences.poll_interval_minutes = $mins' "$manifest" > "$temp_file"
-            mv "$temp_file" "$manifest"
-            success_human "Poll interval set to $minutes minutes"
-            ;;
-        enable)
-            jq --arg t "$value" '.preferences.enabled_types |= (. + [$t] | unique)' "$manifest" > "$temp_file"
-            mv "$temp_file" "$manifest"
-            success_human "Enabled notification type: $value"
-            ;;
-        disable)
-            jq --arg t "$value" '.preferences.enabled_types |= (. - [$t])' "$manifest" > "$temp_file"
-            mv "$temp_file" "$manifest"
-            success_human "Disabled notification type: $value"
-            ;;
-        mute)
-            jq --arg d "$value" '.preferences.muted_domains |= (. + [$d] | unique)' "$manifest" > "$temp_file"
-            mv "$temp_file" "$manifest"
-            success_human "Muted domain: $value"
-            ;;
-        unmute)
-            jq --arg d "$value" '.preferences.muted_domains |= (. - [$d])' "$manifest" > "$temp_file"
-            mv "$temp_file" "$manifest"
-            success_human "Unmuted domain: $value"
-            ;;
-    esac
-
-    if [ "$JSON_MODE" = true ]; then
-        local prefs=$(get_notification_preferences)
-        json_success "notifications-config" "$prefs"
-    fi
-}
-
 # Main notifications command dispatcher
 cmd_notifications() {
     # Check initialization
@@ -7144,22 +7035,6 @@ cmd_notifications() {
     local subcommand="${1:-}"
 
     case "$subcommand" in
-        read)
-            shift
-            cmd_notifications_read "$@"
-            ;;
-        dismiss)
-            shift
-            cmd_notifications_dismiss "$@"
-            ;;
-        sync)
-            shift
-            cmd_notifications_sync "$@"
-            ;;
-        config)
-            shift
-            cmd_notifications_config "$@"
-            ;;
         list|"")
             shift 2>/dev/null || true
             cmd_notifications_list "$@"
@@ -9092,12 +8967,7 @@ main() {
             echo ""
             echo "Commands related to notifications:"
             echo "  polis notifications             List unread notifications"
-            echo "  polis notifications list        List notifications (--type <types>, --all)"
-            echo "  polis notifications read <id>   Mark notification as read (--all for all)"
-            echo "  polis notifications dismiss <id>"
-            echo "                                  Dismiss notification (--older-than 30d for old ones)"
-            echo "  polis notifications sync        Sync notifications from discovery service (--reset for full)"
-            echo "  polis notifications config      Configure preferences (--poll-interval, --enable, --disable, --mute)"
+            echo "  polis notifications list        List notifications (--type <types>)"
             echo ""
             echo "Commands related to site administration:"
             echo "  polis register                  List your site in the public directory (makes content discoverable)"

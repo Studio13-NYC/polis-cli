@@ -247,8 +247,8 @@ func TestInit_CustomFilePaths(t *testing.T) {
 	if err := json.Unmarshal(data, &following); err != nil {
 		t.Fatalf("following.json is not valid JSON: %v", err)
 	}
-	if following["version"] != "dev" {
-		t.Errorf("following.json version = %v, want %q", following["version"], "dev")
+	if following["version"] != "polis-cli-go/dev" {
+		t.Errorf("following.json version = %v, want %q", following["version"], "polis-cli-go/dev")
 	}
 }
 
@@ -298,6 +298,11 @@ func TestInit_RefusesOverwrite(t *testing.T) {
 func TestInit_VersionPropagation(t *testing.T) {
 	dir := t.TempDir()
 
+	// Set the package Version so GetGenerator() returns the expected value
+	oldVersion := Version
+	defer func() { Version = oldVersion }()
+	Version = "0.47.0"
+
 	opts := InitOptions{
 		Version: "0.47.0",
 	}
@@ -310,13 +315,15 @@ func TestInit_VersionPropagation(t *testing.T) {
 		t.Fatal("Init should succeed")
 	}
 
+	expected := "polis-cli-go/0.47.0"
+
 	// Check .well-known/polis version
 	wk, err := LoadWellKnown(dir)
 	if err != nil {
 		t.Fatalf("Failed to load .well-known/polis: %v", err)
 	}
-	if wk.Version != "0.47.0" {
-		t.Errorf(".well-known/polis version = %q, want %q", wk.Version, "0.47.0")
+	if wk.Version != expected {
+		t.Errorf(".well-known/polis version = %q, want %q", wk.Version, expected)
 	}
 
 	// Check manifest.json version
@@ -326,8 +333,8 @@ func TestInit_VersionPropagation(t *testing.T) {
 	}
 	var manifest map[string]interface{}
 	json.Unmarshal(manifestData, &manifest)
-	if manifest["version"] != "0.47.0" {
-		t.Errorf("manifest.json version = %v, want %q", manifest["version"], "0.47.0")
+	if manifest["version"] != expected {
+		t.Errorf("manifest.json version = %v, want %q", manifest["version"], expected)
 	}
 
 	// Check following.json version
@@ -337,8 +344,8 @@ func TestInit_VersionPropagation(t *testing.T) {
 	}
 	var following map[string]interface{}
 	json.Unmarshal(followingData, &following)
-	if following["version"] != "0.47.0" {
-		t.Errorf("following.json version = %v, want %q", following["version"], "0.47.0")
+	if following["version"] != expected {
+		t.Errorf("following.json version = %v, want %q", following["version"], expected)
 	}
 
 	// Check blessed-comments.json version
@@ -348,15 +355,19 @@ func TestInit_VersionPropagation(t *testing.T) {
 	}
 	var blessed map[string]interface{}
 	json.Unmarshal(blessedData, &blessed)
-	if blessed["version"] != "0.47.0" {
-		t.Errorf("blessed-comments.json version = %v, want %q", blessed["version"], "0.47.0")
+	if blessed["version"] != expected {
+		t.Errorf("blessed-comments.json version = %v, want %q", blessed["version"], expected)
 	}
 }
 
 func TestInit_DefaultVersion(t *testing.T) {
 	dir := t.TempDir()
 
-	// No Version specified → defaults to "dev"
+	// No Version specified → uses GetGenerator() with default "dev"
+	oldVersion := Version
+	defer func() { Version = oldVersion }()
+	Version = "dev"
+
 	result, err := Init(dir, InitOptions{})
 	if err != nil {
 		t.Fatalf("Init failed: %v", err)
@@ -369,8 +380,9 @@ func TestInit_DefaultVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to load .well-known/polis: %v", err)
 	}
-	if wk.Version != "dev" {
-		t.Errorf(".well-known/polis version = %q, want %q", wk.Version, "dev")
+	expected := "polis-cli-go/dev"
+	if wk.Version != expected {
+		t.Errorf(".well-known/polis version = %q, want %q", wk.Version, expected)
 	}
 }
 

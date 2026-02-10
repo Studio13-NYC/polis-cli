@@ -223,8 +223,10 @@ const App = {
 
             switch (validation.status) {
                 case 'valid':
-                    document.getElementById('subdomain-display').textContent =
+                    document.getElementById('domain-display').textContent =
                         status.site_title || '';
+                    // Show domain in header
+                    this.updateDomainDisplay(status.base_url);
                     // Store base URL for live links in browser mode
                     this.siteBaseUrl = status.base_url || '';
                     // Load frontmatter visibility setting
@@ -233,6 +235,7 @@ const App = {
                     await this.loadAllCounts();
                     await this.initViewMode();
                     await this.loadViewContent();
+                    this.initNotifications();
                     this.showScreen('dashboard');
                     break;
 
@@ -249,13 +252,15 @@ const App = {
                 default:
                     // Legacy fallback for backwards compatibility
                     if (status.configured) {
-                        document.getElementById('subdomain-display').textContent =
+                        document.getElementById('domain-display').textContent =
                             status.site_title || '';
+                        this.updateDomainDisplay(status.base_url);
                         // Store base URL for live links in browser mode
                         this.siteBaseUrl = status.base_url || '';
                         // Load frontmatter visibility setting
                         this.showFrontmatter = status.show_frontmatter !== false;
                         this.updateFrontmatterToggle();
+                        this.initNotifications();
                         await this.loadAllCounts();
                         await this.initViewMode();
                         await this.loadViewContent();
@@ -362,6 +367,13 @@ const App = {
                 this.counts.feedUnread = 0;
             }
 
+            try {
+                const followerData = await this.api('GET', '/api/followers/count');
+                this.counts.followers = followerData.count || 0;
+            } catch (e) {
+                this.counts.followers = 0;
+            }
+
             this.updateBadges();
         } catch (err) {
             console.error('Failed to load counts:', err);
@@ -383,6 +395,7 @@ const App = {
         // Social
         this.updateBadge('feed-count', this.counts.feedUnread, this.counts.feedUnread > 0);
         this.updateBadge('following-count', this.counts.following);
+        this.updateBadge('followers-count', this.counts.followers);
     },
 
     updateBadge(id, count, isWarning = false) {
@@ -487,7 +500,7 @@ const App = {
 
             // Social views
             case 'feed':
-                contentTitle.textContent = 'Feed';
+                contentTitle.textContent = 'Conversations';
                 contentActions.innerHTML = '<button class="secondary sync-btn" onclick="App.markAllFeedRead()">Mark All Read</button> <button class="secondary sync-btn" onclick="App.refreshFeed()">Refresh</button>';
                 await this.renderFeedList(contentList);
                 break;
@@ -496,6 +509,18 @@ const App = {
                 contentTitle.textContent = 'Following';
                 contentActions.innerHTML = '<button class="primary" onclick="App.openFollowPanel()">Follow Author</button>';
                 await this.renderFollowingList(contentList);
+                break;
+
+            case 'activity':
+                contentTitle.textContent = 'Activity';
+                contentActions.innerHTML = '<button class="secondary sync-btn" onclick="App.resetActivity()">Reset</button> <button class="secondary sync-btn" onclick="App.refreshActivity()">Refresh</button>';
+                await this.renderActivityStream(contentList);
+                break;
+
+            case 'followers':
+                contentTitle.textContent = 'Followers';
+                contentActions.innerHTML = '<button class="secondary sync-btn" onclick="App.refreshFollowers(true)">Full Refresh</button>';
+                await this.renderFollowersList(contentList);
                 break;
 
         }
@@ -723,8 +748,10 @@ const App = {
             this.showToast('Site initialized successfully!', 'success');
 
             // Update display and show dashboard
-            document.getElementById('subdomain-display').textContent =
+            document.getElementById('domain-display').textContent =
                 result.site_title || '';
+            this.updateDomainDisplay(result.base_url);
+            this.initNotifications();
             await this.loadAllCounts();
             await this.initViewMode();
             await this.loadViewContent();
@@ -783,8 +810,10 @@ const App = {
             this.showToast('Site linked successfully!', 'success');
 
             // Update display and show dashboard
-            document.getElementById('subdomain-display').textContent =
+            document.getElementById('domain-display').textContent =
                 result.site_title || '';
+            this.updateDomainDisplay(result.base_url);
+            this.initNotifications();
             await this.loadAllCounts();
             await this.initViewMode();
             await this.loadViewContent();
@@ -1121,7 +1150,7 @@ const App = {
                             </div>
                             <div class="comment-actions">
                                 <button class="primary" onclick="event.stopPropagation(); App.grantBlessing('${this.escapeHtml(r.comment_version)}', '${this.escapeHtml(r.comment_url)}', '${this.escapeHtml(r.in_reply_to)}')">Bless</button>
-                                <button class="secondary danger" onclick="event.stopPropagation(); App.denyBlessing('${this.escapeHtml(r.comment_version)}')">Deny</button>
+                                <button class="secondary danger" onclick="event.stopPropagation(); App.denyBlessing('${this.escapeHtml(r.comment_url)}', '${this.escapeHtml(r.in_reply_to)}')">Deny</button>
                             </div>
                         </div>
                     `).join('')}
@@ -1178,7 +1207,7 @@ const App = {
 
         footer.innerHTML = `
             <button class="primary" onclick="App.grantBlessing('${this.escapeHtml(request.comment_version)}', '${this.escapeHtml(request.comment_url)}', '${this.escapeHtml(request.in_reply_to)}'); App.closeCommentDetail();">Bless</button>
-            <button class="secondary danger" onclick="App.denyBlessing('${this.escapeHtml(request.comment_version)}'); App.closeCommentDetail();">Deny</button>
+            <button class="secondary danger" onclick="App.denyBlessing('${this.escapeHtml(request.comment_url)}', '${this.escapeHtml(request.in_reply_to)}'); App.closeCommentDetail();">Deny</button>
         `;
 
         panel.classList.remove('hidden');
@@ -2522,13 +2551,14 @@ echo "File: $POLIS_PATH"</code>
     },
 
     // Deny blessing to an incoming comment request
-    async denyBlessing(commentVersion) {
+    async denyBlessing(commentURL, inReplyTo) {
         const confirmed = await this.showConfirmModal('Deny Blessing', 'Deny this blessing request? The commenter will be notified.', 'Deny', 'Cancel', 'danger');
         if (!confirmed) return;
 
         try {
             await this.api('POST', '/api/blessing/deny', {
-                comment_version: commentVersion
+                comment_url: commentURL,
+                in_reply_to: inReplyTo
             });
 
             this.showToast('Blessing denied', 'success');
@@ -4506,7 +4536,7 @@ echo "File: $POLIS_PATH"</code>
             if (newItems > 0) {
                 this.showToast(`${newItems} new item${newItems > 1 ? 's' : ''}`, 'success');
             } else {
-                this.showToast('Feed is up to date', 'success');
+                this.showToast('Conversations up to date', 'success');
             }
 
             // Re-render if still on feed view
@@ -4777,6 +4807,157 @@ echo "File: $POLIS_PATH"</code>
     },
 
     // Utility: escape HTML
+    // ==================== Activity Stream ====================
+
+    _activityCursor: '0',
+    _activityEvents: [],
+
+    async renderActivityStream(container) {
+        try {
+            container.innerHTML = '<div class="content-list"><div class="empty-state"><p>Loading activity...</p></div></div>';
+            const result = await this.api('GET', `/api/activity?since=${this._activityCursor}&limit=100`);
+            const events = result.events || [];
+
+            if (events.length > 0) {
+                this._activityEvents = this._activityEvents.concat(events);
+                this._activityCursor = result.cursor || this._activityCursor;
+            }
+
+            if (this._activityEvents.length === 0) {
+                container.innerHTML = `<div class="content-list"><div class="empty-state">
+                    <h3>No activity yet</h3>
+                    <p>Follow some authors to see their activity here.</p>
+                </div></div>`;
+                return;
+            }
+
+            const hasMore = result.has_more;
+            container.innerHTML = `
+                <div class="content-list">
+                    ${this._activityEvents.map(evt => this.renderActivityEvent(evt)).join('')}
+                </div>
+                ${hasMore ? '<div class="activity-load-more"><button class="secondary" onclick="App.loadMoreActivity()">Load More</button></div>' : ''}
+            `;
+        } catch (err) {
+            container.innerHTML = `<div class="content-list"><div class="empty-state"><h3>Failed to load activity</h3><p>${this.escapeHtml(err.message)}</p></div></div>`;
+        }
+    },
+
+    renderActivityEvent(evt) {
+        const typeLabels = {
+            'polis.post.published': 'published a post',
+            'polis.post.updated': 'updated a post',
+            'polis.blessing.requested': 'requested a blessing',
+            'polis.blessing.granted': 'granted a blessing',
+            'polis.blessing.denied': 'denied a blessing',
+            'polis.follow.announced': 'followed someone',
+            'polis.follow.removed': 'unfollowed someone',
+        };
+        const actionLabel = typeLabels[evt.type] || evt.type;
+        const typeBadge = evt.type.split('.').pop();
+
+        let detail = '';
+        if (evt.payload) {
+            if (evt.payload.title) {
+                detail = `<span class="activity-detail">${this.escapeHtml(evt.payload.title)}</span>`;
+            } else if (evt.payload.post_url) {
+                detail = `<span class="activity-detail">${this.escapeHtml(evt.payload.post_url)}</span>`;
+            } else if (evt.payload.target_domain) {
+                detail = `<span class="activity-detail">${this.escapeHtml(evt.payload.target_domain)}</span>`;
+            }
+        }
+
+        return `
+            <div class="content-item activity-event">
+                <div class="item-info">
+                    <div class="item-title">
+                        <span class="activity-actor">${this.escapeHtml(evt.actor)}</span>
+                        ${actionLabel}
+                    </div>
+                    <div class="item-path">
+                        <span class="activity-type-badge">${this.escapeHtml(typeBadge)}</span>
+                        ${detail}
+                    </div>
+                </div>
+                <span class="item-date">${this.formatDate(evt.timestamp)}</span>
+            </div>
+        `;
+    },
+
+    async refreshActivity() {
+        const contentList = document.getElementById('content-list');
+        if (contentList) await this.renderActivityStream(contentList);
+    },
+
+    async resetActivity() {
+        this._activityCursor = '0';
+        this._activityEvents = [];
+        const contentList = document.getElementById('content-list');
+        if (contentList) await this.renderActivityStream(contentList);
+    },
+
+    async loadMoreActivity() {
+        const contentList = document.getElementById('content-list');
+        if (contentList) await this.renderActivityStream(contentList);
+    },
+
+    // ==================== Followers ====================
+
+    async renderFollowersList(container) {
+        try {
+            container.innerHTML = '<div class="content-list"><div class="empty-state"><p>Loading followers...</p></div></div>';
+            const result = await this.api('GET', '/api/followers/count');
+            const followers = result.followers || [];
+            const count = result.count || 0;
+
+            this.counts.followers = count;
+            this.updateBadge('followers-count', count);
+
+            if (followers.length === 0) {
+                container.innerHTML = `<div class="content-list"><div class="empty-state">
+                    <h3>No followers yet</h3>
+                    <p>When other polis authors follow you, they'll appear here.</p>
+                </div></div>`;
+                return;
+            }
+
+            container.innerHTML = `
+                <div class="content-list">
+                    <div class="followers-summary">${count} follower${count !== 1 ? 's' : ''}</div>
+                    ${followers.map(domain => `
+                        <div class="content-item follower-item">
+                            <div class="item-info">
+                                <div class="item-title">${this.escapeHtml(domain)}</div>
+                            </div>
+                        </div>
+                    `).join('')}
+                </div>
+            `;
+        } catch (err) {
+            container.innerHTML = `<div class="content-list"><div class="empty-state"><h3>Failed to load followers</h3><p>${this.escapeHtml(err.message)}</p></div></div>`;
+        }
+    },
+
+    async refreshFollowers(fullRefresh) {
+        if (fullRefresh) {
+            const contentList = document.getElementById('content-list');
+            if (contentList) {
+                contentList.innerHTML = '<div class="content-list"><div class="empty-state"><p>Refreshing followers...</p></div></div>';
+                try {
+                    const result = await this.api('GET', '/api/followers/count?refresh=true');
+                    this.counts.followers = result.count || 0;
+                    this.updateBadge('followers-count', this.counts.followers);
+                    await this.renderFollowersList(contentList);
+                } catch (err) {
+                    contentList.innerHTML = `<div class="content-list"><div class="empty-state"><h3>Refresh failed</h3><p>${this.escapeHtml(err.message)}</p></div></div>`;
+                }
+            }
+        } else {
+            const contentList = document.getElementById('content-list');
+            if (contentList) await this.renderFollowersList(contentList);
+        }
+    },
+
     escapeHtml(text) {
         if (!text) return '';
         const div = document.createElement('div');
@@ -4793,6 +4974,218 @@ echo "File: $POLIS_PATH"</code>
             day: 'numeric',
             year: 'numeric'
         });
+    },
+
+    // --- Notification Methods ---
+
+    notificationState: { unreadCount: 0, pollTimer: null, showAll: false, offset: 0, hasMore: true },
+
+    updateDomainDisplay(baseUrl) {
+        const el = document.getElementById('domain-display');
+        if (!el) return;
+        if (!baseUrl) { el.textContent = ''; return; }
+        el.textContent = baseUrl.replace(/^https?:\/\//, '');
+    },
+
+    initNotifications() {
+        this.fetchNotificationCount();
+        if (this.notificationState.pollTimer) {
+            clearInterval(this.notificationState.pollTimer);
+        }
+        this.notificationState.pollTimer = setInterval(() => {
+            this.fetchNotificationCount();
+        }, 60000);
+    },
+
+    async fetchNotificationCount() {
+        try {
+            const resp = await this.api('GET', '/api/notifications/count');
+            this.notificationState.unreadCount = resp.unread || 0;
+            const dot = document.getElementById('notification-dot');
+            if (dot) {
+                dot.classList.toggle('hidden', this.notificationState.unreadCount === 0);
+            }
+        } catch (e) {
+            // Silently fail — notifications are non-critical
+        }
+    },
+
+    async toggleNotifications() {
+        const panel = document.getElementById('notification-panel');
+        if (!panel) return;
+
+        if (!panel.classList.contains('hidden')) {
+            this.closeNotifications();
+            return;
+        }
+
+        panel.classList.remove('hidden');
+        this.notificationState.offset = 0;
+        this.notificationState.hasMore = true;
+        this.notificationState.showAll = false;
+        document.getElementById('notification-toggle-all').textContent = 'Show All';
+        document.getElementById('notification-toggle-all').classList.remove('active');
+
+        await this.loadNotifications(false);
+    },
+
+    closeNotifications() {
+        const panel = document.getElementById('notification-panel');
+        if (panel) panel.classList.add('hidden');
+    },
+
+    async toggleAllNotifications() {
+        this.notificationState.showAll = !this.notificationState.showAll;
+        this.notificationState.offset = 0;
+        this.notificationState.hasMore = true;
+
+        const btn = document.getElementById('notification-toggle-all');
+        if (this.notificationState.showAll) {
+            btn.textContent = 'Unread Only';
+            btn.classList.add('active');
+        } else {
+            btn.textContent = 'Show All';
+            btn.classList.remove('active');
+        }
+
+        await this.loadNotifications(false);
+    },
+
+    async loadNotifications(append) {
+        const list = document.getElementById('notification-list');
+        if (!list) return;
+
+        if (!append) {
+            list.innerHTML = '<div class="notification-loading">Loading...</div>';
+            this.notificationState.offset = 0;
+        }
+
+        const includeRead = this.notificationState.showAll;
+        const limit = 20;
+        const offset = this.notificationState.offset;
+
+        try {
+            const resp = await this.api('GET',
+                `/api/notifications?offset=${offset}&limit=${limit}&include_read=${includeRead}`);
+            const items = resp.notifications || [];
+
+            if (!append) {
+                list.innerHTML = '';
+            } else {
+                // Remove loading indicator
+                const loader = list.querySelector('.notification-loading');
+                if (loader) loader.remove();
+            }
+
+            if (items.length === 0 && offset === 0) {
+                list.innerHTML = '<div class="notification-empty">No notifications</div>';
+                this.notificationState.hasMore = false;
+                return;
+            }
+
+            items.forEach(n => {
+                list.appendChild(this.renderNotification(n));
+            });
+
+            this.notificationState.offset += items.length;
+            this.notificationState.hasMore = this.notificationState.offset < resp.total;
+
+            // Mark displayed unread notifications as read
+            const unreadIds = items.filter(n => !n.read_at).map(n => n.id);
+            if (unreadIds.length > 0) {
+                this.api('POST', '/api/notifications/read', { ids: unreadIds })
+                    .then(() => this.fetchNotificationCount())
+                    .catch(() => {});
+            }
+
+            // Set up infinite scroll
+            if (this.notificationState.hasMore) {
+                list.onscroll = () => {
+                    if (list.scrollTop + list.clientHeight >= list.scrollHeight - 50) {
+                        if (this.notificationState.hasMore) {
+                            list.onscroll = null; // Prevent duplicate triggers
+                            list.insertAdjacentHTML('beforeend',
+                                '<div class="notification-loading">Loading more...</div>');
+                            this.loadNotifications(true);
+                        }
+                    }
+                };
+            }
+        } catch (e) {
+            if (!append) {
+                list.innerHTML = '<div class="notification-empty">Failed to load notifications</div>';
+            }
+        }
+    },
+
+    renderNotification(n) {
+        const div = document.createElement('div');
+        div.className = 'notification-item' + (n.read_at ? '' : ' unread');
+
+        let payload = {};
+        try { payload = typeof n.payload === 'string' ? JSON.parse(n.payload) : (n.payload || {}); }
+        catch (e) { /* ignore */ }
+
+        const typeClass = ['blessing_request', 'comment_blessed'].includes(n.type) ? n.type : 'default';
+        const icon = n.type === 'blessing_request' ? '\u{1F514}' : n.type === 'comment_blessed' ? '\u2713' : '\u2139';
+
+        let message = '';
+        if (n.type === 'blessing_request') {
+            const author = payload.author || n.source || 'Someone';
+            message = `<strong>${this.escapeHtml(author)}</strong> requested a blessing`;
+            if (payload.in_reply_to) {
+                const postName = payload.in_reply_to.split('/').pop();
+                message += ` on <em>${this.escapeHtml(postName)}</em>`;
+            }
+        } else if (n.type === 'comment_blessed') {
+            message = `Comment blessed by <strong>${this.escapeHtml(n.source || 'unknown')}</strong>`;
+        } else {
+            message = this.escapeHtml(n.type.replace(/_/g, ' '));
+            if (payload.message) message = this.escapeHtml(payload.message);
+        }
+
+        div.innerHTML = `
+            <div class="notification-type-badge ${typeClass}">${icon}</div>
+            <div class="notification-body">
+                <div class="notification-message">${message}</div>
+                <div class="notification-meta">${this.formatRelativeTime(n.created_at)}</div>
+            </div>
+        `;
+
+        // Click handler for blessing requests
+        if (n.type === 'blessing_request') {
+            div.onclick = () => {
+                this.closeNotifications();
+                // Navigate to blessing requests view
+                this.switchView('blessing-requests');
+            };
+        }
+
+        return div;
+    },
+
+    escapeHtml(str) {
+        if (!str) return '';
+        const div = document.createElement('div');
+        div.textContent = str;
+        return div.innerHTML;
+    },
+
+    formatRelativeTime(isoString) {
+        if (!isoString) return '';
+        const date = new Date(isoString);
+        const now = new Date();
+        const diffMs = now - date;
+        const diffMin = Math.floor(diffMs / 60000);
+        const diffHour = Math.floor(diffMs / 3600000);
+        const diffDay = Math.floor(diffMs / 86400000);
+
+        if (diffMin < 1) return 'just now';
+        if (diffMin < 60) return `${diffMin} min ago`;
+        if (diffHour < 24) return `${diffHour} hour${diffHour > 1 ? 's' : ''} ago`;
+        if (diffDay < 2) return 'yesterday';
+        if (diffDay < 7) return `${diffDay} days ago`;
+        return this.formatDate(isoString);
     },
 };
 

@@ -1,0 +1,70 @@
+package stream
+
+import (
+	"fmt"
+
+	"github.com/vdibart/polis-cli/cli-go/pkg/discovery"
+)
+
+// FollowHandler is a built-in projection handler for follow/unfollow events.
+// It maintains a set of followers for the local domain.
+type FollowHandler struct {
+	// MyDomain is the domain to filter events for. Only events where
+	// payload.target_domain matches MyDomain are processed.
+	MyDomain string
+}
+
+// FollowerState is the materialized state for the follow projection.
+type FollowerState struct {
+	Followers []string `json:"followers"`
+	Count     int      `json:"count"`
+}
+
+func (h *FollowHandler) TypePrefix() string { return "polis.follow" }
+
+func (h *FollowHandler) EventTypes() []string {
+	return []string{"polis.follow.announced", "polis.follow.removed"}
+}
+
+func (h *FollowHandler) NewState() interface{} {
+	return &FollowerState{}
+}
+
+func (h *FollowHandler) Process(events []discovery.StreamEvent, state interface{}) (interface{}, error) {
+	fs, ok := state.(*FollowerState)
+	if !ok {
+		return nil, fmt.Errorf("follow handler: unexpected state type %T", state)
+	}
+
+	// Build a set from current followers for O(1) lookup
+	followerSet := make(map[string]bool, len(fs.Followers))
+	for _, f := range fs.Followers {
+		followerSet[f] = true
+	}
+
+	for _, evt := range events {
+		// Only process events targeted at our domain
+		targetDomain, _ := evt.Payload["target_domain"].(string)
+		if targetDomain == "" || targetDomain != h.MyDomain {
+			continue
+		}
+
+		switch evt.Type {
+		case "polis.follow.announced":
+			followerSet[evt.Actor] = true
+		case "polis.follow.removed":
+			delete(followerSet, evt.Actor)
+		}
+	}
+
+	// Rebuild slice from set
+	followers := make([]string, 0, len(followerSet))
+	for f := range followerSet {
+		followers = append(followers, f)
+	}
+
+	return &FollowerState{
+		Followers: followers,
+		Count:     len(followers),
+	}, nil
+}

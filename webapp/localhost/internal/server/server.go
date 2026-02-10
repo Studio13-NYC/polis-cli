@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,13 +18,16 @@ import (
 	"time"
 
 	"github.com/vdibart/polis-cli/cli-go/pkg/comment"
+	"github.com/vdibart/polis-cli/cli-go/pkg/discovery"
 	"github.com/vdibart/polis-cli/cli-go/pkg/feed"
 	"github.com/vdibart/polis-cli/cli-go/pkg/following"
 	"github.com/vdibart/polis-cli/cli-go/pkg/hooks"
 	"github.com/vdibart/polis-cli/cli-go/pkg/metadata"
+	"github.com/vdibart/polis-cli/cli-go/pkg/notification"
 	"github.com/vdibart/polis-cli/cli-go/pkg/publish"
 	"github.com/vdibart/polis-cli/cli-go/pkg/render"
 	"github.com/vdibart/polis-cli/cli-go/pkg/site"
+	"github.com/vdibart/polis-cli/cli-go/pkg/stream"
 )
 
 // DefaultDiscoveryServiceURL is the default discovery service URL matching the CLI
@@ -42,11 +46,6 @@ type Config struct {
 	SetupCode string `json:"setup_code,omitempty"` // Deprecated: ignored
 	Subdomain string `json:"subdomain,omitempty"`  // Deprecated: derive from .well-known/polis
 	SetupAt   string `json:"setup_at,omitempty"`   // Deprecated: derive from .well-known/polis
-
-	// Discovery service integration
-	DiscoveryURL string `json:"discovery_url,omitempty"`
-	DiscoveryKey string `json:"discovery_key,omitempty"`
-	AuthorEmail  string `json:"author_email,omitempty"`
 
 	// Hooks configuration
 	Hooks *hooks.HookConfig `json:"hooks,omitempty"`
@@ -71,6 +70,8 @@ type Server struct {
 	PublicKey    []byte
 	Logger       *Logger
 	BaseURL      string // From POLIS_BASE_URL env var (runtime config, not stored in .well-known/polis)
+	DiscoveryURL string // From .env / env var DISCOVERY_SERVICE_URL (not stored in webapp-config.json)
+	DiscoveryKey string // From .env / env var DISCOVERY_SERVICE_KEY (not stored in webapp-config.json)
 }
 
 // Logger handles logging to files organized by date
@@ -347,19 +348,12 @@ func (s *Server) LoadEnv() {
 		env[key] = value
 	}
 
-	// Apply discovery service settings from .env
-	// These override any values in webapp-config.json (env takes precedence)
+	// Apply discovery service settings from .env (single source of truth, like CLI)
 	if url := env["DISCOVERY_SERVICE_URL"]; url != "" {
-		if s.Config == nil {
-			s.Config = &Config{}
-		}
-		s.Config.DiscoveryURL = url
+		s.DiscoveryURL = url
 	}
 	if key := env["DISCOVERY_SERVICE_KEY"]; key != "" {
-		if s.Config == nil {
-			s.Config = &Config{}
-		}
-		s.Config.DiscoveryKey = key
+		s.DiscoveryKey = key
 	}
 
 	// Store POLIS_BASE_URL for runtime use (matches bash CLI behavior)
@@ -372,37 +366,19 @@ func (s *Server) LoadEnv() {
 // ApplyDiscoveryDefaults sets default discovery service URL if not configured.
 // This ensures the webapp works out of the box without requiring .env configuration.
 func (s *Server) ApplyDiscoveryDefaults() {
-	if s.Config == nil {
-		s.Config = &Config{}
-	}
-	if s.Config.DiscoveryURL == "" {
-		s.Config.DiscoveryURL = DefaultDiscoveryServiceURL
+	if s.DiscoveryURL == "" {
+		s.DiscoveryURL = DefaultDiscoveryServiceURL
 	}
 }
 
-// WellKnownPolis represents the .well-known/polis file structure
-type WellKnownPolis struct {
-	Subdomain string `json:"subdomain"`
-	BaseURL   string `json:"base_url"`
-	SiteTitle string `json:"site_title,omitempty"`
-	PublicKey string `json:"public_key"`
-	Generator string `json:"generator"`
-	Version   string `json:"version"`
-	CreatedAt string `json:"created_at"`
-}
-
-// LoadWellKnownPolis reads and parses .well-known/polis
-func (s *Server) LoadWellKnownPolis() (*WellKnownPolis, error) {
-	wellKnownPath := filepath.Join(s.DataDir, ".well-known", "polis")
-	data, err := os.ReadFile(wellKnownPath)
+// GetAuthorEmail returns the author email from .well-known/polis.
+// This is the single source of truth for the site owner's email address.
+func (s *Server) GetAuthorEmail() string {
+	wk, err := site.LoadWellKnown(s.DataDir)
 	if err != nil {
-		return nil, err
+		return ""
 	}
-	var wkp WellKnownPolis
-	if err := json.Unmarshal(data, &wkp); err != nil {
-		return nil, err
-	}
-	return &wkp, nil
+	return wk.Email
 }
 
 // GetSubdomain extracts subdomain from POLIS_BASE_URL env var
@@ -425,7 +401,7 @@ func (s *Server) GetSubdomain() string {
 
 // GetSiteTitle returns site_title from .well-known/polis, falling back to POLIS_BASE_URL if empty
 func (s *Server) GetSiteTitle() string {
-	wkp, err := s.LoadWellKnownPolis()
+	wk, err := site.LoadWellKnown(s.DataDir)
 	if err != nil {
 		// No .well-known/polis file - try config subdomain
 		if s.Config != nil && s.Config.Subdomain != "" {
@@ -434,16 +410,16 @@ func (s *Server) GetSiteTitle() string {
 		return ""
 	}
 	// 1. Try site_title from file
-	if wkp.SiteTitle != "" {
-		return wkp.SiteTitle
+	if wk.SiteTitle != "" {
+		return wk.SiteTitle
 	}
 	// 2. Try base_url from file (for backwards compat with existing files)
-	if wkp.BaseURL != "" {
-		return wkp.BaseURL
+	if wk.BaseURL != "" {
+		return wk.BaseURL
 	}
 	// 3. Construct from subdomain
-	if wkp.Subdomain != "" {
-		return "https://" + wkp.Subdomain + ".polis.pub"
+	if wk.Subdomain != "" {
+		return "https://" + wk.Subdomain + ".polis.pub"
 	}
 	return ""
 }
@@ -544,6 +520,7 @@ func (s *Server) Initialize() {
 		metadata.Version = s.CLIVersion
 		following.Version = s.CLIVersion
 		feed.Version = s.CLIVersion
+		site.Version = s.CLIVersion
 	}
 
 	// Migrate .polis/drafts -> .polis/posts/drafts if needed
@@ -570,6 +547,18 @@ func (s *Server) Initialize() {
 
 	// Apply default discovery URL if not set by config or .env (matches CLI behavior)
 	s.ApplyDiscoveryDefaults()
+
+	// Propagate discovery config to packages that register with discovery.
+	// This ensures publish and comment packages handle registration internally.
+	publish.DiscoveryURL = s.DiscoveryURL
+	publish.DiscoveryKey = s.DiscoveryKey
+	publish.BaseURL = s.BaseURL
+	comment.DiscoveryURL = s.DiscoveryURL
+	comment.DiscoveryKey = s.DiscoveryKey
+	comment.BaseURL = s.BaseURL
+	stream.DiscoveryURL = s.DiscoveryURL
+	stream.DiscoveryKey = s.DiscoveryKey
+	stream.BaseURL = s.BaseURL
 
 	// Initialize logger if log level is configured
 	logLevel := 0
@@ -614,6 +603,72 @@ func (s *Server) Close() {
 	}
 }
 
+// StartNotificationSync starts a background goroutine that periodically
+// syncs notifications from the discovery service (pending blessing requests).
+func (s *Server) StartNotificationSync() {
+	// Run once immediately
+	go func() {
+		s.syncNotifications()
+		ticker := time.NewTicker(60 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			s.syncNotifications()
+		}
+	}()
+}
+
+// syncNotifications queries the discovery service for pending blessing requests
+// and creates notification entries for new ones.
+func (s *Server) syncNotifications() {
+	if s.DiscoveryURL == "" || s.DiscoveryKey == "" {
+		return
+	}
+	baseURL := s.GetBaseURL()
+	if baseURL == "" || s.PrivateKey == nil {
+		return
+	}
+
+	domain := extractDomainFromURL(baseURL)
+	if domain == "" {
+		return
+	}
+
+	client := discovery.NewClient(s.DiscoveryURL, s.DiscoveryKey)
+	resp, err := client.QueryRelationships("polis.blessing", map[string]string{
+		"actor":  domain,
+		"status": "pending",
+	})
+	if err != nil {
+		s.LogDebug("notification sync: query relationships failed: %v", err)
+		return
+	}
+
+	mgr := notification.NewManager(s.DataDir)
+	mgr.InitManifest()
+
+	added := 0
+	for _, r := range resp.Records {
+		// Use source URL as dedupe key
+		dedupeKey := "blessing_request:" + r.SourceURL
+		author, _ := r.Metadata["author"].(string)
+		payload, _ := json.Marshal(map[string]string{
+			"comment_url": r.SourceURL,
+			"in_reply_to": r.TargetURL,
+			"author":      author,
+		})
+		id, _ := mgr.Add("blessing_request", domain, payload, dedupeKey)
+		if id != "" {
+			added++
+		}
+	}
+
+	if added > 0 {
+		s.LogInfo("notification sync: added %d new blessing request notifications", added)
+	}
+
+	mgr.UpdateWatermark(time.Now().UTC().Format("2006-01-02T15:04:05Z"))
+}
+
 // RunOptions contains optional configuration for the server.
 type RunOptions struct {
 	CLIVersion string // CLI version for metadata (empty = use package default)
@@ -651,6 +706,9 @@ func Run(webFS fs.FS, dataDir string, opts ...RunOptions) {
 	server.Initialize()
 	defer server.Close()
 
+	// Start background notification sync
+	server.StartNotificationSync()
+
 	// Find available port
 	port, err := FindAvailablePort()
 	if err != nil {
@@ -680,4 +738,13 @@ func Run(webFS fs.FS, dataDir string, opts ...RunOptions) {
 	if err := http.ListenAndServe(addr, mux); err != nil {
 		log.Fatal("Server error:", err)
 	}
+}
+
+// extractDomainFromURL extracts the hostname from a URL string.
+func extractDomainFromURL(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	return u.Hostname()
 }

@@ -211,7 +211,7 @@ func Init(siteDir string, opts InitOptions) (*InitResult, error) {
 	if _, err := os.Stat(webappConfigPath); os.IsNotExist(err) {
 		webappConfig := map[string]interface{}{
 			"setup_at":         setupTime.Format(time.RFC3339),
-			"view_mode":        "browser",
+			"view_mode":        "list",
 			"show_frontmatter": false,
 		}
 		data, _ := json.MarshalIndent(webappConfig, "", "  ")

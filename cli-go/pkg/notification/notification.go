@@ -1,4 +1,8 @@
-// Package notification manages local notifications and preferences.
+// Package notification manages the notification state layer.
+//
+// Notifications are stored as JSONL in .polis/ds/<domain>/state/notifications.jsonl.
+// Each line is a StateEntry with lifecycle fields (created_at, read_at).
+// Rules and configuration live in config/notifications.json, managed by the stream package.
 package notification
 
 import (
@@ -18,251 +22,147 @@ func GetGenerator() string {
 	return "polis-cli-go/" + Version
 }
 
-// Notification represents a single notification entry.
-type Notification struct {
-	ID        string          `json:"id"`
-	Type      string          `json:"type"`
-	Source    string          `json:"source"`
-	Payload   json.RawMessage `json:"payload"`
-	CreatedAt string          `json:"created_at"`
-	ReadAt    string          `json:"read_at,omitempty"`
+// StateEntry represents a single notification in state.jsonl.
+type StateEntry struct {
+	ID        string `json:"id"`
+	RuleID    string `json:"rule_id"`
+	Actor     string `json:"actor"`
+	Icon      string `json:"icon"`
+	Message   string `json:"message"`
+	EventIDs  []int  `json:"event_ids"`
+	CreatedAt string `json:"created_at"`
+	ReadAt    string `json:"read_at,omitempty"`
 }
 
-// Manifest represents the notifications manifest file.
-type Manifest struct {
-	Version     string      `json:"version"`
-	LastSync    string      `json:"last_sync"`
-	Preferences Preferences `json:"preferences"`
+// StateDir returns the state directory for a given DS domain.
+func StateDir(dataDir, discoveryDomain string) string {
+	return filepath.Join(dataDir, ".polis", "ds", discoveryDomain, "state")
 }
 
-// Preferences holds notification configuration.
-type Preferences struct {
-	PollIntervalMinutes int      `json:"poll_interval_minutes"`
-	EnabledTypes        []string `json:"enabled_types"`
-	MutedDomains        []string `json:"muted_domains"`
+// StateFile returns the path to notifications.jsonl for a given DS domain.
+func StateFile(dataDir, discoveryDomain string) string {
+	return filepath.Join(StateDir(dataDir, discoveryDomain), "notifications.jsonl")
 }
 
-// DefaultNotificationsFile returns the default path to notifications.jsonl.
-func DefaultNotificationsFile(dataDir string) string {
-	return filepath.Join(dataDir, ".polis", "notifications.jsonl")
-}
-
-// DefaultManifestFile returns the default path to notifications-manifest.json.
-func DefaultManifestFile(dataDir string) string {
-	return filepath.Join(dataDir, ".polis", "notifications-manifest.json")
-}
-
-// Manager handles notification operations.
+// Manager handles notification state operations.
 type Manager struct {
-	notificationsFile string
-	manifestFile      string
+	stateFile string
 }
 
-// NewManager creates a new notification manager.
-func NewManager(dataDir string) *Manager {
+// NewManager creates a notification manager for a specific discovery service domain.
+func NewManager(dataDir, discoveryDomain string) *Manager {
 	return &Manager{
-		notificationsFile: DefaultNotificationsFile(dataDir),
-		manifestFile:      DefaultManifestFile(dataDir),
+		stateFile: StateFile(dataDir, discoveryDomain),
 	}
 }
 
-// InitManifest ensures the manifest file exists with defaults.
-func (m *Manager) InitManifest() error {
-	if _, err := os.Stat(m.manifestFile); err == nil {
-		return nil // Already exists
-	}
-
-	manifest := Manifest{
-		Version:  GetGenerator(),
-		LastSync: "1970-01-01T00:00:00Z",
-		Preferences: Preferences{
-			PollIntervalMinutes: 60,
-			EnabledTypes:        []string{"version_available", "blessing_request", "comment_blessed", "domain_migration"},
-			MutedDomains:        []string{},
-		},
-	}
-
-	return m.saveManifest(&manifest)
-}
-
-// LoadManifest loads the notification manifest.
-func (m *Manager) LoadManifest() (*Manifest, error) {
-	data, err := os.ReadFile(m.manifestFile)
+// List returns all notification entries from state.jsonl.
+func (m *Manager) List() ([]StateEntry, error) {
+	file, err := os.Open(m.stateFile)
 	if err != nil {
 		if os.IsNotExist(err) {
-			// Return defaults
-			return &Manifest{
-				Version:  GetGenerator(),
-				LastSync: "1970-01-01T00:00:00Z",
-				Preferences: Preferences{
-					PollIntervalMinutes: 60,
-					EnabledTypes:        []string{"version_available", "blessing_request", "comment_blessed", "domain_migration"},
-					MutedDomains:        []string{},
-				},
-			}, nil
+			return []StateEntry{}, nil
 		}
-		return nil, fmt.Errorf("failed to read manifest: %w", err)
-	}
-
-	var manifest Manifest
-	if err := json.Unmarshal(data, &manifest); err != nil {
-		return nil, fmt.Errorf("failed to parse manifest: %w", err)
-	}
-
-	return &manifest, nil
-}
-
-// saveManifest saves the manifest to disk.
-func (m *Manager) saveManifest(manifest *Manifest) error {
-	if err := os.MkdirAll(filepath.Dir(m.manifestFile), 0755); err != nil {
-		return fmt.Errorf("failed to create directory: %w", err)
-	}
-
-	data, err := json.MarshalIndent(manifest, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal manifest: %w", err)
-	}
-
-	return os.WriteFile(m.manifestFile, append(data, '\n'), 0644)
-}
-
-// GetPreferences returns the notification preferences.
-func (m *Manager) GetPreferences() (*Preferences, error) {
-	manifest, err := m.LoadManifest()
-	if err != nil {
-		return nil, err
-	}
-	return &manifest.Preferences, nil
-}
-
-// UpdateWatermark updates the last sync timestamp.
-func (m *Manager) UpdateWatermark(timestamp string) error {
-	manifest, err := m.LoadManifest()
-	if err != nil {
-		return err
-	}
-
-	manifest.LastSync = timestamp
-	return m.saveManifest(manifest)
-}
-
-// List returns all notifications.
-func (m *Manager) List() ([]Notification, error) {
-	file, err := os.Open(m.notificationsFile)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return []Notification{}, nil
-		}
-		return nil, fmt.Errorf("failed to open notifications file: %w", err)
+		return nil, fmt.Errorf("failed to open state file: %w", err)
 	}
 	defer file.Close()
 
-	var notifications []Notification
+	var entries []StateEntry
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
-		var n Notification
-		if err := json.Unmarshal(scanner.Bytes(), &n); err != nil {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		var e StateEntry
+		if err := json.Unmarshal(line, &e); err != nil {
 			continue // Skip malformed lines
 		}
-		notifications = append(notifications, n)
+		entries = append(entries, e)
 	}
 
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("failed to read notifications: %w", err)
+		return nil, fmt.Errorf("failed to read state file: %w", err)
 	}
 
-	return notifications, nil
+	return entries, nil
 }
 
-// ListByType returns notifications filtered by type.
-func (m *Manager) ListByType(types []string) ([]Notification, error) {
-	all, err := m.List()
-	if err != nil {
-		return nil, err
+// Append adds new entries to state.jsonl, skipping duplicates by ID.
+// Returns the number of entries actually written.
+func (m *Manager) Append(entries []StateEntry) (int, error) {
+	if len(entries) == 0 {
+		return 0, nil
 	}
 
-	if len(types) == 0 {
-		return all, nil
-	}
-
-	typeSet := make(map[string]bool)
-	for _, t := range types {
-		typeSet[t] = true
-	}
-
-	var filtered []Notification
-	for _, n := range all {
-		if typeSet[n.Type] {
-			filtered = append(filtered, n)
-		}
-	}
-
-	return filtered, nil
-}
-
-// Count returns the number of notifications.
-func (m *Manager) Count() (int, error) {
-	notifications, err := m.List()
+	// Load existing IDs for dedup
+	existing, err := m.List()
 	if err != nil {
 		return 0, err
 	}
-	return len(notifications), nil
-}
+	existingIDs := make(map[string]bool, len(existing))
+	for _, e := range existing {
+		existingIDs[e.ID] = true
+	}
 
-// Add adds a new notification.
-func (m *Manager) Add(notifType, source string, payload json.RawMessage, dedupeKey string) (string, error) {
-	// Check for duplicate if dedupeKey provided
-	if dedupeKey != "" {
-		existing, _ := m.List()
-		for _, n := range existing {
-			if n.ID == dedupeKey {
-				return "", nil // Already exists
-			}
+	// Filter out duplicates
+	var toWrite []StateEntry
+	for _, e := range entries {
+		if !existingIDs[e.ID] {
+			toWrite = append(toWrite, e)
+			existingIDs[e.ID] = true // Prevent duplicates within the batch
 		}
 	}
 
-	// Generate ID
-	id := dedupeKey
-	if id == "" {
-		id = fmt.Sprintf("%d", time.Now().UnixNano())
-	}
-
-	notification := Notification{
-		ID:        id,
-		Type:      notifType,
-		Source:    source,
-		Payload:   payload,
-		CreatedAt: time.Now().UTC().Format("2006-01-02T15:04:05Z"),
+	if len(toWrite) == 0 {
+		return 0, nil
 	}
 
 	// Ensure directory exists
-	if err := os.MkdirAll(filepath.Dir(m.notificationsFile), 0755); err != nil {
-		return "", fmt.Errorf("failed to create directory: %w", err)
+	if err := os.MkdirAll(filepath.Dir(m.stateFile), 0755); err != nil {
+		return 0, fmt.Errorf("failed to create directory: %w", err)
 	}
 
-	// Append to file
-	file, err := os.OpenFile(m.notificationsFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	file, err := os.OpenFile(m.stateFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
-		return "", fmt.Errorf("failed to open notifications file: %w", err)
+		return 0, fmt.Errorf("failed to open state file: %w", err)
 	}
 	defer file.Close()
 
-	data, err := json.Marshal(notification)
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal notification: %w", err)
+	for _, e := range toWrite {
+		data, err := json.Marshal(e)
+		if err != nil {
+			continue
+		}
+		if _, err := file.WriteString(string(data) + "\n"); err != nil {
+			return 0, fmt.Errorf("failed to write entry: %w", err)
+		}
 	}
 
-	if _, err := file.WriteString(string(data) + "\n"); err != nil {
-		return "", fmt.Errorf("failed to write notification: %w", err)
-	}
-
-	return id, nil
+	return len(toWrite), nil
 }
 
-// MarkRead sets the ReadAt timestamp on matching notification IDs.
-// If markAll is true, all notifications are marked as read.
+// CountUnread returns the number of unread notifications.
+func (m *Manager) CountUnread() (int, error) {
+	entries, err := m.List()
+	if err != nil {
+		return 0, err
+	}
+
+	count := 0
+	for _, e := range entries {
+		if e.ReadAt == "" {
+			count++
+		}
+	}
+	return count, nil
+}
+
+// MarkRead sets read_at on matching entry IDs.
+// If markAll is true, all unread entries are marked as read.
+// Returns the number of entries marked.
 func (m *Manager) MarkRead(ids []string, markAll bool) (int, error) {
-	notifications, err := m.List()
+	entries, err := m.List()
 	if err != nil {
 		return 0, err
 	}
@@ -274,58 +174,41 @@ func (m *Manager) MarkRead(ids []string, markAll bool) (int, error) {
 
 	now := time.Now().UTC().Format("2006-01-02T15:04:05Z")
 	marked := 0
-	for i := range notifications {
-		if notifications[i].ReadAt != "" {
-			continue // already read
+	for i := range entries {
+		if entries[i].ReadAt != "" {
+			continue
 		}
-		if markAll || idSet[notifications[i].ID] {
-			notifications[i].ReadAt = now
+		if markAll || idSet[entries[i].ID] {
+			entries[i].ReadAt = now
 			marked++
 		}
 	}
 
 	if marked > 0 {
-		if err := m.writeAll(notifications); err != nil {
+		if err := m.writeAll(entries); err != nil {
 			return 0, err
 		}
 	}
 	return marked, nil
 }
 
-// CountUnread returns the number of unread notifications.
-func (m *Manager) CountUnread() (int, error) {
-	notifications, err := m.List()
-	if err != nil {
-		return 0, err
-	}
-
-	count := 0
-	for _, n := range notifications {
-		if n.ReadAt == "" {
-			count++
-		}
-	}
-	return count, nil
-}
-
-// ListPaginated returns a page of notifications sorted newest-first.
-// If includeRead is false, only unread notifications are returned.
-// Returns the page of notifications and the total count matching the filter.
-func (m *Manager) ListPaginated(offset, limit int, includeRead bool) ([]Notification, int, error) {
+// ListPaginated returns a page of entries sorted newest-first.
+// If includeRead is false, only unread entries are returned.
+func (m *Manager) ListPaginated(offset, limit int, includeRead bool) ([]StateEntry, int, error) {
 	all, err := m.List()
 	if err != nil {
 		return nil, 0, err
 	}
 
 	// Filter
-	var filtered []Notification
-	for _, n := range all {
-		if includeRead || n.ReadAt == "" {
-			filtered = append(filtered, n)
+	var filtered []StateEntry
+	for _, e := range all {
+		if includeRead || e.ReadAt == "" {
+			filtered = append(filtered, e)
 		}
 	}
 
-	// Sort newest-first (reverse order since JSONL appends newest last)
+	// Sort newest-first (JSONL appends newest last, so reverse)
 	for i, j := 0, len(filtered)-1; i < j; i, j = i+1, j-1 {
 		filtered[i], filtered[j] = filtered[j], filtered[i]
 	}
@@ -334,7 +217,7 @@ func (m *Manager) ListPaginated(offset, limit int, includeRead bool) ([]Notifica
 
 	// Paginate
 	if offset >= len(filtered) {
-		return []Notification{}, total, nil
+		return []StateEntry{}, total, nil
 	}
 	filtered = filtered[offset:]
 	if limit > 0 && limit < len(filtered) {
@@ -344,20 +227,20 @@ func (m *Manager) ListPaginated(offset, limit int, includeRead bool) ([]Notifica
 	return filtered, total, nil
 }
 
-// writeAll rewrites all notifications to the file.
-func (m *Manager) writeAll(notifications []Notification) error {
-	if err := os.MkdirAll(filepath.Dir(m.notificationsFile), 0755); err != nil {
+// writeAll rewrites the entire state file.
+func (m *Manager) writeAll(entries []StateEntry) error {
+	if err := os.MkdirAll(filepath.Dir(m.stateFile), 0755); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
 
-	file, err := os.Create(m.notificationsFile)
+	file, err := os.Create(m.stateFile)
 	if err != nil {
-		return fmt.Errorf("failed to create notifications file: %w", err)
+		return fmt.Errorf("failed to create state file: %w", err)
 	}
 	defer file.Close()
 
-	for _, n := range notifications {
-		data, err := json.Marshal(n)
+	for _, e := range entries {
+		data, err := json.Marshal(e)
 		if err != nil {
 			continue
 		}

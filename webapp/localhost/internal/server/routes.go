@@ -52,6 +52,8 @@ func SetupRoutes(mux *http.ServeMux, s *Server) {
 	mux.HandleFunc("/api/site/registration-status", s.handleSiteRegistrationStatus)
 	mux.HandleFunc("/api/site/register", s.handleSiteRegister)
 	mux.HandleFunc("/api/site/unregister", s.handleSiteUnregister)
+	mux.HandleFunc("/api/site/deploy-check", s.handleDeployCheck)
+	mux.HandleFunc("/api/site/setup-wizard-dismiss", s.handleSetupWizardDismiss)
 
 	// Snippets API routes
 	mux.HandleFunc("/api/snippets", s.handleSnippets)

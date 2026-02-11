@@ -60,7 +60,10 @@ func (h *BlessingHandler) Process(events []discovery.StreamEvent, state interfac
 		}
 
 		// Only process events for our domain (we're the target/post owner)
-		targetDomain := discovery.ExtractDomainFromURL(targetURL)
+		targetDomain, _ := evt.Payload["target_domain"].(string)
+		if targetDomain == "" {
+			targetDomain = discovery.ExtractDomainFromURL(targetURL)
+		}
 		if targetDomain != h.MyDomain {
 			continue
 		}

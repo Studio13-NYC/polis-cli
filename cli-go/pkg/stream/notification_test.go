@@ -1,0 +1,330 @@
+package stream
+
+import (
+	"testing"
+
+	"github.com/vdibart/polis-cli/cli-go/pkg/discovery"
+	"github.com/vdibart/polis-cli/cli-go/pkg/notification"
+)
+
+func TestNotificationHandler_EventTypes(t *testing.T) {
+	h := &NotificationHandler{MyDomain: "bob.com", Rules: notification.DefaultRules()}
+	types := h.EventTypes()
+
+	expected := map[string]bool{
+		"polis.follow.announced":    true,
+		"polis.follow.removed":      true,
+		"polis.blessing.requested":  true,
+		"polis.blessing.granted":    true,
+		"polis.blessing.denied":     true,
+		"polis.post.published":      true,
+		"polis.post.republished":    true,
+		"polis.comment.published":   true,
+		"polis.comment.republished": true,
+	}
+
+	if len(types) != len(expected) {
+		t.Fatalf("EventTypes() len = %d, want %d", len(types), len(expected))
+	}
+	for _, typ := range types {
+		if !expected[typ] {
+			t.Errorf("unexpected event type: %q", typ)
+		}
+	}
+}
+
+func TestNotificationHandler_BlessingRequested(t *testing.T) {
+	h := &NotificationHandler{
+		MyDomain: "bob.com",
+		Rules:    notification.DefaultRules(),
+	}
+
+	events := []discovery.StreamEvent{
+		{
+			ID:    1,
+			Type:  "polis.blessing.requested",
+			Actor: "alice.com",
+			Payload: map[string]interface{}{
+				"target_domain": "bob.com",
+				"source_url":    "https://alice.com/comments/1.md",
+				"target_url":    "https://bob.com/posts/welcome.md",
+			},
+			Timestamp: "2026-02-10T10:00:00Z",
+		},
+	}
+
+	entries := h.Process(events)
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 notification, got %d", len(entries))
+	}
+	if entries[0].RuleID != "blessing-requested" {
+		t.Errorf("rule_id = %q, want %q", entries[0].RuleID, "blessing-requested")
+	}
+	if entries[0].Actor != "alice.com" {
+		t.Errorf("actor = %q, want %q", entries[0].Actor, "alice.com")
+	}
+	if entries[0].Message != "alice.com requested a blessing on welcome" {
+		t.Errorf("message = %q", entries[0].Message)
+	}
+}
+
+func TestNotificationHandler_BlessingGranted_SourceDomain(t *testing.T) {
+	// alice.com is the commenter — should get notified via source_domain
+	h := &NotificationHandler{
+		MyDomain: "alice.com",
+		Rules:    notification.DefaultRules(),
+	}
+
+	events := []discovery.StreamEvent{
+		{
+			ID:    1,
+			Type:  "polis.blessing.granted",
+			Actor: "bob.com",
+			Payload: map[string]interface{}{
+				"target_domain": "bob.com",    // post owner
+				"source_domain": "alice.com",  // commenter
+				"source_url":    "https://alice.com/comments/1.md",
+				"target_url":    "https://bob.com/posts/1.md",
+			},
+			Timestamp: "2026-02-10T10:00:00Z",
+		},
+	}
+
+	entries := h.Process(events)
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 notification, got %d", len(entries))
+	}
+	if entries[0].RuleID != "blessing-granted" {
+		t.Errorf("rule_id = %q, want %q", entries[0].RuleID, "blessing-granted")
+	}
+	if entries[0].Actor != "bob.com" {
+		t.Errorf("actor = %q, want %q", entries[0].Actor, "bob.com")
+	}
+}
+
+func TestNotificationHandler_BlessingDenied_SourceDomain(t *testing.T) {
+	h := &NotificationHandler{
+		MyDomain: "alice.com",
+		Rules:    notification.DefaultRules(),
+	}
+
+	events := []discovery.StreamEvent{
+		{
+			ID:    1,
+			Type:  "polis.blessing.denied",
+			Actor: "bob.com",
+			Payload: map[string]interface{}{
+				"target_domain": "bob.com",
+				"source_domain": "alice.com",
+				"source_url":    "https://alice.com/comments/1.md",
+				"target_url":    "https://bob.com/posts/1.md",
+			},
+			Timestamp: "2026-02-10T10:00:00Z",
+		},
+	}
+
+	entries := h.Process(events)
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 notification, got %d", len(entries))
+	}
+	if entries[0].RuleID != "blessing-denied" {
+		t.Errorf("rule_id = %q, want %q", entries[0].RuleID, "blessing-denied")
+	}
+}
+
+func TestNotificationHandler_CommentPublished(t *testing.T) {
+	h := &NotificationHandler{
+		MyDomain: "bob.com",
+		Rules:    notification.DefaultRules(),
+	}
+
+	events := []discovery.StreamEvent{
+		{
+			ID:    1,
+			Type:  "polis.comment.published",
+			Actor: "alice.com",
+			Payload: map[string]interface{}{
+				"target_domain": "bob.com",
+				"source_url":    "https://alice.com/comments/1.md",
+				"target_url":    "https://bob.com/posts/welcome.md",
+			},
+			Timestamp: "2026-02-10T10:00:00Z",
+		},
+	}
+
+	entries := h.Process(events)
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 notification, got %d", len(entries))
+	}
+	if entries[0].RuleID != "new-comment" {
+		t.Errorf("rule_id = %q, want %q", entries[0].RuleID, "new-comment")
+	}
+	if entries[0].Message != "alice.com commented on welcome" {
+		t.Errorf("message = %q", entries[0].Message)
+	}
+}
+
+func TestNotificationHandler_SkipSelfEvents(t *testing.T) {
+	h := &NotificationHandler{
+		MyDomain: "bob.com",
+		Rules:    notification.DefaultRules(),
+	}
+
+	events := []discovery.StreamEvent{
+		{
+			ID:    1,
+			Type:  "polis.comment.published",
+			Actor: "bob.com", // self-event
+			Payload: map[string]interface{}{
+				"target_domain": "bob.com",
+				"source_url":    "https://bob.com/comments/1.md",
+				"target_url":    "https://bob.com/posts/1.md",
+			},
+			Timestamp: "2026-02-10T10:00:00Z",
+		},
+	}
+
+	entries := h.Process(events)
+	if len(entries) != 0 {
+		t.Errorf("expected 0 notifications for self-event, got %d", len(entries))
+	}
+}
+
+func TestNotificationHandler_SkipMutedDomains(t *testing.T) {
+	h := &NotificationHandler{
+		MyDomain:     "bob.com",
+		Rules:        notification.DefaultRules(),
+		MutedDomains: map[string]bool{"spam.com": true},
+	}
+
+	events := []discovery.StreamEvent{
+		{
+			ID:    1,
+			Type:  "polis.follow.announced",
+			Actor: "spam.com",
+			Payload: map[string]interface{}{
+				"target_domain": "bob.com",
+			},
+			Timestamp: "2026-02-10T10:00:00Z",
+		},
+	}
+
+	entries := h.Process(events)
+	if len(entries) != 0 {
+		t.Errorf("expected 0 notifications for muted domain, got %d", len(entries))
+	}
+}
+
+func TestNotificationHandler_IgnoresOtherDomains(t *testing.T) {
+	h := &NotificationHandler{
+		MyDomain: "bob.com",
+		Rules:    notification.DefaultRules(),
+	}
+
+	events := []discovery.StreamEvent{
+		// Follow for someone else
+		{
+			ID:    1,
+			Type:  "polis.follow.announced",
+			Actor: "alice.com",
+			Payload: map[string]interface{}{
+				"target_domain": "charlie.com",
+			},
+			Timestamp: "2026-02-10T10:00:00Z",
+		},
+		// Blessing granted for someone else (source_domain != bob.com)
+		{
+			ID:    2,
+			Type:  "polis.blessing.granted",
+			Actor: "charlie.com",
+			Payload: map[string]interface{}{
+				"target_domain": "charlie.com",
+				"source_domain": "alice.com",
+				"source_url":    "https://alice.com/comments/1.md",
+				"target_url":    "https://charlie.com/posts/1.md",
+			},
+			Timestamp: "2026-02-10T10:01:00Z",
+		},
+		// Follow for us (should be the ONLY notification)
+		{
+			ID:    3,
+			Type:  "polis.follow.announced",
+			Actor: "dave.com",
+			Payload: map[string]interface{}{
+				"target_domain": "bob.com",
+			},
+			Timestamp: "2026-02-10T10:02:00Z",
+		},
+	}
+
+	entries := h.Process(events)
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 notification, got %d", len(entries))
+	}
+	if entries[0].RuleID != "new-follower" {
+		t.Errorf("rule_id = %q, want %q", entries[0].RuleID, "new-follower")
+	}
+	if entries[0].Actor != "dave.com" {
+		t.Errorf("actor = %q, want %q", entries[0].Actor, "dave.com")
+	}
+}
+
+func TestNotificationHandler_DisabledRulesSkipped(t *testing.T) {
+	// comment.republished is disabled by default
+	h := &NotificationHandler{
+		MyDomain: "bob.com",
+		Rules:    notification.DefaultRules(),
+	}
+
+	events := []discovery.StreamEvent{
+		{
+			ID:    1,
+			Type:  "polis.comment.republished",
+			Actor: "alice.com",
+			Payload: map[string]interface{}{
+				"target_domain": "bob.com",
+				"source_url":    "https://alice.com/comments/1.md",
+				"target_url":    "https://bob.com/posts/1.md",
+			},
+			Timestamp: "2026-02-10T10:00:00Z",
+		},
+	}
+
+	entries := h.Process(events)
+	if len(entries) != 0 {
+		t.Errorf("expected 0 notifications for disabled rule, got %d", len(entries))
+	}
+}
+
+func TestNotificationHandler_EnabledEventTypes(t *testing.T) {
+	h := &NotificationHandler{
+		MyDomain: "bob.com",
+		Rules:    notification.DefaultRules(),
+	}
+
+	types := h.EnabledEventTypes()
+	// Default: 7 enabled rules covering 7 unique event types
+	// (updated-comment and updated-post are disabled)
+	if len(types) != 7 {
+		t.Errorf("EnabledEventTypes() len = %d, want 7", len(types))
+	}
+}
+
+func TestNotificationHandler_RulesByRelevance(t *testing.T) {
+	h := &NotificationHandler{
+		MyDomain: "bob.com",
+		Rules:    notification.DefaultRules(),
+	}
+
+	groups := h.RulesByRelevance()
+	if len(groups["target_domain"]) != 4 {
+		t.Errorf("target_domain rules = %d, want 4", len(groups["target_domain"]))
+	}
+	if len(groups["source_domain"]) != 2 {
+		t.Errorf("source_domain rules = %d, want 2", len(groups["source_domain"]))
+	}
+	// followed_author has 1 (new-post is enabled, updated-post is disabled)
+	if len(groups["followed_author"]) != 1 {
+		t.Errorf("followed_author rules = %d, want 1", len(groups["followed_author"]))
+	}
+}

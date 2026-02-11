@@ -80,6 +80,23 @@
                         <input type="url" id="init-base-url" class="wizard-input" placeholder="https://example.com">
                         <p class="hint">The public URL where your site will be hosted</p>
                     </div>
+                    <div class="wizard-section wizard-collapsible">
+                        <button class="wizard-collapse-toggle" onclick="this.parentElement.classList.toggle('expanded')">
+                            Discovery Service <span class="collapse-arrow">&#9656;</span>
+                        </button>
+                        <div class="wizard-collapse-body">
+                            <div class="wizard-section">
+                                <label for="init-discovery-url">Discovery Service URL:</label>
+                                <input type="url" id="init-discovery-url" class="wizard-input">
+                                <p class="hint">Coordinates content discovery and blessings across sites</p>
+                            </div>
+                            <div class="wizard-section">
+                                <label for="init-discovery-key">Discovery Service Key:</label>
+                                <input type="text" id="init-discovery-key" class="wizard-input">
+                                <p class="hint">Public API key for the discovery service</p>
+                            </div>
+                        </div>
+                    </div>
                 </div>
                 <div class="wizard-footer">
                     <button id="init-cancel-btn" class="secondary">Cancel</button>
@@ -140,6 +157,13 @@
                     </button>
                 </div>
             </header>
+
+            <!-- Setup Banner (shown when site not registered) -->
+            <div id="setup-banner" class="setup-banner hidden">
+                <span>Your site isn't registered with the discovery network yet.</span>
+                <a class="setup-banner-link" onclick="App.openSetupWizard()">Complete Setup</a>
+                <button class="setup-banner-dismiss" onclick="App.dismissSetupBanner()">&times;</button>
+            </div>
 
             <!-- Main Container with Sidebar -->
             <div class="main-container">
@@ -466,6 +490,26 @@ You can use **markdown** formatting."></textarea>
                 </div>
                 <div class="wizard-footer" id="registration-panel-footer">
                     <!-- Dynamic buttons -->
+                </div>
+            </div>
+        </div>
+
+        <!-- Setup Wizard Panel (post-init deploy & register flow) -->
+        <div id="setup-wizard-panel" class="wizard-panel hidden">
+            <div class="wizard-overlay" onclick="App.dismissSetupWizard()"></div>
+            <div class="wizard-content">
+                <div class="wizard-header">
+                    <h3>Set Up Your Site</h3>
+                    <button id="setup-wizard-close-btn" class="wizard-close" onclick="App.dismissSetupWizard()">&times;</button>
+                </div>
+                <div class="wizard-body">
+                    <div id="setup-wizard-steps" class="setup-steps"></div>
+                    <div id="setup-wizard-content"></div>
+                </div>
+                <div class="wizard-footer">
+                    <button id="setup-wizard-later-btn" class="secondary" onclick="App.dismissSetupWizard()">Do this later</button>
+                    <div class="wizard-footer-spacer"></div>
+                    <button id="setup-wizard-action-btn" class="primary" onclick="App.setupWizardAction()">Next</button>
                 </div>
             </div>
         </div>

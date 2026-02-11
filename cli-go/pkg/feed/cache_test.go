@@ -1,12 +1,13 @@
 package feed
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 )
+
+const testDiscoveryDomain = "test.supabase.co"
 
 func TestComputeItemID(t *testing.T) {
 	// Same inputs produce same ID
@@ -29,7 +30,7 @@ func TestComputeItemID(t *testing.T) {
 }
 
 func TestCacheManager_EmptyCache(t *testing.T) {
-	cm := NewCacheManager(t.TempDir())
+	cm := NewCacheManager(t.TempDir(), testDiscoveryDomain)
 
 	items, err := cm.List()
 	if err != nil {
@@ -56,18 +57,14 @@ func TestCacheManager_EmptyCache(t *testing.T) {
 	}
 }
 
-func TestCacheManager_Merge(t *testing.T) {
-	cm := NewCacheManager(t.TempDir())
+func TestCacheManager_MergeItems(t *testing.T) {
+	cm := NewCacheManager(t.TempDir(), testDiscoveryDomain)
 
-	result := &AggregateResult{
-		Items: []FeedItem{
-			{Type: "post", Title: "First Post", URL: "posts/first.md", Published: "2026-02-01T10:00:00Z", AuthorURL: "https://alice.polis.pub", AuthorDomain: "alice.polis.pub"},
-			{Type: "post", Title: "Second Post", URL: "posts/second.md", Published: "2026-02-02T10:00:00Z", AuthorURL: "https://alice.polis.pub", AuthorDomain: "alice.polis.pub"},
-			{Type: "comment", Title: "A Comment", URL: "comments/reply.md", Published: "2026-02-03T10:00:00Z", AuthorURL: "https://bob.polis.pub", AuthorDomain: "bob.polis.pub"},
-		},
-	}
-
-	newCount, err := cm.Merge(result)
+	newCount, err := cm.MergeItems([]FeedItem{
+		{Type: "post", Title: "First Post", URL: "posts/first.md", Published: "2026-02-01T10:00:00Z", AuthorURL: "https://alice.polis.pub", AuthorDomain: "alice.polis.pub"},
+		{Type: "post", Title: "Second Post", URL: "posts/second.md", Published: "2026-02-02T10:00:00Z", AuthorURL: "https://alice.polis.pub", AuthorDomain: "alice.polis.pub"},
+		{Type: "comment", Title: "A Comment", URL: "comments/reply.md", Published: "2026-02-03T10:00:00Z", AuthorURL: "https://bob.polis.pub", AuthorDomain: "bob.polis.pub"},
+	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -106,16 +103,14 @@ func TestCacheManager_Merge(t *testing.T) {
 }
 
 func TestCacheManager_MergeDedup(t *testing.T) {
-	cm := NewCacheManager(t.TempDir())
+	cm := NewCacheManager(t.TempDir(), testDiscoveryDomain)
 
-	result := &AggregateResult{
-		Items: []FeedItem{
-			{Type: "post", Title: "Post A", URL: "posts/a.md", Published: "2026-02-01T10:00:00Z", AuthorURL: "https://alice.polis.pub", AuthorDomain: "alice.polis.pub"},
-		},
+	items := []FeedItem{
+		{Type: "post", Title: "Post A", URL: "posts/a.md", Published: "2026-02-01T10:00:00Z", AuthorURL: "https://alice.polis.pub", AuthorDomain: "alice.polis.pub"},
 	}
 
 	// First merge
-	newCount, err := cm.Merge(result)
+	newCount, err := cm.MergeItems(items)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -124,12 +119,12 @@ func TestCacheManager_MergeDedup(t *testing.T) {
 	}
 
 	// Mark it read
-	items, _ := cm.List()
-	cm.MarkRead(items[0].ID)
+	cached, _ := cm.List()
+	cm.MarkRead(cached[0].ID)
 
 	// Second merge with same item (different title shouldn't matter, same author+path)
-	result.Items[0].Title = "Post A Updated"
-	newCount, err = cm.Merge(result)
+	items[0].Title = "Post A Updated"
+	newCount, err = cm.MergeItems(items)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -138,25 +133,22 @@ func TestCacheManager_MergeDedup(t *testing.T) {
 	}
 
 	// Read state should be preserved
-	items, _ = cm.List()
-	if len(items) != 1 {
-		t.Fatalf("expected 1 item, got %d", len(items))
+	cached, _ = cm.List()
+	if len(cached) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(cached))
 	}
-	if items[0].ReadAt == "" {
+	if cached[0].ReadAt == "" {
 		t.Error("read state should be preserved after dedup merge")
 	}
 }
 
 func TestCacheManager_MarkRead(t *testing.T) {
-	cm := NewCacheManager(t.TempDir())
+	cm := NewCacheManager(t.TempDir(), testDiscoveryDomain)
 
-	result := &AggregateResult{
-		Items: []FeedItem{
-			{Type: "post", Title: "Post A", URL: "posts/a.md", Published: "2026-02-01T10:00:00Z", AuthorURL: "https://alice.polis.pub", AuthorDomain: "alice.polis.pub"},
-			{Type: "post", Title: "Post B", URL: "posts/b.md", Published: "2026-02-02T10:00:00Z", AuthorURL: "https://alice.polis.pub", AuthorDomain: "alice.polis.pub"},
-		},
-	}
-	cm.Merge(result)
+	cm.MergeItems([]FeedItem{
+		{Type: "post", Title: "Post A", URL: "posts/a.md", Published: "2026-02-01T10:00:00Z", AuthorURL: "https://alice.polis.pub", AuthorDomain: "alice.polis.pub"},
+		{Type: "post", Title: "Post B", URL: "posts/b.md", Published: "2026-02-02T10:00:00Z", AuthorURL: "https://alice.polis.pub", AuthorDomain: "alice.polis.pub"},
+	})
 
 	items, _ := cm.List()
 	if err := cm.MarkRead(items[0].ID); err != nil {
@@ -178,14 +170,11 @@ func TestCacheManager_MarkRead(t *testing.T) {
 }
 
 func TestCacheManager_MarkUnread(t *testing.T) {
-	cm := NewCacheManager(t.TempDir())
+	cm := NewCacheManager(t.TempDir(), testDiscoveryDomain)
 
-	result := &AggregateResult{
-		Items: []FeedItem{
-			{Type: "post", Title: "Post A", URL: "posts/a.md", Published: "2026-02-01T10:00:00Z", AuthorURL: "https://alice.polis.pub", AuthorDomain: "alice.polis.pub"},
-		},
-	}
-	cm.Merge(result)
+	cm.MergeItems([]FeedItem{
+		{Type: "post", Title: "Post A", URL: "posts/a.md", Published: "2026-02-01T10:00:00Z", AuthorURL: "https://alice.polis.pub", AuthorDomain: "alice.polis.pub"},
+	})
 
 	items, _ := cm.List()
 	cm.MarkRead(items[0].ID)
@@ -208,16 +197,13 @@ func TestCacheManager_MarkUnread(t *testing.T) {
 }
 
 func TestCacheManager_MarkAllRead(t *testing.T) {
-	cm := NewCacheManager(t.TempDir())
+	cm := NewCacheManager(t.TempDir(), testDiscoveryDomain)
 
-	result := &AggregateResult{
-		Items: []FeedItem{
-			{Type: "post", Title: "Post A", URL: "posts/a.md", Published: "2026-02-01T10:00:00Z", AuthorURL: "https://alice.polis.pub", AuthorDomain: "alice.polis.pub"},
-			{Type: "post", Title: "Post B", URL: "posts/b.md", Published: "2026-02-02T10:00:00Z", AuthorURL: "https://alice.polis.pub", AuthorDomain: "alice.polis.pub"},
-			{Type: "comment", Title: "Comment C", URL: "comments/c.md", Published: "2026-02-03T10:00:00Z", AuthorURL: "https://bob.polis.pub", AuthorDomain: "bob.polis.pub"},
-		},
-	}
-	cm.Merge(result)
+	cm.MergeItems([]FeedItem{
+		{Type: "post", Title: "Post A", URL: "posts/a.md", Published: "2026-02-01T10:00:00Z", AuthorURL: "https://alice.polis.pub", AuthorDomain: "alice.polis.pub"},
+		{Type: "post", Title: "Post B", URL: "posts/b.md", Published: "2026-02-02T10:00:00Z", AuthorURL: "https://alice.polis.pub", AuthorDomain: "alice.polis.pub"},
+		{Type: "comment", Title: "Comment C", URL: "comments/c.md", Published: "2026-02-03T10:00:00Z", AuthorURL: "https://bob.polis.pub", AuthorDomain: "bob.polis.pub"},
+	})
 
 	if err := cm.MarkAllRead(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -230,16 +216,13 @@ func TestCacheManager_MarkAllRead(t *testing.T) {
 }
 
 func TestCacheManager_MarkUnreadFrom(t *testing.T) {
-	cm := NewCacheManager(t.TempDir())
+	cm := NewCacheManager(t.TempDir(), testDiscoveryDomain)
 
-	result := &AggregateResult{
-		Items: []FeedItem{
-			{Type: "post", Title: "Old", URL: "posts/old.md", Published: "2026-01-01T10:00:00Z", AuthorURL: "https://alice.polis.pub", AuthorDomain: "alice.polis.pub"},
-			{Type: "post", Title: "Mid", URL: "posts/mid.md", Published: "2026-01-15T10:00:00Z", AuthorURL: "https://alice.polis.pub", AuthorDomain: "alice.polis.pub"},
-			{Type: "post", Title: "New", URL: "posts/new.md", Published: "2026-02-01T10:00:00Z", AuthorURL: "https://alice.polis.pub", AuthorDomain: "alice.polis.pub"},
-		},
-	}
-	cm.Merge(result)
+	cm.MergeItems([]FeedItem{
+		{Type: "post", Title: "Old", URL: "posts/old.md", Published: "2026-01-01T10:00:00Z", AuthorURL: "https://alice.polis.pub", AuthorDomain: "alice.polis.pub"},
+		{Type: "post", Title: "Mid", URL: "posts/mid.md", Published: "2026-01-15T10:00:00Z", AuthorURL: "https://alice.polis.pub", AuthorDomain: "alice.polis.pub"},
+		{Type: "post", Title: "New", URL: "posts/new.md", Published: "2026-02-01T10:00:00Z", AuthorURL: "https://alice.polis.pub", AuthorDomain: "alice.polis.pub"},
+	})
 
 	// Mark all read first
 	cm.MarkAllRead()
@@ -269,16 +252,13 @@ func TestCacheManager_MarkUnreadFrom(t *testing.T) {
 }
 
 func TestCacheManager_ListByType(t *testing.T) {
-	cm := NewCacheManager(t.TempDir())
+	cm := NewCacheManager(t.TempDir(), testDiscoveryDomain)
 
-	result := &AggregateResult{
-		Items: []FeedItem{
-			{Type: "post", Title: "Post A", URL: "posts/a.md", Published: "2026-02-01T10:00:00Z", AuthorURL: "https://alice.polis.pub", AuthorDomain: "alice.polis.pub"},
-			{Type: "comment", Title: "Comment B", URL: "comments/b.md", Published: "2026-02-02T10:00:00Z", AuthorURL: "https://bob.polis.pub", AuthorDomain: "bob.polis.pub"},
-			{Type: "post", Title: "Post C", URL: "posts/c.md", Published: "2026-02-03T10:00:00Z", AuthorURL: "https://alice.polis.pub", AuthorDomain: "alice.polis.pub"},
-		},
-	}
-	cm.Merge(result)
+	cm.MergeItems([]FeedItem{
+		{Type: "post", Title: "Post A", URL: "posts/a.md", Published: "2026-02-01T10:00:00Z", AuthorURL: "https://alice.polis.pub", AuthorDomain: "alice.polis.pub"},
+		{Type: "comment", Title: "Comment B", URL: "comments/b.md", Published: "2026-02-02T10:00:00Z", AuthorURL: "https://bob.polis.pub", AuthorDomain: "bob.polis.pub"},
+		{Type: "post", Title: "Post C", URL: "posts/c.md", Published: "2026-02-03T10:00:00Z", AuthorURL: "https://alice.polis.pub", AuthorDomain: "alice.polis.pub"},
+	})
 
 	posts, err := cm.ListByType("post")
 	if err != nil {
@@ -305,24 +285,93 @@ func TestCacheManager_ListByType(t *testing.T) {
 	}
 }
 
+func TestCacheManager_ListFiltered(t *testing.T) {
+	cm := NewCacheManager(t.TempDir(), testDiscoveryDomain)
+
+	cm.MergeItems([]FeedItem{
+		{Type: "post", Title: "Post A", URL: "posts/a.md", Published: "2026-02-01T10:00:00Z", AuthorURL: "https://alice.polis.pub", AuthorDomain: "alice.polis.pub"},
+		{Type: "comment", Title: "Comment B", URL: "comments/b.md", Published: "2026-02-02T10:00:00Z", AuthorURL: "https://bob.polis.pub", AuthorDomain: "bob.polis.pub"},
+		{Type: "post", Title: "Post C", URL: "posts/c.md", Published: "2026-02-03T10:00:00Z", AuthorURL: "https://alice.polis.pub", AuthorDomain: "alice.polis.pub"},
+	})
+
+	// Mark first item (Post C, most recent) as read
+	items, _ := cm.List()
+	cm.MarkRead(items[0].ID)
+
+	// Filter by type only
+	posts, err := cm.ListFiltered(FilterOptions{Type: "post"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(posts) != 2 {
+		t.Errorf("expected 2 posts, got %d", len(posts))
+	}
+
+	// Filter by status only - unread
+	unread, err := cm.ListFiltered(FilterOptions{Status: "unread"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(unread) != 2 {
+		t.Errorf("expected 2 unread, got %d", len(unread))
+	}
+
+	// Filter by status only - read
+	read, err := cm.ListFiltered(FilterOptions{Status: "read"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(read) != 1 {
+		t.Errorf("expected 1 read, got %d", len(read))
+	}
+
+	// Combined filter: unread posts
+	unreadPosts, err := cm.ListFiltered(FilterOptions{Type: "post", Status: "unread"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(unreadPosts) != 1 {
+		t.Errorf("expected 1 unread post, got %d", len(unreadPosts))
+	}
+	if len(unreadPosts) > 0 && unreadPosts[0].Title != "Post A" {
+		t.Errorf("expected Post A, got %s", unreadPosts[0].Title)
+	}
+
+	// Combined filter: read comments (should be 0)
+	readComments, err := cm.ListFiltered(FilterOptions{Type: "comment", Status: "read"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(readComments) != 0 {
+		t.Errorf("expected 0 read comments, got %d", len(readComments))
+	}
+
+	// No filters = all items
+	all, err := cm.ListFiltered(FilterOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(all) != 3 {
+		t.Errorf("expected 3 total, got %d", len(all))
+	}
+}
+
 func TestCacheManager_Prune(t *testing.T) {
-	cm := NewCacheManager(t.TempDir())
+	dir := t.TempDir()
+	cm := NewCacheManager(dir, testDiscoveryDomain)
 
 	// Set low limits for testing
-	cm.SetStalenessMinutes(1)
-	manifest, _ := cm.LoadManifest()
-	manifest.MaxItems = 2
-	manifest.MaxAgeDays = 90
-	cm.saveManifest(manifest)
+	cm.SaveConfig(&FeedConfig{
+		StalenessMinutes: 1,
+		MaxItems:         2,
+		MaxAgeDays:       90,
+	})
 
-	result := &AggregateResult{
-		Items: []FeedItem{
-			{Type: "post", Title: "Post 1", URL: "posts/1.md", Published: "2026-02-01T10:00:00Z", AuthorURL: "https://a.pub", AuthorDomain: "a.pub"},
-			{Type: "post", Title: "Post 2", URL: "posts/2.md", Published: "2026-02-02T10:00:00Z", AuthorURL: "https://a.pub", AuthorDomain: "a.pub"},
-			{Type: "post", Title: "Post 3", URL: "posts/3.md", Published: "2026-02-03T10:00:00Z", AuthorURL: "https://a.pub", AuthorDomain: "a.pub"},
-		},
-	}
-	cm.Merge(result) // Merge calls Prune internally
+	cm.MergeItems([]FeedItem{
+		{Type: "post", Title: "Post 1", URL: "posts/1.md", Published: "2026-02-01T10:00:00Z", AuthorURL: "https://a.pub", AuthorDomain: "a.pub"},
+		{Type: "post", Title: "Post 2", URL: "posts/2.md", Published: "2026-02-02T10:00:00Z", AuthorURL: "https://a.pub", AuthorDomain: "a.pub"},
+		{Type: "post", Title: "Post 3", URL: "posts/3.md", Published: "2026-02-03T10:00:00Z", AuthorURL: "https://a.pub", AuthorDomain: "a.pub"},
+	})
 
 	items, err := cm.List()
 	if err != nil {
@@ -338,24 +387,23 @@ func TestCacheManager_Prune(t *testing.T) {
 }
 
 func TestCacheManager_PruneByAge(t *testing.T) {
-	cm := NewCacheManager(t.TempDir())
+	dir := t.TempDir()
+	cm := NewCacheManager(dir, testDiscoveryDomain)
 
 	// Set MaxAgeDays to 30
-	manifest, _ := cm.LoadManifest()
-	manifest.MaxAgeDays = 30
-	manifest.MaxItems = 500
-	cm.saveManifest(manifest)
+	cm.SaveConfig(&FeedConfig{
+		StalenessMinutes: 15,
+		MaxItems:         500,
+		MaxAgeDays:       30,
+	})
 
 	oldDate := time.Now().AddDate(0, 0, -60).UTC().Format(time.RFC3339)
 	recentDate := time.Now().UTC().Format(time.RFC3339)
 
-	result := &AggregateResult{
-		Items: []FeedItem{
-			{Type: "post", Title: "Old Post", URL: "posts/old.md", Published: oldDate, AuthorURL: "https://a.pub", AuthorDomain: "a.pub"},
-			{Type: "post", Title: "Recent Post", URL: "posts/recent.md", Published: recentDate, AuthorURL: "https://a.pub", AuthorDomain: "a.pub"},
-		},
-	}
-	cm.Merge(result)
+	cm.MergeItems([]FeedItem{
+		{Type: "post", Title: "Old Post", URL: "posts/old.md", Published: oldDate, AuthorURL: "https://a.pub", AuthorDomain: "a.pub"},
+		{Type: "post", Title: "Recent Post", URL: "posts/recent.md", Published: recentDate, AuthorURL: "https://a.pub", AuthorDomain: "a.pub"},
+	})
 
 	items, _ := cm.List()
 	if len(items) != 1 {
@@ -367,52 +415,38 @@ func TestCacheManager_PruneByAge(t *testing.T) {
 }
 
 func TestCacheManager_IsStale(t *testing.T) {
-	cm := NewCacheManager(t.TempDir())
+	dir := t.TempDir()
+	cm := NewCacheManager(dir, testDiscoveryDomain)
 
-	// No manifest = stale
+	// No cursor entry = stale
 	stale, _ := cm.IsStale()
 	if !stale {
-		t.Error("should be stale with no manifest")
+		t.Error("should be stale with no cursor")
 	}
 
-	// Set last_refresh to now with 15 minute staleness
-	manifest := &CacheManifest{
-		Version:          "test",
-		LastRefresh:      time.Now().UTC().Format(time.RFC3339),
-		StalenessMinutes: 15,
-		MaxItems:         500,
-		MaxAgeDays:       90,
-	}
-	cm.saveManifest(manifest)
+	// Set cursor (which sets LastUpdated to now)
+	cm.SetCursor("100")
 
 	stale, _ = cm.IsStale()
 	if stale {
-		t.Error("should not be stale right after refresh")
-	}
-
-	// Set last_refresh to 20 minutes ago
-	manifest.LastRefresh = time.Now().Add(-20 * time.Minute).UTC().Format(time.RFC3339)
-	cm.saveManifest(manifest)
-
-	stale, _ = cm.IsStale()
-	if !stale {
-		t.Error("should be stale after staleness period")
+		t.Error("should not be stale right after setting cursor")
 	}
 }
 
-func TestCacheManager_Manifest(t *testing.T) {
-	cm := NewCacheManager(t.TempDir())
+func TestCacheManager_Config(t *testing.T) {
+	dir := t.TempDir()
+	cm := NewCacheManager(dir, testDiscoveryDomain)
 
-	// Default manifest
-	manifest, err := cm.LoadManifest()
+	// Default config
+	cfg, err := cm.LoadConfig()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if manifest.StalenessMinutes != 15 {
-		t.Errorf("expected default staleness 15, got %d", manifest.StalenessMinutes)
+	if cfg.StalenessMinutes != 15 {
+		t.Errorf("expected default staleness 15, got %d", cfg.StalenessMinutes)
 	}
-	if manifest.MaxItems != 500 {
-		t.Errorf("expected default max items 500, got %d", manifest.MaxItems)
+	if cfg.MaxItems != 500 {
+		t.Errorf("expected default max items 500, got %d", cfg.MaxItems)
 	}
 
 	// Update staleness
@@ -420,42 +454,44 @@ func TestCacheManager_Manifest(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	manifest, _ = cm.LoadManifest()
-	if manifest.StalenessMinutes != 30 {
-		t.Errorf("expected staleness 30, got %d", manifest.StalenessMinutes)
+	cfg, _ = cm.LoadConfig()
+	if cfg.StalenessMinutes != 30 {
+		t.Errorf("expected staleness 30, got %d", cfg.StalenessMinutes)
 	}
 }
 
-func TestCacheManager_VersionPropagation(t *testing.T) {
+func TestCacheManager_CursorRoundTrip(t *testing.T) {
 	dir := t.TempDir()
-	Version = "0.49.0"
-	defer func() { Version = "dev" }()
+	cm := NewCacheManager(dir, testDiscoveryDomain)
 
-	cm := NewCacheManager(dir)
-
-	// Merge some items to trigger manifest write
-	result := &AggregateResult{
-		Items: []FeedItem{
-			{Type: "post", Title: "Test", URL: "posts/test.md", Published: "2026-02-01T10:00:00Z", AuthorURL: "https://a.pub", AuthorDomain: "a.pub"},
-		},
-	}
-	cm.Merge(result)
-
-	// Check manifest version
-	data, err := os.ReadFile(filepath.Join(dir, ".polis", "social", "feed-manifest.json"))
+	// Default cursor
+	cursor, err := cm.GetCursor()
 	if err != nil {
-		t.Fatalf("failed to read manifest: %v", err)
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cursor != "0" {
+		t.Errorf("expected default cursor 0, got %s", cursor)
 	}
 
-	var manifest CacheManifest
-	json.Unmarshal(data, &manifest)
-	if manifest.Version != "polis-cli-go/0.49.0" {
-		t.Errorf("expected version polis-cli-go/0.49.0, got %s", manifest.Version)
+	// Set and get cursor
+	if err := cm.SetCursor("12345"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	cursor, _ = cm.GetCursor()
+	if cursor != "12345" {
+		t.Errorf("expected cursor 12345, got %s", cursor)
+	}
+
+	// LastUpdated should be set
+	lastUpdated := cm.LastUpdated()
+	if lastUpdated == "" {
+		t.Error("LastUpdated should be set after SetCursor")
 	}
 }
 
 func TestCacheManager_MarkReadNotFound(t *testing.T) {
-	cm := NewCacheManager(t.TempDir())
+	cm := NewCacheManager(t.TempDir(), testDiscoveryDomain)
 
 	err := cm.MarkRead("nonexistent")
 	if err == nil {
@@ -475,25 +511,50 @@ func TestCacheManager_MarkReadNotFound(t *testing.T) {
 
 func TestCacheManager_CreatesDirectory(t *testing.T) {
 	dir := t.TempDir()
-	// Don't pre-create .polis/social/
-	cm := NewCacheManager(dir)
+	// Don't pre-create directories
+	cm := NewCacheManager(dir, testDiscoveryDomain)
 
-	result := &AggregateResult{
-		Items: []FeedItem{
-			{Type: "post", Title: "Test", URL: "posts/test.md", Published: "2026-02-01T10:00:00Z", AuthorURL: "https://a.pub", AuthorDomain: "a.pub"},
-		},
-	}
-
-	_, err := cm.Merge(result)
+	_, err := cm.MergeItems([]FeedItem{
+		{Type: "post", Title: "Test", URL: "posts/test.md", Published: "2026-02-01T10:00:00Z", AuthorURL: "https://a.pub", AuthorDomain: "a.pub"},
+	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Verify files were created
-	if _, err := os.Stat(filepath.Join(dir, ".polis", "social", "feed-cache.jsonl")); err != nil {
-		t.Error("cache file should exist")
+	// Verify cache file at new path
+	if _, err := os.Stat(filepath.Join(dir, ".polis", "ds", testDiscoveryDomain, "state", "feed-cache.jsonl")); err != nil {
+		t.Error("cache file should exist at state/feed-cache.jsonl")
 	}
-	if _, err := os.Stat(filepath.Join(dir, ".polis", "social", "feed-manifest.json")); err != nil {
-		t.Error("manifest file should exist")
+}
+
+func TestCacheManager_ConfigRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	cm := NewCacheManager(dir, testDiscoveryDomain)
+
+	// Save config
+	cfg := &FeedConfig{
+		StalenessMinutes: 30,
+		MaxItems:         200,
+		MaxAgeDays:       60,
+	}
+	if err := cm.SaveConfig(cfg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Load and verify
+	loaded, err := cm.LoadConfig()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if loaded.StalenessMinutes != 30 {
+		t.Errorf("expected staleness 30, got %d", loaded.StalenessMinutes)
+	}
+	if loaded.MaxItems != 200 {
+		t.Errorf("expected max_items 200, got %d", loaded.MaxItems)
+	}
+
+	// Verify config file at new path
+	if _, err := os.Stat(filepath.Join(dir, ".polis", "ds", testDiscoveryDomain, "config", "feed.json")); err != nil {
+		t.Error("config file should exist at config/feed.json")
 	}
 }

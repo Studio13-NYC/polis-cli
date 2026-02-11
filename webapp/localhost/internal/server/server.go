@@ -33,6 +33,11 @@ import (
 // DefaultDiscoveryServiceURL is the default discovery service URL matching the CLI
 const DefaultDiscoveryServiceURL = "https://ltfpezriiaqvjupxbttw.supabase.co/functions/v1"
 
+// DefaultDiscoveryServiceKey is the public anon key for the default discovery service.
+// This is intentionally public — it's the Supabase anon key used for unauthenticated
+// access to edge functions. All authorization is handled via Ed25519 signatures.
+const DefaultDiscoveryServiceKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx0ZnBlenJpaWFxdmp1cHhidHR3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjcxNDQwODMsImV4cCI6MjA4MjcyMDA4M30.N9ScKbdcswutM6i__W9sPWWcBONIcxdAqIbsljqMKMI"
+
 // Log levels
 const (
 	LogLevelOff     = 0 // No logging
@@ -58,6 +63,9 @@ type Config struct {
 
 	// Logging level: 0=off, 1=basic, 2=verbose
 	LogLevel int `json:"log_level,omitempty"`
+
+	// Setup wizard dismissed state (false = show wizard after init)
+	SetupWizardDismissed bool `json:"setup_wizard_dismissed,omitempty"`
 }
 
 // Server holds the application state
@@ -363,11 +371,14 @@ func (s *Server) LoadEnv() {
 	}
 }
 
-// ApplyDiscoveryDefaults sets default discovery service URL if not configured.
+// ApplyDiscoveryDefaults sets default discovery service URL and key if not configured.
 // This ensures the webapp works out of the box without requiring .env configuration.
 func (s *Server) ApplyDiscoveryDefaults() {
 	if s.DiscoveryURL == "" {
 		s.DiscoveryURL = DefaultDiscoveryServiceURL
+	}
+	if s.DiscoveryKey == "" {
+		s.DiscoveryKey = DefaultDiscoveryServiceKey
 	}
 }
 
@@ -420,6 +431,10 @@ func (s *Server) GetSiteTitle() string {
 	// 3. Construct from subdomain
 	if wk.Subdomain != "" {
 		return "https://" + wk.Subdomain + ".polis.pub"
+	}
+	// 4. Fall back to POLIS_BASE_URL env var
+	if s.BaseURL != "" {
+		return s.BaseURL
 	}
 	return ""
 }
@@ -603,22 +618,24 @@ func (s *Server) Close() {
 	}
 }
 
-// StartNotificationSync starts a background goroutine that periodically
-// syncs notifications from the discovery service (pending blessing requests).
-func (s *Server) StartNotificationSync() {
-	// Run once immediately
+// StartBackgroundSync starts background goroutines that periodically
+// sync notifications and feed from the discovery service.
+func (s *Server) StartBackgroundSync() {
 	go func() {
 		s.syncNotifications()
+		s.syncFeed()
 		ticker := time.NewTicker(60 * time.Second)
 		defer ticker.Stop()
 		for range ticker.C {
 			s.syncNotifications()
+			s.syncFeed()
 		}
 	}()
 }
 
-// syncNotifications queries the discovery service for pending blessing requests
-// and creates notification entries for new ones.
+// syncNotifications runs the notification projection: queries the stream
+// with separate queries per relevance group, applies rules, and appends
+// new entries to state.jsonl.
 func (s *Server) syncNotifications() {
 	if s.DiscoveryURL == "" || s.DiscoveryKey == "" {
 		return
@@ -628,45 +645,213 @@ func (s *Server) syncNotifications() {
 		return
 	}
 
-	domain := extractDomainFromURL(baseURL)
-	if domain == "" {
+	myDomain := extractDomainFromURL(baseURL)
+	if myDomain == "" {
 		return
 	}
+
+	discoveryDomain := s.GetDiscoveryDomain()
+	store := stream.NewStore(s.DataDir, discoveryDomain)
+
+	// Load notification config (rules + muted domains)
+	var config stream.NotificationConfig
+	_ = store.LoadConfig("notifications", &config)
+
+	// Seed rules from defaults if empty (first sync)
+	rules := config.Rules
+	if len(rules) == 0 {
+		rules = notification.DefaultRules()
+		config.Rules = rules
+		_ = store.SaveConfig("notifications", &config)
+	}
+
+	// Build muted domains set
+	mutedDomains := make(map[string]bool, len(config.MutedDomains))
+	for _, d := range config.MutedDomains {
+		mutedDomains[d] = true
+	}
+
+	handler := &stream.NotificationHandler{
+		MyDomain:     myDomain,
+		Rules:        rules,
+		MutedDomains: mutedDomains,
+	}
+
+	// Get shared cursor
+	cursor, _ := store.GetCursor("polis.notification")
 
 	client := discovery.NewClient(s.DiscoveryURL, s.DiscoveryKey)
-	resp, err := client.QueryRelationships("polis.blessing", map[string]string{
-		"actor":  domain,
-		"status": "pending",
-	})
-	if err != nil {
-		s.LogDebug("notification sync: query relationships failed: %v", err)
-		return
-	}
 
-	mgr := notification.NewManager(s.DataDir)
-	mgr.InitManifest()
+	// Group rules by relevance for targeted server-side filtering
+	groups := handler.RulesByRelevance()
+	var allEntries []notification.StateEntry
+	newCursor := cursor
 
-	added := 0
-	for _, r := range resp.Records {
-		// Use source URL as dedupe key
-		dedupeKey := "blessing_request:" + r.SourceURL
-		author, _ := r.Metadata["author"].(string)
-		payload, _ := json.Marshal(map[string]string{
-			"comment_url": r.SourceURL,
-			"in_reply_to": r.TargetURL,
-			"author":      author,
-		})
-		id, _ := mgr.Add("blessing_request", domain, payload, dedupeKey)
-		if id != "" {
-			added++
+	// Query 1: target_domain rules
+	if targetRules := groups["target_domain"]; len(targetRules) > 0 {
+		var types []string
+		for _, r := range targetRules {
+			types = append(types, r.EventType)
+		}
+		typeFilter := discovery.JoinDomains(types)
+		result, err := client.StreamQuery(cursor, 1000, typeFilter, "", myDomain)
+		if err != nil {
+			s.LogDebug("notification sync: target_domain query failed: %v", err)
+		} else {
+			entries := handler.Process(result.Events)
+			allEntries = append(allEntries, entries...)
+			if result.Cursor > newCursor {
+				newCursor = result.Cursor
+			}
 		}
 	}
 
-	if added > 0 {
-		s.LogInfo("notification sync: added %d new blessing request notifications", added)
+	// Query 2: source_domain rules
+	if sourceRules := groups["source_domain"]; len(sourceRules) > 0 {
+		var types []string
+		for _, r := range sourceRules {
+			types = append(types, r.EventType)
+		}
+		typeFilter := discovery.JoinDomains(types)
+		result, err := client.StreamQuery(cursor, 1000, typeFilter, "", "", myDomain)
+		if err != nil {
+			s.LogDebug("notification sync: source_domain query failed: %v", err)
+		} else {
+			entries := handler.Process(result.Events)
+			allEntries = append(allEntries, entries...)
+			if result.Cursor > newCursor {
+				newCursor = result.Cursor
+			}
+		}
 	}
 
-	mgr.UpdateWatermark(time.Now().UTC().Format("2006-01-02T15:04:05Z"))
+	// Query 3: followed_author rules (only if enabled)
+	if authorRules := groups["followed_author"]; len(authorRules) > 0 {
+		// Load following list
+		followingPath := following.DefaultPath(s.DataDir)
+		f, err := following.Load(followingPath)
+		if err == nil {
+			var domains []string
+			for _, entry := range f.All() {
+				d := discovery.ExtractDomainFromURL(entry.URL)
+				if d != "" {
+					domains = append(domains, d)
+				}
+			}
+			if len(domains) > 0 {
+				var types []string
+				for _, r := range authorRules {
+					types = append(types, r.EventType)
+				}
+				typeFilter := discovery.JoinDomains(types)
+				actorFilter := discovery.JoinDomains(domains)
+				result, err := client.StreamQuery(cursor, 1000, typeFilter, actorFilter, "")
+				if err != nil {
+					s.LogDebug("notification sync: followed_author query failed: %v", err)
+				} else {
+					entries := handler.Process(result.Events)
+					allEntries = append(allEntries, entries...)
+					if result.Cursor > newCursor {
+						newCursor = result.Cursor
+					}
+				}
+			}
+		}
+	}
+
+	// Append new entries to state.jsonl
+	if len(allEntries) > 0 {
+		mgr := notification.NewManager(s.DataDir, discoveryDomain)
+		added, err := mgr.Append(allEntries)
+		if err != nil {
+			s.LogError("notification sync: failed to append entries: %v", err)
+		} else if added > 0 {
+			s.LogInfo("notification sync: added %d new notifications", added)
+		}
+	}
+
+	// Update cursor
+	if newCursor != cursor {
+		_ = store.SetCursor("polis.notification", newCursor)
+	}
+}
+
+// syncFeed queries the discovery stream for post and comment events
+// from followed authors and merges them into the feed cache.
+func (s *Server) syncFeed() {
+	if s.DiscoveryURL == "" || s.DiscoveryKey == "" {
+		return
+	}
+	baseURL := s.GetBaseURL()
+	if baseURL == "" {
+		return
+	}
+
+	myDomain := extractDomainFromURL(baseURL)
+	if myDomain == "" {
+		return
+	}
+
+	discoveryDomain := s.GetDiscoveryDomain()
+
+	// Load following list to get followed domains
+	followingPath := following.DefaultPath(s.DataDir)
+	f, err := following.Load(followingPath)
+	if err != nil || f.Count() == 0 {
+		return
+	}
+
+	var domains []string
+	for _, entry := range f.All() {
+		d := discovery.ExtractDomainFromURL(entry.URL)
+		if d != "" {
+			domains = append(domains, d)
+		}
+	}
+	if len(domains) == 0 {
+		return
+	}
+
+	// Load feed cursor
+	cm := feed.NewCacheManager(s.DataDir, discoveryDomain)
+	cursor, _ := cm.GetCursor()
+
+	// Query DS stream with actor filter for followed domains
+	client := discovery.NewClient(s.DiscoveryURL, s.DiscoveryKey)
+	typeFilter := "polis.post.published,polis.post.republished,polis.comment.published,polis.comment.republished"
+	actorFilter := discovery.JoinDomains(domains)
+
+	result, err := client.StreamQuery(cursor, 1000, typeFilter, actorFilter, "")
+	if err != nil {
+		s.LogDebug("feed sync: stream query failed: %v", err)
+		return
+	}
+
+	// Transform events to feed items
+	handler := &feed.FeedHandler{
+		MyDomain:        myDomain,
+		FollowedDomains: make(map[string]bool, len(domains)),
+	}
+	for _, d := range domains {
+		handler.FollowedDomains[d] = true
+	}
+
+	items := handler.Process(result.Events)
+
+	// Merge into cache
+	if len(items) > 0 {
+		newCount, err := cm.MergeItems(items)
+		if err != nil {
+			s.LogError("feed sync: merge failed: %v", err)
+		} else if newCount > 0 {
+			s.LogInfo("feed sync: added %d new items", newCount)
+		}
+	}
+
+	// Update cursor
+	if result.Cursor != "" && result.Cursor != cursor {
+		_ = cm.SetCursor(result.Cursor)
+	}
 }
 
 // RunOptions contains optional configuration for the server.
@@ -706,8 +891,8 @@ func Run(webFS fs.FS, dataDir string, opts ...RunOptions) {
 	server.Initialize()
 	defer server.Close()
 
-	// Start background notification sync
-	server.StartNotificationSync()
+	// Start background sync (notifications + feed)
+	server.StartBackgroundSync()
 
 	// Find available port
 	port, err := FindAvailablePort()
@@ -738,6 +923,16 @@ func Run(webFS fs.FS, dataDir string, opts ...RunOptions) {
 	if err := http.ListenAndServe(addr, mux); err != nil {
 		log.Fatal("Server error:", err)
 	}
+}
+
+// GetDiscoveryDomain returns the discovery service hostname for use as
+// the namespace key in .polis/ds/<domain>/.
+func (s *Server) GetDiscoveryDomain() string {
+	domain := extractDomainFromURL(s.DiscoveryURL)
+	if domain == "" {
+		return "default"
+	}
+	return domain
 }
 
 // extractDomainFromURL extracts the hostname from a URL string.

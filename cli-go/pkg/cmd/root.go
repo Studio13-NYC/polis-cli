@@ -2,9 +2,12 @@
 package cmd
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/vdibart/polis-cli/cli-go/pkg/comment"
 	"github.com/vdibart/polis-cli/cli-go/pkg/feed"
@@ -21,10 +24,13 @@ import (
 // Version is set at build time with -ldflags
 var Version = "dev"
 
-// Global flags
+// Global flags and config
 var (
-	dataDir    string
-	jsonOutput bool
+	dataDir      string
+	jsonOutput   bool
+	discoveryURL string
+	discoveryKey string
+	baseURL      string
 )
 
 // DefaultDiscoveryServiceURL is the default discovery service URL.
@@ -43,13 +49,16 @@ func Execute(args []string) {
 	feed.Version = Version
 	site.Version = Version
 
+	// Load .env file (does not override existing env vars, matches bash CLI)
+	loadEnv()
+
 	// Propagate discovery config to packages that register with discovery
-	discoveryURL := os.Getenv("DISCOVERY_SERVICE_URL")
+	discoveryURL = os.Getenv("DISCOVERY_SERVICE_URL")
 	if discoveryURL == "" {
 		discoveryURL = DefaultDiscoveryServiceURL
 	}
-	discoveryKey := os.Getenv("DISCOVERY_SERVICE_KEY")
-	baseURL := os.Getenv("POLIS_BASE_URL")
+	discoveryKey = os.Getenv("DISCOVERY_SERVICE_KEY")
+	baseURL = os.Getenv("POLIS_BASE_URL")
 
 	publish.DiscoveryURL = discoveryURL
 	publish.DiscoveryKey = discoveryKey
@@ -217,7 +226,6 @@ Commands related to cloning remote polis sites:
 Commands related to local configuration:
   polis init [options]            Initialize Polis directory structure
     --site-title <title>          Site display name
-    --register                    Auto-register with discovery service after init
     --keys-dir <path>             Custom keys directory (default: .polis/keys)
     --posts-dir <path>            Custom posts directory (default: posts)
     --comments-dir <path>         Custom comments directory (default: comments)
@@ -271,4 +279,55 @@ func exitError(format string, args ...interface{}) {
 // outputJSON outputs a JSON response
 func outputJSON(data interface{}) {
 	json.NewEncoder(os.Stdout).Encode(data)
+}
+
+// loadEnv loads a .env file into the process environment.
+// Search order: cwd/.env → ~/.polis/.env (matches bash CLI).
+// Does NOT override existing environment variables.
+func loadEnv() {
+	// Try current working directory first
+	cwd, err := os.Getwd()
+	if err == nil {
+		if loadEnvFile(filepath.Join(cwd, ".env")) {
+			return
+		}
+	}
+	// Fallback: ~/.polis/.env
+	if home, err := os.UserHomeDir(); err == nil {
+		loadEnvFile(filepath.Join(home, ".polis", ".env"))
+	}
+}
+
+// loadEnvFile reads a KEY=VALUE file and sets env vars that aren't already set.
+// Returns true if the file was found and loaded.
+func loadEnvFile(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key := strings.TrimSpace(parts[0])
+		value := strings.TrimSpace(parts[1])
+		// Remove surrounding quotes
+		if len(value) >= 2 && ((value[0] == '"' && value[len(value)-1] == '"') ||
+			(value[0] == '\'' && value[len(value)-1] == '\'')) {
+			value = value[1 : len(value)-1]
+		}
+		// Don't override existing env vars
+		if os.Getenv(key) == "" {
+			os.Setenv(key, value)
+		}
+	}
+	return true
 }

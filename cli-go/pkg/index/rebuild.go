@@ -248,26 +248,54 @@ func rebuildCommentsIndex(dataDir string, opts RebuildOptions) (int, error) {
 	return 0, nil
 }
 
-// clearNotifications clears the notifications file.
+// clearNotifications clears notification state files.
+// Handles legacy (.polis/notifications.jsonl), old (.polis/ds/*/notifications/state.jsonl),
+// and current (.polis/ds/*/state/notifications.jsonl) paths.
 func clearNotifications(dataDir string) (int, error) {
-	notifPath := filepath.Join(dataDir, ".polis", "notifications.jsonl")
-
-	// Count existing notifications
 	count := 0
-	if data, err := os.ReadFile(notifPath); err == nil {
+
+	// Clear legacy notification file if it exists
+	oldPath := filepath.Join(dataDir, ".polis", "notifications.jsonl")
+	if data, err := os.ReadFile(oldPath); err == nil {
 		for _, line := range strings.Split(string(data), "\n") {
 			if strings.TrimSpace(line) != "" {
 				count++
 			}
 		}
+		os.Remove(oldPath)
 	}
+	// Also remove legacy manifest
+	os.Remove(filepath.Join(dataDir, ".polis", "notifications-manifest.json"))
 
-	// Clear the file
-	if err := os.MkdirAll(filepath.Dir(notifPath), 0755); err != nil {
-		return 0, err
-	}
-	if err := os.WriteFile(notifPath, []byte{}, 0644); err != nil {
-		return 0, err
+	// Clear state files under .polis/ds/*/
+	dsDir := filepath.Join(dataDir, ".polis", "ds")
+	entries, err := os.ReadDir(dsDir)
+	if err == nil {
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			// Current path: state/notifications.jsonl
+			statePath := filepath.Join(dsDir, entry.Name(), "state", "notifications.jsonl")
+			if data, err := os.ReadFile(statePath); err == nil {
+				for _, line := range strings.Split(string(data), "\n") {
+					if strings.TrimSpace(line) != "" {
+						count++
+					}
+				}
+				os.WriteFile(statePath, []byte{}, 0644)
+			}
+			// Old path: notifications/state.jsonl (pre-migration)
+			oldStatePath := filepath.Join(dsDir, entry.Name(), "notifications", "state.jsonl")
+			if data, err := os.ReadFile(oldStatePath); err == nil {
+				for _, line := range strings.Split(string(data), "\n") {
+					if strings.TrimSpace(line) != "" {
+						count++
+					}
+				}
+				os.WriteFile(oldStatePath, []byte{}, 0644)
+			}
+		}
 	}
 
 	return count, nil

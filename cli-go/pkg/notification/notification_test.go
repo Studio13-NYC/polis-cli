@@ -1,124 +1,144 @@
 package notification
 
 import (
-	"encoding/json"
 	"path/filepath"
 	"testing"
 )
 
-func TestNotifications(t *testing.T) {
-	tmpDir := t.TempDir()
-	mgr := NewManager(tmpDir)
-	mgr.InitManifest()
+func TestStateFile(t *testing.T) {
+	path := StateFile("/data", "example.supabase.co")
+	expected := filepath.Join("/data", ".polis", "ds", "example.supabase.co", "state", "notifications.jsonl")
+	if path != expected {
+		t.Errorf("StateFile() = %q, want %q", path, expected)
+	}
+}
 
-	// Test empty list
-	notifications, err := mgr.List()
+func TestStateDir(t *testing.T) {
+	dir := StateDir("/data", "example.supabase.co")
+	expected := filepath.Join("/data", ".polis", "ds", "example.supabase.co", "state")
+	if dir != expected {
+		t.Errorf("StateDir() = %q, want %q", dir, expected)
+	}
+}
+
+func TestManagerList_Empty(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr := NewManager(tmpDir, "test.supabase.co")
+
+	entries, err := mgr.List()
 	if err != nil {
 		t.Fatalf("List failed: %v", err)
 	}
-
-	if len(notifications) != 0 {
-		t.Errorf("Expected 0 notifications, got %d", len(notifications))
-	}
-
-	// Test Add
-	payload, _ := json.Marshal(map[string]string{"message": "test"})
-	id, err := mgr.Add("test_type", "test_source", payload, "")
-	if err != nil {
-		t.Fatalf("Add failed: %v", err)
-	}
-
-	if id == "" {
-		t.Error("Expected non-empty ID")
-	}
-
-	// Test list after add
-	notifications, _ = mgr.List()
-	if len(notifications) != 1 {
-		t.Errorf("Expected 1 notification, got %d", len(notifications))
-	}
-
-	// Test Count
-	count, _ := mgr.Count()
-	if count != 1 {
-		t.Errorf("Expected count 1, got %d", count)
+	if len(entries) != 0 {
+		t.Errorf("Expected 0 entries, got %d", len(entries))
 	}
 }
 
-func TestDeduplication(t *testing.T) {
+func TestManagerAppend(t *testing.T) {
 	tmpDir := t.TempDir()
-	mgr := NewManager(tmpDir)
-	mgr.InitManifest()
+	mgr := NewManager(tmpDir, "test.supabase.co")
 
-	payload, _ := json.Marshal(map[string]string{"message": "test"})
-
-	// Add with dedupe key
-	id1, _ := mgr.Add("test_type", "test_source", payload, "dedupe_key_1")
-
-	// Try to add again with same dedupe key
-	id2, _ := mgr.Add("test_type", "test_source", payload, "dedupe_key_1")
-
-	if id1 == "" {
-		t.Error("First add should return ID")
+	entries := []StateEntry{
+		{
+			ID:        "blessing-requested:https://bob.com/comments/reply.md",
+			RuleID:    "blessing-requested",
+			Actor:     "bob.com",
+			Icon:      "\U0001F514",
+			Message:   "bob.com requested a blessing on welcome",
+			EventIDs:  []int{4521},
+			CreatedAt: "2025-01-15T10:30:00Z",
+		},
 	}
 
-	if id2 != "" {
-		t.Error("Duplicate add should return empty ID")
+	written, err := mgr.Append(entries)
+	if err != nil {
+		t.Fatalf("Append failed: %v", err)
+	}
+	if written != 1 {
+		t.Errorf("Expected 1 written, got %d", written)
 	}
 
-	count, _ := mgr.Count()
-	if count != 1 {
-		t.Errorf("Expected count 1 (no duplicates), got %d", count)
+	// List back
+	listed, err := mgr.List()
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	if len(listed) != 1 {
+		t.Fatalf("Expected 1 entry, got %d", len(listed))
+	}
+	if listed[0].ID != entries[0].ID {
+		t.Errorf("ID = %q, want %q", listed[0].ID, entries[0].ID)
+	}
+	if listed[0].Icon != "\U0001F514" {
+		t.Errorf("Icon = %q, want bell emoji", listed[0].Icon)
 	}
 }
 
-func TestInitManifest_UsesGeneratorVersion(t *testing.T) {
+func TestManagerAppend_Dedup(t *testing.T) {
 	tmpDir := t.TempDir()
-	mgr := NewManager(tmpDir)
+	mgr := NewManager(tmpDir, "test.supabase.co")
 
-	if err := mgr.InitManifest(); err != nil {
-		t.Fatalf("InitManifest failed: %v", err)
+	entry := StateEntry{
+		ID:        "dedupe-key",
+		RuleID:    "test",
+		Actor:     "alice.com",
+		Icon:      "i",
+		Message:   "test",
+		EventIDs:  []int{1},
+		CreatedAt: "2025-01-15T10:30:00Z",
 	}
 
-	manifest, err := mgr.LoadManifest()
-	if err != nil {
-		t.Fatalf("LoadManifest failed: %v", err)
+	// First append
+	written, _ := mgr.Append([]StateEntry{entry})
+	if written != 1 {
+		t.Errorf("First append: expected 1 written, got %d", written)
 	}
 
-	expected := GetGenerator()
-	if manifest.Version != expected {
-		t.Errorf("InitManifest version = %q, want %q", manifest.Version, expected)
+	// Second append with same ID
+	written, _ = mgr.Append([]StateEntry{entry})
+	if written != 0 {
+		t.Errorf("Duplicate append: expected 0 written, got %d", written)
+	}
+
+	entries, _ := mgr.List()
+	if len(entries) != 1 {
+		t.Errorf("Expected 1 entry after dedup, got %d", len(entries))
 	}
 }
 
-func TestLoadManifest_DefaultUsesGeneratorVersion(t *testing.T) {
+func TestCountUnread(t *testing.T) {
 	tmpDir := t.TempDir()
-	mgr := NewManager(tmpDir)
+	mgr := NewManager(tmpDir, "test.supabase.co")
 
-	// Load without init — should return defaults with generator version
-	manifest, err := mgr.LoadManifest()
-	if err != nil {
-		t.Fatalf("LoadManifest failed: %v", err)
+	// Empty = 0
+	count, _ := mgr.CountUnread()
+	if count != 0 {
+		t.Errorf("Expected 0, got %d", count)
 	}
 
-	expected := GetGenerator()
-	if manifest.Version != expected {
-		t.Errorf("default manifest version = %q, want %q", manifest.Version, expected)
+	mgr.Append([]StateEntry{
+		{ID: "n1", RuleID: "test", Actor: "a", Icon: "i", Message: "m", EventIDs: []int{1}, CreatedAt: "2025-01-15T10:30:00Z"},
+		{ID: "n2", RuleID: "test", Actor: "a", Icon: "i", Message: "m", EventIDs: []int{2}, CreatedAt: "2025-01-15T10:31:00Z"},
+	})
+
+	count, _ = mgr.CountUnread()
+	if count != 2 {
+		t.Errorf("Expected 2, got %d", count)
 	}
 }
 
 func TestMarkRead(t *testing.T) {
 	tmpDir := t.TempDir()
-	mgr := NewManager(tmpDir)
-	mgr.InitManifest()
+	mgr := NewManager(tmpDir, "test.supabase.co")
 
-	payload, _ := json.Marshal(map[string]string{"message": "test"})
-	id1, _ := mgr.Add("test_type", "source1", payload, "notif1")
-	id2, _ := mgr.Add("test_type", "source2", payload, "notif2")
-	mgr.Add("test_type", "source3", payload, "notif3")
+	mgr.Append([]StateEntry{
+		{ID: "n1", RuleID: "test", Actor: "a", Icon: "i", Message: "m", EventIDs: []int{1}, CreatedAt: "2025-01-15T10:30:00Z"},
+		{ID: "n2", RuleID: "test", Actor: "a", Icon: "i", Message: "m", EventIDs: []int{2}, CreatedAt: "2025-01-15T10:31:00Z"},
+		{ID: "n3", RuleID: "test", Actor: "a", Icon: "i", Message: "m", EventIDs: []int{3}, CreatedAt: "2025-01-15T10:32:00Z"},
+	})
 
 	// Mark specific IDs
-	marked, err := mgr.MarkRead([]string{id1, id2}, false)
+	marked, err := mgr.MarkRead([]string{"n1", "n2"}, false)
 	if err != nil {
 		t.Fatalf("MarkRead failed: %v", err)
 	}
@@ -126,17 +146,13 @@ func TestMarkRead(t *testing.T) {
 		t.Errorf("Expected 2 marked, got %d", marked)
 	}
 
-	// Verify unread count
 	unread, _ := mgr.CountUnread()
 	if unread != 1 {
 		t.Errorf("Expected 1 unread, got %d", unread)
 	}
 
 	// Mark all
-	marked, err = mgr.MarkRead(nil, true)
-	if err != nil {
-		t.Fatalf("MarkRead all failed: %v", err)
-	}
+	marked, _ = mgr.MarkRead(nil, true)
 	if marked != 1 {
 		t.Errorf("Expected 1 marked, got %d", marked)
 	}
@@ -147,44 +163,17 @@ func TestMarkRead(t *testing.T) {
 	}
 }
 
-func TestCountUnread(t *testing.T) {
-	tmpDir := t.TempDir()
-	mgr := NewManager(tmpDir)
-	mgr.InitManifest()
-
-	// Empty = 0 unread
-	count, _ := mgr.CountUnread()
-	if count != 0 {
-		t.Errorf("Expected 0, got %d", count)
-	}
-
-	payload, _ := json.Marshal(map[string]string{"message": "test"})
-	mgr.Add("test_type", "source", payload, "n1")
-	mgr.Add("test_type", "source", payload, "n2")
-
-	count, _ = mgr.CountUnread()
-	if count != 2 {
-		t.Errorf("Expected 2, got %d", count)
-	}
-
-	mgr.MarkRead([]string{"n1"}, false)
-	count, _ = mgr.CountUnread()
-	if count != 1 {
-		t.Errorf("Expected 1, got %d", count)
-	}
-}
-
 func TestListPaginated(t *testing.T) {
 	tmpDir := t.TempDir()
-	mgr := NewManager(tmpDir)
-	mgr.InitManifest()
+	mgr := NewManager(tmpDir, "test.supabase.co")
 
-	payload, _ := json.Marshal(map[string]string{"message": "test"})
-	mgr.Add("test_type", "source", payload, "n1")
-	mgr.Add("test_type", "source", payload, "n2")
-	mgr.Add("test_type", "source", payload, "n3")
-	mgr.Add("test_type", "source", payload, "n4")
-	mgr.Add("test_type", "source", payload, "n5")
+	mgr.Append([]StateEntry{
+		{ID: "n1", RuleID: "test", Actor: "a", Icon: "i", Message: "m", EventIDs: []int{1}, CreatedAt: "2025-01-15T10:30:00Z"},
+		{ID: "n2", RuleID: "test", Actor: "a", Icon: "i", Message: "m", EventIDs: []int{2}, CreatedAt: "2025-01-15T10:31:00Z"},
+		{ID: "n3", RuleID: "test", Actor: "a", Icon: "i", Message: "m", EventIDs: []int{3}, CreatedAt: "2025-01-15T10:32:00Z"},
+		{ID: "n4", RuleID: "test", Actor: "a", Icon: "i", Message: "m", EventIDs: []int{4}, CreatedAt: "2025-01-15T10:33:00Z"},
+		{ID: "n5", RuleID: "test", Actor: "a", Icon: "i", Message: "m", EventIDs: []int{5}, CreatedAt: "2025-01-15T10:34:00Z"},
+	})
 
 	// Mark some as read
 	mgr.MarkRead([]string{"n1", "n2"}, false)
@@ -227,16 +216,9 @@ func TestListPaginated(t *testing.T) {
 	}
 }
 
-func TestDefaultPath(t *testing.T) {
-	path := DefaultNotificationsFile("/data")
-	expected := filepath.Join("/data", ".polis", "notifications.jsonl")
-	if path != expected {
-		t.Errorf("Expected %s, got %s", expected, path)
-	}
-
-	manifestPath := DefaultManifestFile("/data")
-	expectedManifest := filepath.Join("/data", ".polis", "notifications-manifest.json")
-	if manifestPath != expectedManifest {
-		t.Errorf("Expected %s, got %s", expectedManifest, manifestPath)
+func TestGetGenerator(t *testing.T) {
+	got := GetGenerator()
+	if got != "polis-cli-go/dev" {
+		t.Errorf("GetGenerator() = %q, want polis-cli-go/dev", got)
 	}
 }

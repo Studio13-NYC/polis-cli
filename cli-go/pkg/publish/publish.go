@@ -341,7 +341,8 @@ version-history:
 
 	// Register with discovery service (non-fatal)
 	if err := RegisterPost(dataDir, result, privateKey); err != nil {
-		fmt.Printf("[warning] Discovery registration failed: %v\n", err)
+		fmt.Printf("[!] Discovery registration skipped: %v\n", err)
+		fmt.Println("[i] If your site is newly deployed, run: polis register")
 	}
 
 	return result, nil
@@ -810,7 +811,8 @@ signature: %s
 
 	// Register with discovery service (non-fatal)
 	if err := RegisterPost(dataDir, result, privateKey); err != nil {
-		fmt.Printf("[warning] Discovery registration failed: %v\n", err)
+		fmt.Printf("[!] Discovery registration skipped: %v\n", err)
+		fmt.Println("[i] If your site is newly deployed, run: polis register")
 	}
 
 	return result, nil

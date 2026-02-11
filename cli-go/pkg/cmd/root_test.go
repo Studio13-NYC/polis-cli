@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -65,7 +66,6 @@ func TestPrintUsage(t *testing.T) {
 	// Verify init options are listed
 	initOptions := []string{
 		"--site-title",
-		"--register",
 		"--keys-dir",
 		"--posts-dir",
 		"--comments-dir",
@@ -76,6 +76,11 @@ func TestPrintUsage(t *testing.T) {
 		if !strings.Contains(output, opt) {
 			t.Errorf("Expected usage to contain init option %q", opt)
 		}
+	}
+
+	// Regression: --register must NOT appear in help text
+	if strings.Contains(output, "--register") {
+		t.Error("--register should not appear in help text (removed from init)")
 	}
 }
 
@@ -129,5 +134,82 @@ func TestGetDataDirOverride(t *testing.T) {
 
 	if result != "/custom/path" {
 		t.Errorf("Expected getDataDir() to return %q, got %q", "/custom/path", result)
+	}
+}
+
+func TestLoadEnvFile_Basic(t *testing.T) {
+	dir := t.TempDir()
+	envFile := filepath.Join(dir, ".env")
+	os.WriteFile(envFile, []byte("TEST_LOAD_ENV_A=hello\nTEST_LOAD_ENV_B=world\n"), 0644)
+
+	// Clear env vars first
+	os.Unsetenv("TEST_LOAD_ENV_A")
+	os.Unsetenv("TEST_LOAD_ENV_B")
+	defer os.Unsetenv("TEST_LOAD_ENV_A")
+	defer os.Unsetenv("TEST_LOAD_ENV_B")
+
+	loaded := loadEnvFile(envFile)
+	if !loaded {
+		t.Fatal("expected loadEnvFile to return true")
+	}
+	if got := os.Getenv("TEST_LOAD_ENV_A"); got != "hello" {
+		t.Errorf("TEST_LOAD_ENV_A = %q, want %q", got, "hello")
+	}
+	if got := os.Getenv("TEST_LOAD_ENV_B"); got != "world" {
+		t.Errorf("TEST_LOAD_ENV_B = %q, want %q", got, "world")
+	}
+}
+
+func TestLoadEnvFile_NoOverride(t *testing.T) {
+	dir := t.TempDir()
+	envFile := filepath.Join(dir, ".env")
+	os.WriteFile(envFile, []byte("TEST_LOAD_ENV_C=from-file\n"), 0644)
+
+	os.Setenv("TEST_LOAD_ENV_C", "from-env")
+	defer os.Unsetenv("TEST_LOAD_ENV_C")
+
+	loadEnvFile(envFile)
+	if got := os.Getenv("TEST_LOAD_ENV_C"); got != "from-env" {
+		t.Errorf("TEST_LOAD_ENV_C = %q, want %q (should not override)", got, "from-env")
+	}
+}
+
+func TestLoadEnvFile_QuotedValues(t *testing.T) {
+	dir := t.TempDir()
+	envFile := filepath.Join(dir, ".env")
+	os.WriteFile(envFile, []byte("TEST_LOAD_ENV_D=\"quoted value\"\nTEST_LOAD_ENV_E='single quoted'\n"), 0644)
+
+	os.Unsetenv("TEST_LOAD_ENV_D")
+	os.Unsetenv("TEST_LOAD_ENV_E")
+	defer os.Unsetenv("TEST_LOAD_ENV_D")
+	defer os.Unsetenv("TEST_LOAD_ENV_E")
+
+	loadEnvFile(envFile)
+	if got := os.Getenv("TEST_LOAD_ENV_D"); got != "quoted value" {
+		t.Errorf("TEST_LOAD_ENV_D = %q, want %q", got, "quoted value")
+	}
+	if got := os.Getenv("TEST_LOAD_ENV_E"); got != "single quoted" {
+		t.Errorf("TEST_LOAD_ENV_E = %q, want %q", got, "single quoted")
+	}
+}
+
+func TestLoadEnvFile_CommentsAndBlanks(t *testing.T) {
+	dir := t.TempDir()
+	envFile := filepath.Join(dir, ".env")
+	os.WriteFile(envFile, []byte("# comment\n\nTEST_LOAD_ENV_F=value\n# another comment\n"), 0644)
+
+	os.Unsetenv("TEST_LOAD_ENV_F")
+	defer os.Unsetenv("TEST_LOAD_ENV_F")
+
+	loadEnvFile(envFile)
+	if got := os.Getenv("TEST_LOAD_ENV_F"); got != "value" {
+		t.Errorf("TEST_LOAD_ENV_F = %q, want %q", got, "value")
+	}
+}
+
+func TestLoadEnvFile_Missing(t *testing.T) {
+	loaded := loadEnvFile("/nonexistent/.env")
+	if loaded {
+		t.Error("expected loadEnvFile to return false for missing file")
 	}
 }

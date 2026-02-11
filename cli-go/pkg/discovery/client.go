@@ -825,7 +825,7 @@ type StreamHealthResponse struct {
 }
 
 // StreamQuery queries the discovery stream for events.
-func (c *Client) StreamQuery(since string, limit int, typeFilter string, actorFilter string) (*StreamQueryResponse, error) {
+func (c *Client) StreamQuery(since string, limit int, typeFilter string, actorFilter string, targetFilter string, sourceFilter ...string) (*StreamQueryResponse, error) {
 	params := url.Values{}
 	if since != "" {
 		params.Set("since", since)
@@ -838,6 +838,12 @@ func (c *Client) StreamQuery(since string, limit int, typeFilter string, actorFi
 	}
 	if actorFilter != "" {
 		params.Set("actor", actorFilter)
+	}
+	if targetFilter != "" {
+		params.Set("target", targetFilter)
+	}
+	if len(sourceFilter) > 0 && sourceFilter[0] != "" {
+		params.Set("source", sourceFilter[0])
 	}
 
 	endpoint := c.BaseURL + "/ds-stream"

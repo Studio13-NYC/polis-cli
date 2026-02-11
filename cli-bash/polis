@@ -28,7 +28,7 @@ set -e
 #   4. Hardcoded defaults
 
 # Fixed constants (never configurable - required for discovery)
-VERSION="0.50.0"
+VERSION="0.51.0"
 WELL_KNOWN_DIR=".well-known"
 WELL_KNOWN_FILE="polis"
 
@@ -246,8 +246,6 @@ cmd_init() {
     local custom_following_index=""
     local custom_versions_dir=""
     local custom_site_title=""
-    local auto_register=false
-
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --keys-dir)
@@ -289,10 +287,6 @@ cmd_init() {
             --site-title)
                 custom_site_title="$2"
                 shift 2
-                ;;
-            --register)
-                auto_register=true
-                shift
                 ;;
             *)
                 error "Unknown option: $1. Use 'polis help init' for usage."
@@ -567,27 +561,8 @@ EOF
         fi
     fi
 
-    # Auto-register if requested
-    if [ "$auto_register" = true ]; then
-        if [ -z "$POLIS_BASE_URL" ]; then
-            if [ "$JSON_MODE" != true ]; then
-                echo ""
-                warn "Cannot auto-register: POLIS_BASE_URL not set"
-                info "Set it with: export POLIS_BASE_URL=https://yourdomain.com"
-            fi
-        elif [ -z "$DISCOVERY_SERVICE_URL" ] || [ -z "$DISCOVERY_SERVICE_KEY" ]; then
-            if [ "$JSON_MODE" != true ]; then
-                echo ""
-                warn "Cannot auto-register: Discovery service not configured"
-                info "Set DISCOVERY_SERVICE_URL and DISCOVERY_SERVICE_KEY in .env"
-            fi
-        else
-            if [ "$JSON_MODE" != true ]; then
-                echo ""
-                info_human "Auto-registering with discovery service..."
-            fi
-            cmd_register
-        fi
+    if [ "$JSON_MODE" != true ]; then
+        info "When your site is deployed, register with: polis register"
     fi
 }
 
@@ -8984,7 +8959,6 @@ main() {
             echo "Commands related to local configuration management:"
             echo "  polis init [options]            Initialize Polis directory structure"
             echo "    --site-title <title>          Site display name (stored in manifest.json)"
-            echo "    --register                    Auto-register with discovery service after init"
             echo "    --keys-dir <path>             Custom keys directory (default: .polis/keys)"
             echo "    --posts-dir <path>            Custom posts directory (default: posts)"
             echo "    --comments-dir <path>         Custom comments directory (default: comments)"

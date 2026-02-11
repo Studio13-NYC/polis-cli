@@ -32,8 +32,6 @@ func handleNotificationsList(args []string) {
 	fs := flag.NewFlagSet("notifications list", flag.ExitOnError)
 	showAll := fs.Bool("all", false, "Show all notifications")
 	fs.Bool("a", false, "Show all notifications (alias)")
-	typeFilter := fs.String("type", "", "Filter by type (comma-separated)")
-	fs.String("t", "", "Filter by type (alias)")
 	fs.Parse(args)
 
 	dir := getDataDir()
@@ -42,20 +40,27 @@ func handleNotificationsList(args []string) {
 		exitError("Not a polis site directory")
 	}
 
-	mgr := notification.NewManager(dir)
-	mgr.InitManifest()
-
-	// Get local notifications
-	var notifications []notification.Notification
-	var err error
-
-	if *typeFilter != "" {
-		types := strings.Split(*typeFilter, ",")
-		notifications, err = mgr.ListByType(types)
-	} else {
-		notifications, err = mgr.List()
+	// Determine discovery domain
+	discoveryURL := os.Getenv("DISCOVERY_SERVICE_URL")
+	if discoveryURL == "" {
+		discoveryURL = "https://ltfpezriiaqvjupxbttw.supabase.co/functions/v1"
+	}
+	discoveryDomain := extractDomain(discoveryURL)
+	if discoveryDomain == "" {
+		discoveryDomain = "default"
 	}
 
+	// Read notifications from new state file
+	mgr := notification.NewManager(dir, discoveryDomain)
+
+	var entries []notification.StateEntry
+	var err error
+
+	if *showAll {
+		entries, _, err = mgr.ListPaginated(0, 0, true)
+	} else {
+		entries, _, err = mgr.ListPaginated(0, 0, false)
+	}
 	if err != nil {
 		exitError("Failed to list notifications: %v", err)
 	}
@@ -64,10 +69,6 @@ func handleNotificationsList(args []string) {
 	var pendingBlessings []map[string]interface{}
 	var migrations []map[string]interface{}
 
-	discoveryURL := os.Getenv("DISCOVERY_SERVICE_URL")
-	if discoveryURL == "" {
-		discoveryURL = "https://ltfpezriiaqvjupxbttw.supabase.co/functions/v1"
-	}
 	apiKey := os.Getenv("DISCOVERY_SERVICE_KEY")
 	baseURL := os.Getenv("POLIS_BASE_URL")
 
@@ -112,13 +113,13 @@ func handleNotificationsList(args []string) {
 			"status":  "success",
 			"command": "notifications",
 			"data": map[string]interface{}{
-				"notifications":     notifications,
+				"notifications":     entries,
 				"pending_blessings": pendingBlessings,
 				"domain_migrations": migrations,
 			},
 		})
 	} else {
-		totalCount := len(notifications) + len(pendingBlessings) + len(migrations)
+		totalCount := len(entries) + len(pendingBlessings) + len(migrations)
 
 		if totalCount == 0 {
 			fmt.Println("[i] No notifications")
@@ -127,14 +128,14 @@ func handleNotificationsList(args []string) {
 
 		fmt.Println()
 
-		if len(notifications) > 0 {
-			fmt.Printf("[i] === Notifications (%d) ===\n", len(notifications))
-			for _, n := range notifications {
-				payloadStr := string(n.Payload)
-				if len(payloadStr) > 60 {
-					payloadStr = payloadStr[:60] + "..."
+		if len(entries) > 0 {
+			fmt.Printf("[i] === Notifications (%d) ===\n", len(entries))
+			for _, e := range entries {
+				readMark := " "
+				if e.ReadAt != "" {
+					readMark = "."
 				}
-				fmt.Printf("  [%s] %s (%s)\n", n.Type, payloadStr, n.CreatedAt[:10])
+				fmt.Printf("  %s %s %s (%s)\n", readMark, e.Icon, e.Message, e.CreatedAt[:10])
 			}
 			fmt.Println()
 		}
@@ -165,8 +166,4 @@ func handleNotificationsList(args []string) {
 			fmt.Println("[i] Run 'polis migrations apply' to update local references.")
 		}
 	}
-
-	// Suppress unused variable warning
-	_ = showAll
 }
-

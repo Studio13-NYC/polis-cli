@@ -1,0 +1,150 @@
+package notification
+
+import (
+	"testing"
+)
+
+func TestDefaultRules(t *testing.T) {
+	rules := DefaultRules()
+	if len(rules) != 9 {
+		t.Errorf("DefaultRules() returned %d rules, want 9", len(rules))
+	}
+
+	// Check all event types are covered
+	eventTypes := map[string]bool{
+		"polis.follow.announced":    false,
+		"polis.follow.removed":      false,
+		"polis.blessing.requested":  false,
+		"polis.blessing.granted":    false,
+		"polis.blessing.denied":     false,
+		"polis.comment.published":   false,
+		"polis.comment.republished": false,
+		"polis.post.published":      false,
+		"polis.post.republished":    false,
+	}
+	for _, r := range rules {
+		if _, ok := eventTypes[r.EventType]; !ok {
+			t.Errorf("unexpected event type %q", r.EventType)
+		}
+		eventTypes[r.EventType] = true
+	}
+	for et, covered := range eventTypes {
+		if !covered {
+			t.Errorf("event type %q not covered by any rule", et)
+		}
+	}
+
+	// Check that blessing.granted/denied use source_domain filter
+	for _, r := range rules {
+		switch r.ID {
+		case "blessing-granted", "blessing-denied":
+			if r.Filter.Relevance != "source_domain" {
+				t.Errorf("rule %q has filter %q, want source_domain", r.ID, r.Filter.Relevance)
+			}
+		case "new-post", "updated-post":
+			if r.Filter.Relevance != "followed_author" {
+				t.Errorf("rule %q has filter %q, want followed_author", r.ID, r.Filter.Relevance)
+			}
+		}
+	}
+
+	// Check disabled rules
+	for _, r := range rules {
+		switch r.ID {
+		case "updated-comment", "updated-post":
+			if r.Enabled {
+				t.Errorf("rule %q should be disabled by default", r.ID)
+			}
+		default:
+			if !r.Enabled {
+				t.Errorf("rule %q should be enabled by default", r.ID)
+			}
+		}
+	}
+}
+
+func TestResolveTemplate(t *testing.T) {
+	tests := []struct {
+		name   string
+		tmpl   string
+		vars   map[string]string
+		expect string
+	}{
+		{
+			name:   "simple actor",
+			tmpl:   "{{actor}} started following you",
+			vars:   map[string]string{"actor": "alice.com"},
+			expect: "alice.com started following you",
+		},
+		{
+			name:   "multiple vars",
+			tmpl:   "{{actor}} commented on {{post_name}}",
+			vars:   map[string]string{"actor": "bob.com", "post_name": "welcome"},
+			expect: "bob.com commented on welcome",
+		},
+		{
+			name:   "no vars to replace",
+			tmpl:   "static message",
+			vars:   map[string]string{},
+			expect: "static message",
+		},
+		{
+			name:   "missing var left as-is",
+			tmpl:   "{{actor}} on {{post_name}}",
+			vars:   map[string]string{"actor": "alice.com"},
+			expect: "alice.com on {{post_name}}",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ResolveTemplate(tt.tmpl, tt.vars)
+			if got != tt.expect {
+				t.Errorf("ResolveTemplate() = %q, want %q", got, tt.expect)
+			}
+		})
+	}
+}
+
+func TestTemplateVarsFromEvent(t *testing.T) {
+	vars := TemplateVarsFromEvent("alice.com", "2025-01-15T10:30:00Z", map[string]interface{}{
+		"source_url":    "https://bob.com/comments/reply.md",
+		"target_url":    "https://alice.com/posts/welcome.md",
+		"target_domain": "alice.com",
+		"source_domain": "bob.com",
+	})
+
+	if vars["actor"] != "alice.com" {
+		t.Errorf("actor = %q, want alice.com", vars["actor"])
+	}
+	if vars["post_name"] != "welcome" {
+		t.Errorf("post_name = %q, want welcome", vars["post_name"])
+	}
+	if vars["source_domain"] != "bob.com" {
+		t.Errorf("source_domain = %q, want bob.com", vars["source_domain"])
+	}
+}
+
+func TestDedupeKey(t *testing.T) {
+	// With source_url
+	key := DedupeKey("blessing-requested", map[string]interface{}{
+		"source_url": "https://bob.com/comments/reply.md",
+	})
+	if key != "blessing-requested:https://bob.com/comments/reply.md" {
+		t.Errorf("DedupeKey() = %q", key)
+	}
+
+	// Without source_url, falls back to target_domain
+	key = DedupeKey("new-follower", map[string]interface{}{
+		"target_domain": "alice.com",
+	})
+	if key != "new-follower:alice.com" {
+		t.Errorf("DedupeKey() = %q", key)
+	}
+
+	// Empty payload uses hash fallback
+	key = DedupeKey("test", map[string]interface{}{})
+	if key == "" {
+		t.Error("DedupeKey() should not be empty")
+	}
+}

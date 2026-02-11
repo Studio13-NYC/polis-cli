@@ -20,8 +20,9 @@ type ProjectionHandler interface {
 }
 
 // BuiltinHandlers maps projection names to their built-in handler implementations.
+// Note: NotificationHandler is not included here because it uses a different
+// processing model (rule-driven, writes to state.jsonl instead of projection state).
 var BuiltinHandlers = map[string]ProjectionHandler{
-	"polis.follow":       &FollowHandler{},
-	"polis.blessing":     &BlessingHandler{},
-	"polis.notification": &NotificationHandler{},
+	"polis.follow":   &FollowHandler{},
+	"polis.blessing": &BlessingHandler{},
 }

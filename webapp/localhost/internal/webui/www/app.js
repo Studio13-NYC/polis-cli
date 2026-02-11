@@ -12,6 +12,12 @@ const App = {
     // View mode state: 'list' or 'browser'
     viewMode: 'list',
 
+    // Setup wizard state
+    setupWizardStep: 0,       // 0=configure, 1=deploy, 2=register
+    setupWizardDeployTimer: null,
+    setupWizardDismissed: false,
+    siteRegistered: false,
+
     // Site info (loaded from /api/settings)
     siteInfo: null,
 
@@ -237,6 +243,7 @@ const App = {
                     await this.loadViewContent();
                     this.initNotifications();
                     this.showScreen('dashboard');
+                    this.checkSetupBanner();
                     break;
 
                 case 'not_found':
@@ -265,6 +272,7 @@ const App = {
                         await this.initViewMode();
                         await this.loadViewContent();
                         this.showScreen('dashboard');
+                        this.checkSetupBanner();
                     } else {
                         this.showScreen('welcome');
                     }
@@ -704,6 +712,10 @@ const App = {
         this.bindBrowserEvents();
     },
 
+    // Default discovery service values (public, hardcoded to match server defaults)
+    defaultDiscoveryURL: 'https://ltfpezriiaqvjupxbttw.supabase.co/functions/v1',
+    defaultDiscoveryKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx0ZnBlenJpaWFxdmp1cHhidHR3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjcxNDQwODMsImV4cCI6MjA4MjcyMDA4M30.N9ScKbdcswutM6i__W9sPWWcBONIcxdAqIbsljqMKMI',
+
     // Show init flow panel
     showInitFlow() {
         const panel = document.getElementById('init-panel');
@@ -711,8 +723,12 @@ const App = {
             // Clear any previous values
             const titleInput = document.getElementById('init-site-title');
             const urlInput = document.getElementById('init-base-url');
+            const dsUrlInput = document.getElementById('init-discovery-url');
+            const dsKeyInput = document.getElementById('init-discovery-key');
             if (titleInput) titleInput.value = '';
             if (urlInput) urlInput.value = '';
+            if (dsUrlInput) dsUrlInput.value = this.defaultDiscoveryURL;
+            if (dsKeyInput) dsKeyInput.value = this.defaultDiscoveryKey;
             panel.classList.remove('hidden');
         }
     },
@@ -727,10 +743,14 @@ const App = {
     async executeInit() {
         const titleInput = document.getElementById('init-site-title');
         const urlInput = document.getElementById('init-base-url');
+        const dsUrlInput = document.getElementById('init-discovery-url');
+        const dsKeyInput = document.getElementById('init-discovery-key');
         const executeBtn = document.getElementById('init-execute-btn');
 
         const siteTitle = titleInput ? titleInput.value.trim() : '';
         const baseUrl = urlInput ? urlInput.value.trim() : '';
+        const discoveryUrl = dsUrlInput ? dsUrlInput.value.trim() : '';
+        const discoveryKey = dsKeyInput ? dsKeyInput.value.trim() : '';
 
         // Disable button while processing
         if (executeBtn) {
@@ -742,6 +762,8 @@ const App = {
             const result = await this.api('POST', '/api/init', {
                 site_title: siteTitle,
                 base_url: baseUrl,
+                discovery_url: discoveryUrl,
+                discovery_key: discoveryKey,
             });
 
             this.closeInitPanel();
@@ -751,11 +773,15 @@ const App = {
             document.getElementById('domain-display').textContent =
                 result.site_title || '';
             this.updateDomainDisplay(result.base_url);
+            this.siteBaseUrl = result.base_url || '';
             this.initNotifications();
             await this.loadAllCounts();
             await this.initViewMode();
             await this.loadViewContent();
             this.showScreen('dashboard');
+
+            // Open setup wizard to guide through deploy & register
+            this.openSetupWizard();
         } catch (err) {
             this.showToast('Failed to initialize site: ' + err.message, 'error');
         } finally {
@@ -4846,7 +4872,9 @@ echo "File: $POLIS_PATH"</code>
     renderActivityEvent(evt) {
         const typeLabels = {
             'polis.post.published': 'published a post',
-            'polis.post.updated': 'updated a post',
+            'polis.post.republished': 'republished a post',
+            'polis.comment.published': 'published a comment',
+            'polis.comment.republished': 'republished a comment',
             'polis.blessing.requested': 'requested a blessing',
             'polis.blessing.granted': 'granted a blessing',
             'polis.blessing.denied': 'denied a blessing',
@@ -5122,46 +5150,208 @@ echo "File: $POLIS_PATH"</code>
         const div = document.createElement('div');
         div.className = 'notification-item' + (n.read_at ? '' : ' unread');
 
-        let payload = {};
-        try { payload = typeof n.payload === 'string' ? JSON.parse(n.payload) : (n.payload || {}); }
-        catch (e) { /* ignore */ }
-
-        const typeClass = ['blessing_request', 'comment_blessed'].includes(n.type) ? n.type : 'default';
-        const icon = n.type === 'blessing_request' ? '\u{1F514}' : n.type === 'comment_blessed' ? '\u2713' : '\u2139';
-
-        let message = '';
-        if (n.type === 'blessing_request') {
-            const author = payload.author || n.source || 'Someone';
-            message = `<strong>${this.escapeHtml(author)}</strong> requested a blessing`;
-            if (payload.in_reply_to) {
-                const postName = payload.in_reply_to.split('/').pop();
-                message += ` on <em>${this.escapeHtml(postName)}</em>`;
-            }
-        } else if (n.type === 'comment_blessed') {
-            message = `Comment blessed by <strong>${this.escapeHtml(n.source || 'unknown')}</strong>`;
-        } else {
-            message = this.escapeHtml(n.type.replace(/_/g, ' '));
-            if (payload.message) message = this.escapeHtml(payload.message);
-        }
+        const icon = n.icon || '\u2139';
+        const ruleId = n.rule_id || '';
 
         div.innerHTML = `
-            <div class="notification-type-badge ${typeClass}">${icon}</div>
+            <div class="notification-type-badge">${icon}</div>
             <div class="notification-body">
-                <div class="notification-message">${message}</div>
+                <div class="notification-message">${this.escapeHtml(n.message || '')}</div>
                 <div class="notification-meta">${this.formatRelativeTime(n.created_at)}</div>
             </div>
         `;
 
         // Click handler for blessing requests
-        if (n.type === 'blessing_request') {
+        if (ruleId === 'blessing-requested') {
             div.onclick = () => {
                 this.closeNotifications();
-                // Navigate to blessing requests view
                 this.switchView('blessing-requests');
             };
         }
 
         return div;
+    },
+
+    // --- Setup Wizard ---
+
+    async openSetupWizard() {
+        // Auto-detect current step (2-step: Deploy → Register)
+        try {
+            const result = await this.api('GET', '/api/site/deploy-check');
+            if (!result.deployed) {
+                this.setupWizardStep = 0; // Deploy
+            } else if (!this.siteRegistered) {
+                this.setupWizardStep = 1; // Register
+            } else {
+                return; // All done, don't open
+            }
+        } catch {
+            this.setupWizardStep = 0; // Default to deploy step on error
+        }
+
+        this.renderSetupWizard();
+        document.getElementById('setup-wizard-panel').classList.remove('hidden');
+    },
+
+    renderSetupWizard() {
+        const stepsEl = document.getElementById('setup-wizard-steps');
+        const contentEl = document.getElementById('setup-wizard-content');
+        const actionBtn = document.getElementById('setup-wizard-action-btn');
+        const steps = ['Deploy', 'Register'];
+
+        // Render step indicators
+        stepsEl.innerHTML = steps.map((label, i) => {
+            let cls = 'setup-step';
+            if (i < this.setupWizardStep) cls += ' completed';
+            else if (i === this.setupWizardStep) cls += ' active';
+            else cls += ' pending';
+            const icon = i < this.setupWizardStep ? '&#10003;' : (i + 1);
+            return `<div class="${cls}"><span class="step-dot">${icon}</span><span class="step-label">${label}</span></div>` +
+                   (i < steps.length - 1 ? '<div class="step-line"></div>' : '');
+        }).join('');
+
+        // Render step content
+        if (this.setupWizardStep === 0) {
+            const domain = this.siteBaseUrl ? new URL(this.siteBaseUrl).hostname : 'yourdomain.com';
+            contentEl.innerHTML = `
+                <div class="wizard-section">
+                    <p>Push your site files so that <strong>${this.escapeHtml(domain)}</strong> serves them publicly. Polis works with any static host.</p>
+                    <div class="deploy-example">
+                        <div class="deploy-example-header">Example: Git-based deploy</div>
+                        <pre class="setup-code"><span class="code-comment"># From your site directory</span>
+git add -A .
+git commit -m "initial polis site"
+git push</pre>
+                    </div>
+                    <p class="hint">Works with GitHub Pages, Netlify, Vercel, Cloudflare Pages, or any host that serves static files. The key file is <code>.well-known/polis</code> &mdash; once that's reachable, you're live.</p>
+                    <div id="deploy-status" class="deploy-status">
+                        <span class="deploy-spinner"></span>
+                        <span id="deploy-status-text">Checking if your site is live...</span>
+                    </div>
+                </div>`;
+            actionBtn.textContent = 'Next';
+            actionBtn.disabled = true;
+            this.startDeployPolling();
+        } else if (this.setupWizardStep === 1) {
+            const domain = this.siteBaseUrl ? new URL(this.siteBaseUrl).hostname : '';
+            contentEl.innerHTML = `
+                <div class="wizard-section">
+                    <p>Register <strong>${this.escapeHtml(domain)}</strong> with the discovery network so others can find and interact with your content.</p>
+                </div>`;
+            actionBtn.textContent = 'Register';
+        }
+    },
+
+    startDeployPolling() {
+        this.stopDeployPolling();
+        const poll = async () => {
+            try {
+                const result = await this.api('GET', '/api/site/deploy-check');
+                const statusText = document.getElementById('deploy-status-text');
+                if (result.deployed) {
+                    this.stopDeployPolling();
+                    if (statusText) statusText.textContent = 'Your site is live!';
+                    const statusEl = document.getElementById('deploy-status');
+                    if (statusEl) statusEl.classList.add('deployed');
+                    const actionBtn = document.getElementById('setup-wizard-action-btn');
+                    if (actionBtn) {
+                        actionBtn.disabled = false;
+                        actionBtn.textContent = 'Next';
+                    }
+                } else if (statusText) {
+                    statusText.textContent = 'Waiting for your site to go live...';
+                }
+            } catch {
+                // Silently continue polling
+            }
+        };
+        poll();
+        this.setupWizardDeployTimer = setInterval(poll, 5000);
+    },
+
+    stopDeployPolling() {
+        if (this.setupWizardDeployTimer) {
+            clearInterval(this.setupWizardDeployTimer);
+            this.setupWizardDeployTimer = null;
+        }
+    },
+
+    async setupWizardAction() {
+        const actionBtn = document.getElementById('setup-wizard-action-btn');
+        if (this.setupWizardStep === 0) {
+            // Deploy step → advance to Register
+            this.stopDeployPolling();
+            this.setupWizardStep = 1;
+            this.renderSetupWizard();
+        } else if (this.setupWizardStep === 1) {
+            // Register
+            if (actionBtn) {
+                actionBtn.disabled = true;
+                actionBtn.textContent = 'Registering...';
+            }
+            try {
+                await this.api('POST', '/api/site/register');
+                this.siteRegistered = true;
+                this.setupWizardDismissed = true;
+                // Dismiss the wizard
+                document.getElementById('setup-wizard-panel').classList.add('hidden');
+                document.getElementById('setup-banner').classList.add('hidden');
+                this.showToast('Site registered with discovery network!', 'success');
+                // Persist dismissal
+                try { await this.api('POST', '/api/site/setup-wizard-dismiss'); } catch {}
+            } catch (err) {
+                this.showToast('Registration failed: ' + err.message, 'error');
+                if (actionBtn) {
+                    actionBtn.disabled = false;
+                    actionBtn.textContent = 'Register';
+                }
+            }
+        }
+    },
+
+    dismissSetupWizard() {
+        this.stopDeployPolling();
+        document.getElementById('setup-wizard-panel').classList.add('hidden');
+        // Persist dismissal
+        this.api('POST', '/api/site/setup-wizard-dismiss').catch(() => {});
+        this.setupWizardDismissed = true;
+        // Show the banner on dashboard if not registered
+        if (!this.siteRegistered) {
+            document.getElementById('setup-banner').classList.remove('hidden');
+        }
+    },
+
+    dismissSetupBanner() {
+        document.getElementById('setup-banner').classList.add('hidden');
+        // Also persist wizard dismissal
+        this.api('POST', '/api/site/setup-wizard-dismiss').catch(() => {});
+        this.setupWizardDismissed = true;
+    },
+
+    async checkSetupBanner() {
+        // Check if wizard dismissed and site registered
+        try {
+            const settings = await this.api('GET', '/api/settings');
+            this.setupWizardDismissed = settings.setup_wizard_dismissed || false;
+
+            // Check registration status
+            try {
+                const regStatus = await this.api('GET', '/api/site/registration-status');
+                this.siteRegistered = regStatus.is_registered || false;
+            } catch {
+                this.siteRegistered = false;
+            }
+
+            // Show banner if not dismissed AND not registered
+            if (!this.setupWizardDismissed && !this.siteRegistered) {
+                // Auto-open wizard on first load after init
+                this.openSetupWizard();
+            } else if (this.setupWizardDismissed && !this.siteRegistered) {
+                document.getElementById('setup-banner').classList.remove('hidden');
+            }
+        } catch {
+            // Can't check, don't show banner
+        }
     },
 
     escapeHtml(str) {

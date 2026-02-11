@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/vdibart/polis-cli/cli-go/pkg/discovery"
 	polisurl "github.com/vdibart/polis-cli/cli-go/pkg/url"
@@ -71,6 +72,14 @@ func handleSiteRegister(client *discovery.Client, dir, domain string, privKey []
 
 	result, err := client.RegisterSite(domain, privKey, email, authorName)
 	if err != nil {
+		if strings.Contains(err.Error(), "WELLKNOWN_FETCH_FAILED") {
+			if jsonOutput {
+				exitError("Failed to register site: could not reach .well-known/polis on %s", domain)
+			}
+			fmt.Fprintf(os.Stderr, "[x] Failed to register: could not reach .well-known/polis on %s\n", domain)
+			fmt.Fprintf(os.Stderr, "[i] Is your site deployed? Registration requires your site to be publicly accessible.\n")
+			os.Exit(1)
+		}
 		exitError("Failed to register site: %v", err)
 	}
 

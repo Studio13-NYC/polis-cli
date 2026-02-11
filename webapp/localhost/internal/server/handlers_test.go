@@ -3,7 +3,6 @@ package server
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -3921,12 +3920,10 @@ func TestHandleFeed_MethodNotAllowed(t *testing.T) {
 func TestHandleFeed_WithTypeFilter(t *testing.T) {
 	s := newTestServer(t)
 
-	cm := feed.NewCacheManager(s.DataDir)
-	cm.Merge(&feed.AggregateResult{
-		Items: []feed.FeedItem{
+	cm := feed.NewCacheManager(s.DataDir, "default")
+	cm.MergeItems([]feed.FeedItem{
 			{Type: "post", Title: "A Post", URL: "posts/a.md", Published: "2026-02-01T10:00:00Z", AuthorURL: "https://a.pub", AuthorDomain: "a.pub"},
 			{Type: "comment", Title: "A Comment", URL: "comments/b.md", Published: "2026-02-02T10:00:00Z", AuthorURL: "https://b.pub", AuthorDomain: "b.pub"},
-		},
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/feed?type=post", nil)
@@ -3945,55 +3942,20 @@ func TestHandleFeed_WithTypeFilter(t *testing.T) {
 	}
 }
 
-func TestHandleFeedRefresh_SpecialCharacterTitles(t *testing.T) {
-	// Mock polis site that serves manifest + public index with special character titles
-	entries := []map[string]interface{}{
-		{"type": "post", "title": "It's Not Beyond Our Reach", "path": "posts/its-not.md", "published": "2026-01-15T12:00:00Z"},
-		{"type": "post", "title": `She said "hello" & waved`, "path": "posts/she-said.md", "published": "2026-01-14T12:00:00Z"},
-		{"type": "post", "title": "2 < 3 && 5 > 4", "path": "posts/math.md", "published": "2026-01-13T12:00:00Z"},
-	}
-	manifest := map[string]interface{}{
-		"version":        "0.49.0",
-		"last_published": "2026-01-15T12:00:00Z",
-		"post_count":     len(entries),
-	}
-	manifestJSON, _ := json.Marshal(manifest)
-	var indexLines []string
-	for _, e := range entries {
-		line, _ := json.Marshal(e)
-		indexLines = append(indexLines, string(line))
-	}
-	indexContent := strings.Join(indexLines, "\n")
-
-	mockSite := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case strings.HasSuffix(r.URL.Path, "/metadata/manifest.json"):
-			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(w, string(manifestJSON))
-		case strings.HasSuffix(r.URL.Path, "/metadata/public.jsonl"):
-			w.Header().Set("Content-Type", "text/plain")
-			fmt.Fprint(w, indexContent)
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer mockSite.Close()
-
-	// Set up a test server with following.json pointing to mock site
+func TestHandleFeed_SpecialCharacterTitles(t *testing.T) {
 	s := newTestServer(t)
-	followingPath := following.DefaultPath(s.DataDir)
-	f := &following.FollowingFile{
-		Version:   "test",
-		Following: []following.FollowingEntry{},
-	}
-	f.Add(mockSite.URL)
-	if err := following.Save(followingPath, f); err != nil {
-		t.Fatalf("failed to save following.json: %v", err)
-	}
 
-	req := httptest.NewRequest(http.MethodPost, "/api/feed/refresh", nil)
+	// Populate cache with titles containing special characters
+	cm := feed.NewCacheManager(s.DataDir, "default")
+	cm.MergeItems([]feed.FeedItem{
+		{Type: "post", Title: "It's Not Beyond Our Reach", URL: "posts/its-not.md", Published: "2026-01-15T12:00:00Z", AuthorURL: "https://a.pub", AuthorDomain: "a.pub"},
+		{Type: "post", Title: `She said "hello" & waved`, URL: "posts/she-said.md", Published: "2026-01-14T12:00:00Z", AuthorURL: "https://a.pub", AuthorDomain: "a.pub"},
+		{Type: "post", Title: "2 < 3 && 5 > 4", URL: "posts/math.md", Published: "2026-01-13T12:00:00Z", AuthorURL: "https://a.pub", AuthorDomain: "a.pub"},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/feed", nil)
 	w := httptest.NewRecorder()
-	s.handleFeedRefresh(w, req)
+	s.handleFeed(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
@@ -4003,7 +3965,7 @@ func TestHandleFeedRefresh_SpecialCharacterTitles(t *testing.T) {
 		Items []struct {
 			Title string `json:"title"`
 		} `json:"items"`
-		NewItems int `json:"new_items"`
+		Total int `json:"total"`
 	}
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
@@ -4011,10 +3973,6 @@ func TestHandleFeedRefresh_SpecialCharacterTitles(t *testing.T) {
 
 	if len(resp.Items) != 3 {
 		t.Fatalf("expected 3 items, got %d", len(resp.Items))
-	}
-
-	if resp.NewItems != 3 {
-		t.Errorf("expected 3 new items, got %d", resp.NewItems)
 	}
 
 	// Verify titles with apostrophes, quotes, and angle brackets survive JSON round-trip
@@ -4033,13 +3991,11 @@ func TestHandleFeedRefresh_SpecialCharacterTitles(t *testing.T) {
 func TestHandleFeed_UnreadCount(t *testing.T) {
 	s := newTestServer(t)
 
-	cm := feed.NewCacheManager(s.DataDir)
-	cm.Merge(&feed.AggregateResult{
-		Items: []feed.FeedItem{
+	cm := feed.NewCacheManager(s.DataDir, "default")
+	cm.MergeItems([]feed.FeedItem{
 			{Type: "post", Title: "A", URL: "posts/a.md", Published: "2026-02-01T10:00:00Z", AuthorURL: "https://a.pub", AuthorDomain: "a.pub"},
 			{Type: "post", Title: "B", URL: "posts/b.md", Published: "2026-02-02T10:00:00Z", AuthorURL: "https://a.pub", AuthorDomain: "a.pub"},
 			{Type: "post", Title: "C", URL: "posts/c.md", Published: "2026-02-03T10:00:00Z", AuthorURL: "https://a.pub", AuthorDomain: "a.pub"},
-		},
 	})
 
 	// Mark one as read
@@ -4108,11 +4064,9 @@ func TestHandleFeedRefresh_MethodNotAllowed(t *testing.T) {
 func TestHandleFeedRead_MarkRead(t *testing.T) {
 	s := newTestServer(t)
 
-	cm := feed.NewCacheManager(s.DataDir)
-	cm.Merge(&feed.AggregateResult{
-		Items: []feed.FeedItem{
+	cm := feed.NewCacheManager(s.DataDir, "default")
+	cm.MergeItems([]feed.FeedItem{
 			{Type: "post", Title: "Test", URL: "posts/test.md", Published: "2026-02-01T10:00:00Z", AuthorURL: "https://a.pub", AuthorDomain: "a.pub"},
-		},
 	})
 
 	items, _ := cm.List()
@@ -4136,11 +4090,9 @@ func TestHandleFeedRead_MarkRead(t *testing.T) {
 func TestHandleFeedRead_MarkUnread(t *testing.T) {
 	s := newTestServer(t)
 
-	cm := feed.NewCacheManager(s.DataDir)
-	cm.Merge(&feed.AggregateResult{
-		Items: []feed.FeedItem{
+	cm := feed.NewCacheManager(s.DataDir, "default")
+	cm.MergeItems([]feed.FeedItem{
 			{Type: "post", Title: "Test", URL: "posts/test.md", Published: "2026-02-01T10:00:00Z", AuthorURL: "https://a.pub", AuthorDomain: "a.pub"},
-		},
 	})
 
 	items, _ := cm.List()
@@ -4165,12 +4117,10 @@ func TestHandleFeedRead_MarkUnread(t *testing.T) {
 func TestHandleFeedRead_MarkAllRead(t *testing.T) {
 	s := newTestServer(t)
 
-	cm := feed.NewCacheManager(s.DataDir)
-	cm.Merge(&feed.AggregateResult{
-		Items: []feed.FeedItem{
+	cm := feed.NewCacheManager(s.DataDir, "default")
+	cm.MergeItems([]feed.FeedItem{
 			{Type: "post", Title: "A", URL: "posts/a.md", Published: "2026-02-01T10:00:00Z", AuthorURL: "https://a.pub", AuthorDomain: "a.pub"},
 			{Type: "post", Title: "B", URL: "posts/b.md", Published: "2026-02-02T10:00:00Z", AuthorURL: "https://a.pub", AuthorDomain: "a.pub"},
-		},
 	})
 
 	body := jsonBody(t, map[string]interface{}{"all": true})
@@ -4191,13 +4141,11 @@ func TestHandleFeedRead_MarkAllRead(t *testing.T) {
 func TestHandleFeedRead_MarkUnreadFrom(t *testing.T) {
 	s := newTestServer(t)
 
-	cm := feed.NewCacheManager(s.DataDir)
-	cm.Merge(&feed.AggregateResult{
-		Items: []feed.FeedItem{
+	cm := feed.NewCacheManager(s.DataDir, "default")
+	cm.MergeItems([]feed.FeedItem{
 			{Type: "post", Title: "Old", URL: "posts/old.md", Published: "2026-01-01T10:00:00Z", AuthorURL: "https://a.pub", AuthorDomain: "a.pub"},
 			{Type: "post", Title: "Mid", URL: "posts/mid.md", Published: "2026-01-15T10:00:00Z", AuthorURL: "https://a.pub", AuthorDomain: "a.pub"},
 			{Type: "post", Title: "New", URL: "posts/new.md", Published: "2026-02-01T10:00:00Z", AuthorURL: "https://a.pub", AuthorDomain: "a.pub"},
-		},
 	})
 
 	cm.MarkAllRead()
@@ -4299,12 +4247,10 @@ func TestHandleFeedCounts_Empty(t *testing.T) {
 func TestHandleFeedCounts_WithItems(t *testing.T) {
 	s := newTestServer(t)
 
-	cm := feed.NewCacheManager(s.DataDir)
-	cm.Merge(&feed.AggregateResult{
-		Items: []feed.FeedItem{
+	cm := feed.NewCacheManager(s.DataDir, "default")
+	cm.MergeItems([]feed.FeedItem{
 			{Type: "post", Title: "A", URL: "posts/a.md", Published: "2026-02-01T10:00:00Z", AuthorURL: "https://a.pub", AuthorDomain: "a.pub"},
 			{Type: "post", Title: "B", URL: "posts/b.md", Published: "2026-02-02T10:00:00Z", AuthorURL: "https://a.pub", AuthorDomain: "a.pub"},
-		},
 	})
 
 	items, _ := cm.List()
@@ -4755,5 +4701,223 @@ func TestHandleNotificationRead_MethodNotAllowed(t *testing.T) {
 
 	if w.Code != http.StatusMethodNotAllowed {
 		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+// ============================================================================
+// handleDeployCheck Tests
+// ============================================================================
+
+func TestHandleDeployCheck_MethodNotAllowed(t *testing.T) {
+	s := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/site/deploy-check", nil)
+	w := httptest.NewRecorder()
+
+	s.handleDeployCheck(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+func TestHandleDeployCheck_NoBaseURL(t *testing.T) {
+	s := newTestServer(t)
+	s.BaseURL = "" // No base URL set
+
+	req := httptest.NewRequest(http.MethodGet, "/api/site/deploy-check", nil)
+	w := httptest.NewRecorder()
+
+	s.handleDeployCheck(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["deployed"] != false {
+		t.Error("expected deployed=false when base URL not set")
+	}
+	if resp["error"] == nil || resp["error"] == "" {
+		t.Error("expected error message when base URL not set")
+	}
+}
+
+// ============================================================================
+// handleSetupWizardDismiss Tests
+// ============================================================================
+
+func TestHandleSetupWizardDismiss(t *testing.T) {
+	s := newConfiguredServer(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/site/setup-wizard-dismiss", nil)
+	w := httptest.NewRecorder()
+
+	s.handleSetupWizardDismiss(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["success"] != true {
+		t.Error("expected success=true")
+	}
+
+	// Verify config was updated
+	if !s.Config.SetupWizardDismissed {
+		t.Error("expected SetupWizardDismissed to be true after dismiss")
+	}
+
+	// Verify config was persisted to disk
+	configPath := filepath.Join(s.DataDir, ".polis", "webapp-config.json")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("expected config file to exist: %v", err)
+	}
+	if !strings.Contains(string(data), "setup_wizard_dismissed") {
+		t.Error("expected setup_wizard_dismissed in saved config")
+	}
+}
+
+func TestHandleSetupWizardDismiss_MethodNotAllowed(t *testing.T) {
+	s := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/site/setup-wizard-dismiss", nil)
+	w := httptest.NewRecorder()
+
+	s.handleSetupWizardDismiss(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+// ============================================================================
+// handleInit Setup Wizard State Tests
+// ============================================================================
+
+func TestHandleInit_SetsWizardNotDismissed(t *testing.T) {
+	s := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/init", jsonBody(t, map[string]string{
+		"site_title": "Test Site",
+	}))
+	w := httptest.NewRecorder()
+
+	s.handleInit(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// After init, config should exist with setup_wizard_dismissed=false
+	if s.Config == nil {
+		t.Fatal("expected config to be set after init")
+	}
+	if s.Config.SetupWizardDismissed {
+		t.Error("expected SetupWizardDismissed to be false after init")
+	}
+}
+
+func TestHandleInit_WritesBaseURLToEnv(t *testing.T) {
+	s := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/init", jsonBody(t, map[string]string{
+		"site_title": "Test Site",
+		"base_url":   "https://alice.example.com",
+	}))
+	w := httptest.NewRecorder()
+
+	s.handleInit(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Check .env was created with the base URL
+	envPath := filepath.Join(s.DataDir, ".env")
+	data, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("expected .env file to exist: %v", err)
+	}
+	if !strings.Contains(string(data), "POLIS_BASE_URL=https://alice.example.com") {
+		t.Errorf("expected .env to contain POLIS_BASE_URL, got: %s", string(data))
+	}
+
+	// Check server state was updated
+	if s.BaseURL != "https://alice.example.com" {
+		t.Errorf("expected BaseURL to be updated, got: %s", s.BaseURL)
+	}
+
+	// Check response includes base_url
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["base_url"] != "https://alice.example.com" {
+		t.Errorf("expected response base_url, got: %v", resp["base_url"])
+	}
+}
+
+func TestHandleInit_NoBaseURL_EnvStillHasDiscovery(t *testing.T) {
+	s := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/init", jsonBody(t, map[string]string{
+		"site_title": "Test Site",
+	}))
+	w := httptest.NewRecorder()
+
+	s.handleInit(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// .env should still be created with discovery credentials
+	envPath := filepath.Join(s.DataDir, ".env")
+	data, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("expected .env file to exist: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "DISCOVERY_SERVICE_URL=") {
+		t.Error("expected .env to contain DISCOVERY_SERVICE_URL")
+	}
+	if !strings.Contains(content, "DISCOVERY_SERVICE_KEY=") {
+		t.Error("expected .env to contain DISCOVERY_SERVICE_KEY")
+	}
+	// Should NOT contain POLIS_BASE_URL when not provided
+	if strings.Contains(content, "POLIS_BASE_URL=") {
+		t.Error("expected .env to NOT contain POLIS_BASE_URL when not provided")
+	}
+}
+
+// ============================================================================
+// handleSettings Setup Wizard Dismissed Tests
+// ============================================================================
+
+func TestHandleSettings_IncludesSetupWizardDismissed(t *testing.T) {
+	s := newConfiguredServer(t)
+	s.Config.SetupWizardDismissed = true
+
+	req := httptest.NewRequest(http.MethodGet, "/api/settings", nil)
+	w := httptest.NewRecorder()
+
+	s.handleSettings(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+
+	dismissed, ok := resp["setup_wizard_dismissed"]
+	if !ok {
+		t.Error("expected setup_wizard_dismissed in settings response")
+	}
+	if dismissed != true {
+		t.Errorf("expected setup_wizard_dismissed=true, got %v", dismissed)
 	}
 }

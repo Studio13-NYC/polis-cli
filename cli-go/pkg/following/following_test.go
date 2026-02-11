@@ -106,31 +106,29 @@ func TestLoadNonExistent(t *testing.T) {
 	}
 }
 
-func TestUpdateLastChecked(t *testing.T) {
+func TestGet(t *testing.T) {
 	f := &FollowingFile{
 		Version:   Version,
 		Following: []FollowingEntry{},
 	}
 	f.Add("https://example.com")
 
-	// Update last checked
-	updated := f.UpdateLastChecked("https://example.com")
-	if !updated {
-		t.Error("Expected UpdateLastChecked to return true")
-	}
-
 	entry := f.Get("https://example.com")
 	if entry == nil {
 		t.Fatal("Expected to get entry")
 	}
 
-	if entry.LastChecked == "" {
-		t.Error("Expected LastChecked to be set")
+	if entry.URL != "https://example.com" {
+		t.Errorf("Expected URL https://example.com, got %s", entry.URL)
 	}
 
-	// Try updating non-existent
-	updated = f.UpdateLastChecked("https://other.com")
-	if updated {
-		t.Error("Expected UpdateLastChecked to return false for non-existent entry")
+	if entry.AddedAt == "" {
+		t.Error("Expected AddedAt to be set")
+	}
+
+	// Try getting non-existent
+	entry = f.Get("https://other.com")
+	if entry != nil {
+		t.Error("Expected nil for non-existent entry")
 	}
 }

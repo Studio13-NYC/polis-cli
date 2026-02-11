@@ -25,9 +25,8 @@ type FollowingFile struct {
 
 // FollowingEntry represents a single followed author.
 type FollowingEntry struct {
-	URL         string `json:"url"`
-	AddedAt     string `json:"added_at"`
-	LastChecked string `json:"last_checked,omitempty"`
+	URL     string `json:"url"`
+	AddedAt string `json:"added_at"`
 }
 
 // DefaultPath returns the default path to following.json.
@@ -121,17 +120,6 @@ func (f *FollowingFile) Get(authorURL string) *FollowingEntry {
 		}
 	}
 	return nil
-}
-
-// UpdateLastChecked updates the last_checked timestamp for an author.
-func (f *FollowingFile) UpdateLastChecked(authorURL string) bool {
-	for i := range f.Following {
-		if f.Following[i].URL == authorURL {
-			f.Following[i].LastChecked = time.Now().UTC().Format("2006-01-02T15:04:05Z")
-			return true
-		}
-	}
-	return false
 }
 
 // Count returns the number of followed authors.

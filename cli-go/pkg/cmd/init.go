@@ -3,7 +3,6 @@ package cmd
 import (
 	"flag"
 	"fmt"
-	"os"
 
 	"github.com/vdibart/polis-cli/cli-go/pkg/site"
 )
@@ -11,7 +10,6 @@ import (
 func handleInit(args []string) {
 	fs := flag.NewFlagSet("init", flag.ExitOnError)
 	siteTitle := fs.String("site-title", "", "Site display name")
-	register := fs.Bool("register", false, "Auto-register with discovery service after init")
 	keysDir := fs.String("keys-dir", "", "Custom keys directory (default: .polis/keys)")
 	postsDir := fs.String("posts-dir", "", "Custom posts directory (default: posts)")
 	commentsDir := fs.String("comments-dir", "", "Custom comments directory (default: comments)")
@@ -63,23 +61,6 @@ func handleInit(args []string) {
 		fmt.Println("\nNext steps:")
 		fmt.Println("  1. Set POLIS_BASE_URL in .env file")
 		fmt.Println("  2. Create your first post: polis post my-post.md")
-		fmt.Println("  3. Render the site: polis render")
-	}
-
-	// Auto-register if requested
-	if *register {
-		if os.Getenv("POLIS_BASE_URL") == "" {
-			if !jsonOutput {
-				fmt.Println("[!] Skipping registration: POLIS_BASE_URL not set")
-			}
-			return
-		}
-		if os.Getenv("DISCOVERY_SERVICE_KEY") == "" {
-			if !jsonOutput {
-				fmt.Println("[!] Skipping registration: DISCOVERY_SERVICE_KEY not set")
-			}
-			return
-		}
-		handleRegister(nil)
+		fmt.Println("  3. Deploy your site, then run: polis register")
 	}
 }

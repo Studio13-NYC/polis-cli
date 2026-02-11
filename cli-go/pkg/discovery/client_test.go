@@ -264,3 +264,59 @@ func TestUnregisterSite_NotRegistered(t *testing.T) {
 		t.Error("Expected error for unregistered site")
 	}
 }
+
+func TestStreamQuery_WithTargetFilter(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" {
+			t.Errorf("Expected GET request, got %s", r.Method)
+		}
+		if r.URL.Path != "/ds-stream" {
+			t.Errorf("Expected /ds-stream, got %s", r.URL.Path)
+		}
+
+		target := r.URL.Query().Get("target")
+		if target != "bob.com" {
+			t.Errorf("Expected target=bob.com, got %q", target)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"events":   []interface{}{},
+			"cursor":   "0",
+			"has_more": false,
+		})
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "test-api-key")
+	result, err := client.StreamQuery("0", 100, "", "", "bob.com")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if result.HasMore {
+		t.Error("Expected has_more=false")
+	}
+}
+
+func TestStreamQuery_WithoutTargetFilter(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// target param should NOT be present when empty
+		if r.URL.Query().Has("target") {
+			t.Error("Expected no target parameter when filter is empty")
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"events":   []interface{}{},
+			"cursor":   "0",
+			"has_more": false,
+		})
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "test-api-key")
+	_, err := client.StreamQuery("0", 100, "", "", "")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+}

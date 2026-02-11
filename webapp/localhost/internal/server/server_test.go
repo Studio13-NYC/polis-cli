@@ -255,6 +255,25 @@ func TestGetSiteTitle_NoWellKnownPolis_FallbackToConfig(t *testing.T) {
 	}
 }
 
+func TestGetSiteTitle_FallbackToPolisBaseURL(t *testing.T) {
+	dataDir := t.TempDir()
+	os.MkdirAll(filepath.Join(dataDir, ".well-known"), 0755)
+
+	// Create .well-known/polis with no site_title, no base_url, no subdomain
+	wellKnown := map[string]string{
+		"public_key": "ssh-ed25519 test",
+	}
+	wellKnownData, _ := json.Marshal(wellKnown)
+	os.WriteFile(filepath.Join(dataDir, ".well-known", "polis"), wellKnownData, 0644)
+
+	server := &Server{DataDir: dataDir, BaseURL: "https://mysite.example.com"}
+	title := server.GetSiteTitle()
+
+	if title != "https://mysite.example.com" {
+		t.Errorf("Expected fallback to POLIS_BASE_URL 'https://mysite.example.com', got '%s'", title)
+	}
+}
+
 func TestGetSiteTitle_NoWellKnownPolis_NoConfig(t *testing.T) {
 	dataDir := t.TempDir()
 	// No .well-known/polis file, no config

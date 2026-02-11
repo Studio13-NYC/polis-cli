@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"sort"
 	"time"
+
+	"github.com/vdibart/polis-cli/cli-go/pkg/stream"
 )
 
 // Version is set at init time by cmd package.
@@ -33,36 +35,45 @@ type CachedFeedItem struct {
 	ReadAt       string `json:"read_at,omitempty"`
 }
 
-// CacheManifest stores metadata about the feed cache.
-type CacheManifest struct {
-	Version          string `json:"version"`
-	LastRefresh      string `json:"last_refresh"`
-	StalenessMinutes int    `json:"staleness_minutes"`
-	MaxItems         int    `json:"max_items"`
-	MaxAgeDays       int    `json:"max_age_days"`
+// FeedConfig holds user-editable feed configuration.
+type FeedConfig struct {
+	StalenessMinutes int `json:"staleness_minutes"`
+	MaxItems         int `json:"max_items"`
+	MaxAgeDays       int `json:"max_age_days"`
+}
+
+// DefaultFeedConfig returns the default feed configuration.
+func DefaultFeedConfig() FeedConfig {
+	return FeedConfig{
+		StalenessMinutes: 15,
+		MaxItems:         500,
+		MaxAgeDays:       90,
+	}
 }
 
 // CacheManager handles feed cache operations.
 type CacheManager struct {
-	cacheFile    string
-	manifestFile string
+	cacheFile  string        // state/feed-cache.jsonl
+	configFile string        // config/feed.json
+	store      *stream.Store // for cursor operations
 }
 
-// DefaultCacheFile returns the default path to feed-cache.jsonl.
-func DefaultCacheFile(dataDir string) string {
-	return filepath.Join(dataDir, ".polis", "social", "feed-cache.jsonl")
+// CacheFile returns the path to feed-cache.jsonl for a given DS domain.
+func CacheFile(dataDir, discoveryDomain string) string {
+	return filepath.Join(dataDir, ".polis", "ds", discoveryDomain, "state", "feed-cache.jsonl")
 }
 
-// DefaultManifestFile returns the default path to feed-manifest.json.
-func DefaultCacheManifestFile(dataDir string) string {
-	return filepath.Join(dataDir, ".polis", "social", "feed-manifest.json")
+// ConfigFile returns the path to config/feed.json for a given DS domain.
+func ConfigFile(dataDir, discoveryDomain string) string {
+	return filepath.Join(dataDir, ".polis", "ds", discoveryDomain, "config", "feed.json")
 }
 
-// NewCacheManager creates a new feed cache manager.
-func NewCacheManager(dataDir string) *CacheManager {
+// NewCacheManager creates a new feed cache manager scoped to a discovery service domain.
+func NewCacheManager(dataDir, discoveryDomain string) *CacheManager {
 	return &CacheManager{
-		cacheFile:    DefaultCacheFile(dataDir),
-		manifestFile: DefaultCacheManifestFile(dataDir),
+		cacheFile:  CacheFile(dataDir, discoveryDomain),
+		configFile: ConfigFile(dataDir, discoveryDomain),
+		store:      stream.NewStore(dataDir, discoveryDomain),
 	}
 }
 
@@ -125,6 +136,39 @@ func (cm *CacheManager) ListByType(itemType string) ([]CachedFeedItem, error) {
 	return filtered, nil
 }
 
+// FilterOptions configures feed list filtering.
+type FilterOptions struct {
+	Type   string // "post", "comment", or "" (all)
+	Status string // "read", "unread", or "" (all)
+}
+
+// ListFiltered returns cached feed items filtered by type and/or read status.
+func (cm *CacheManager) ListFiltered(opts FilterOptions) ([]CachedFeedItem, error) {
+	all, err := cm.List()
+	if err != nil {
+		return nil, err
+	}
+
+	if opts.Type == "" && opts.Status == "" {
+		return all, nil
+	}
+
+	var filtered []CachedFeedItem
+	for _, item := range all {
+		if opts.Type != "" && item.Type != opts.Type {
+			continue
+		}
+		if opts.Status == "unread" && item.ReadAt != "" {
+			continue
+		}
+		if opts.Status == "read" && item.ReadAt == "" {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	return filtered, nil
+}
+
 // UnreadCount returns the number of unread items in the cache.
 func (cm *CacheManager) UnreadCount() (int, error) {
 	items, err := cm.List()
@@ -141,32 +185,100 @@ func (cm *CacheManager) UnreadCount() (int, error) {
 	return count, nil
 }
 
+// GetCursor returns the feed stream cursor position, or "0" if not set.
+func (cm *CacheManager) GetCursor() (string, error) {
+	return cm.store.GetCursor("polis.feed")
+}
+
+// SetCursor stores the feed stream cursor position.
+func (cm *CacheManager) SetCursor(cursor string) error {
+	return cm.store.SetCursor("polis.feed", cursor)
+}
+
+// LoadConfig loads the feed configuration, returning defaults if not found.
+func (cm *CacheManager) LoadConfig() (*FeedConfig, error) {
+	data, err := os.ReadFile(cm.configFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			cfg := DefaultFeedConfig()
+			return &cfg, nil
+		}
+		return nil, fmt.Errorf("failed to read feed config: %w", err)
+	}
+
+	var cfg FeedConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("failed to parse feed config: %w", err)
+	}
+
+	return &cfg, nil
+}
+
+// SaveConfig writes the feed configuration to disk.
+func (cm *CacheManager) SaveConfig(cfg *FeedConfig) error {
+	if err := os.MkdirAll(filepath.Dir(cm.configFile), 0755); err != nil {
+		return fmt.Errorf("failed to create directory: %w", err)
+	}
+
+	// Ensure defaults
+	if cfg.StalenessMinutes <= 0 {
+		cfg.StalenessMinutes = 15
+	}
+	if cfg.MaxItems <= 0 {
+		cfg.MaxItems = 500
+	}
+	if cfg.MaxAgeDays <= 0 {
+		cfg.MaxAgeDays = 90
+	}
+
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal feed config: %w", err)
+	}
+
+	return os.WriteFile(cm.configFile, append(data, '\n'), 0644)
+}
+
 // IsStale returns true if the cache needs refreshing based on staleness_minutes.
 func (cm *CacheManager) IsStale() (bool, error) {
-	manifest, err := cm.LoadManifest()
-	if err != nil {
-		return true, nil // If we can't read manifest, consider it stale
-	}
-
-	if manifest.LastRefresh == "" {
-		return true, nil
-	}
-
-	lastRefresh, err := time.Parse(time.RFC3339, manifest.LastRefresh)
+	entry, err := cm.store.GetCursorEntry("polis.feed")
 	if err != nil {
 		return true, nil
 	}
 
-	staleness := manifest.StalenessMinutes
+	if entry.LastUpdated == "" {
+		return true, nil
+	}
+
+	lastUpdated, err := time.Parse(time.RFC3339, entry.LastUpdated)
+	if err != nil {
+		// Try alternative format
+		lastUpdated, err = time.Parse("2006-01-02T15:04:05Z", entry.LastUpdated)
+		if err != nil {
+			return true, nil
+		}
+	}
+
+	cfg, _ := cm.LoadConfig()
+	staleness := cfg.StalenessMinutes
 	if staleness <= 0 {
 		staleness = 15
 	}
 
-	return time.Since(lastRefresh) > time.Duration(staleness)*time.Minute, nil
+	return time.Since(lastUpdated) > time.Duration(staleness)*time.Minute, nil
 }
 
-// Merge integrates an AggregateResult into the cache. Returns the number of new items added.
-func (cm *CacheManager) Merge(result *AggregateResult) (int, error) {
+// LastUpdated returns the timestamp of the last feed sync, or empty string if never synced.
+func (cm *CacheManager) LastUpdated() string {
+	entry, err := cm.store.GetCursorEntry("polis.feed")
+	if err != nil {
+		return ""
+	}
+	return entry.LastUpdated
+}
+
+// MergeItems integrates new FeedItems into the cache. Returns the number of new items added.
+func (cm *CacheManager) MergeItems(items []FeedItem) (int, error) {
 	existing, err := cm.List()
 	if err != nil {
 		return 0, err
@@ -181,7 +293,7 @@ func (cm *CacheManager) Merge(result *AggregateResult) (int, error) {
 	// Add new items
 	now := time.Now().UTC().Format(time.RFC3339)
 	newCount := 0
-	for _, item := range result.Items {
+	for _, item := range items {
 		id := ComputeItemID(item.AuthorURL, item.URL)
 		if _, exists := idMap[id]; exists {
 			continue
@@ -208,13 +320,6 @@ func (cm *CacheManager) Merge(result *AggregateResult) (int, error) {
 
 	if err := cm.writeAll(existing); err != nil {
 		return 0, err
-	}
-
-	// Update manifest
-	manifest, _ := cm.LoadManifest()
-	manifest.LastRefresh = now
-	if err := cm.saveManifest(manifest); err != nil {
-		return newCount, err
 	}
 
 	// Prune after merge
@@ -324,13 +429,13 @@ func (cm *CacheManager) Prune() (int, error) {
 		return 0, err
 	}
 
-	manifest, _ := cm.LoadManifest()
+	cfg, _ := cm.LoadConfig()
 
-	maxAgeDays := manifest.MaxAgeDays
+	maxAgeDays := cfg.MaxAgeDays
 	if maxAgeDays <= 0 {
 		maxAgeDays = 90
 	}
-	maxItems := manifest.MaxItems
+	maxItems := cfg.MaxItems
 	if maxItems <= 0 {
 		maxItems = 500
 	}
@@ -361,58 +466,19 @@ func (cm *CacheManager) Prune() (int, error) {
 	return removed, nil
 }
 
-// LoadManifest loads the cache manifest, returning defaults if not found.
-func (cm *CacheManager) LoadManifest() (*CacheManifest, error) {
-	data, err := os.ReadFile(cm.manifestFile)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return &CacheManifest{
-				Version:          Version,
-				StalenessMinutes: 15,
-				MaxItems:         500,
-				MaxAgeDays:       90,
-			}, nil
-		}
-		return nil, fmt.Errorf("failed to read manifest: %w", err)
-	}
-
-	var manifest CacheManifest
-	if err := json.Unmarshal(data, &manifest); err != nil {
-		return nil, fmt.Errorf("failed to parse manifest: %w", err)
-	}
-
-	return &manifest, nil
-}
-
-// saveManifest writes the manifest to disk.
-func (cm *CacheManager) saveManifest(manifest *CacheManifest) error {
-	if err := os.MkdirAll(filepath.Dir(cm.manifestFile), 0755); err != nil {
-		return fmt.Errorf("failed to create directory: %w", err)
-	}
-
-	manifest.Version = GetGenerator()
-
-	data, err := json.MarshalIndent(manifest, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal manifest: %w", err)
-	}
-
-	return os.WriteFile(cm.manifestFile, append(data, '\n'), 0644)
-}
-
 // SetStalenessMinutes updates the staleness threshold.
 func (cm *CacheManager) SetStalenessMinutes(minutes int) error {
 	if minutes < 1 {
 		minutes = 1
 	}
 
-	manifest, err := cm.LoadManifest()
+	cfg, err := cm.LoadConfig()
 	if err != nil {
 		return err
 	}
 
-	manifest.StalenessMinutes = minutes
-	return cm.saveManifest(manifest)
+	cfg.StalenessMinutes = minutes
+	return cm.SaveConfig(cfg)
 }
 
 // writeAll rewrites all items to the cache file.
@@ -437,4 +503,3 @@ func (cm *CacheManager) writeAll(items []CachedFeedItem) error {
 
 	return nil
 }
-

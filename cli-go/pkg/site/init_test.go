@@ -409,8 +409,8 @@ func TestInit_CreatesWebappConfig(t *testing.T) {
 	if obj["setup_at"] == nil || obj["setup_at"] == "" {
 		t.Error("webapp-config.json should have setup_at")
 	}
-	if obj["view_mode"] != "browser" {
-		t.Errorf("view_mode = %v, want %q", obj["view_mode"], "browser")
+	if obj["view_mode"] != "list" {
+		t.Errorf("view_mode = %v, want %q", obj["view_mode"], "list")
 	}
 	if obj["show_frontmatter"] != false {
 		t.Errorf("show_frontmatter = %v, want false", obj["show_frontmatter"])

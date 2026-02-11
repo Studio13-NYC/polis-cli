@@ -1,12 +1,10 @@
-// Package stream manages per-projection cursors, state, and manifest on disk.
+// Package stream manages per-projection cursors, state, and config on disk.
 //
-// Root: .polis/projections/<discovery-service-domain>/
-// Files:
+// Root: .polis/ds/<discovery-service-domain>/
+// Directories:
 //
-//	manifest.json                   — active projections registry
-//	polis.follow.json               — self-contained: {cursor, last_updated, state}
-//	polis.blessing.json             — self-contained: {cursor, last_updated, state}
-//	polis.notification.json         — self-contained: {cursor, last_updated, state}
+//	config/    — user preferences (notification rules, feed settings); survives resets
+//	state/     — computed/derived data (followers, blessings, cursors, notifications, feed cache)
 package stream
 
 import (
@@ -17,174 +15,173 @@ import (
 	"time"
 )
 
-// Store manages per-projection cursors, state, and manifest on disk.
+// Store manages per-projection cursors, state, and config on disk.
 type Store struct {
-	dir string // .polis/projections/<domain>/
+	configDir string // .polis/ds/<domain>/config/
+	stateDir  string // .polis/ds/<domain>/state/
+	dsDir     string // .polis/ds/<domain>/
 }
 
-// NewStore creates a new Store rooted at dataDir/.polis/projections/discoveryDomain/.
+// NewStore creates a new Store rooted at dataDir/.polis/ds/discoveryDomain/.
 func NewStore(dataDir string, discoveryDomain string) *Store {
+	dsDir := filepath.Join(dataDir, ".polis", "ds", discoveryDomain)
 	return &Store{
-		dir: filepath.Join(dataDir, ".polis", "projections", discoveryDomain),
+		configDir: filepath.Join(dsDir, "config"),
+		stateDir:  filepath.Join(dsDir, "state"),
+		dsDir:     dsDir,
 	}
 }
 
-// Dir returns the store's root directory.
-func (s *Store) Dir() string {
-	return s.dir
+// DSDir returns the discovery service root directory (.polis/ds/<domain>/).
+func (s *Store) DSDir() string {
+	return s.dsDir
 }
 
-// ensureDir creates the store directory if it doesn't exist.
-func (s *Store) ensureDir() error {
-	return os.MkdirAll(s.dir, 0755)
+// StateDir returns the state directory (.polis/ds/<domain>/state/).
+func (s *Store) StateDir() string {
+	return s.stateDir
 }
 
-// --- Self-contained projection state files ---
-
-// ProjectionState is a self-contained projection file that embeds its cursor alongside state.
-type ProjectionState struct {
-	Cursor      string      `json:"cursor"`
-	LastUpdated string      `json:"last_updated"`
-	State       interface{} `json:"state"`
+// ConfigDir returns the config directory (.polis/ds/<domain>/config/).
+func (s *Store) ConfigDir() string {
+	return s.configDir
 }
 
-// projectionFileName returns the file name for a projection's self-contained state.
-func projectionFileName(projection string) string {
-	return projection + ".json"
+// --- Cursor operations (consolidated in state/cursors.json) ---
+
+// CursorEntry holds a single projection's cursor position and last update time.
+type CursorEntry struct {
+	Position    string `json:"position"`
+	LastUpdated string `json:"last_updated"`
+}
+
+// CursorsFile is the on-disk format for state/cursors.json.
+type CursorsFile struct {
+	Cursors map[string]CursorEntry `json:"cursors"`
 }
 
 // GetCursor returns the cursor position for a projection, or "0" if not set.
 func (s *Store) GetCursor(projection string) (string, error) {
-	ps, err := s.loadProjectionState(projection)
+	cf, err := s.loadCursors()
 	if err != nil {
 		return "0", nil
 	}
-	if ps.Cursor == "" {
+	entry, ok := cf.Cursors[projection]
+	if !ok || entry.Position == "" {
 		return "0", nil
 	}
-	return ps.Cursor, nil
+	return entry.Position, nil
 }
 
 // SetCursor stores the cursor position for a projection.
 func (s *Store) SetCursor(projection string, cursor string) error {
-	ps, _ := s.loadProjectionState(projection)
-	if ps == nil {
-		ps = &ProjectionState{}
+	cf, _ := s.loadCursors()
+	if cf == nil {
+		cf = &CursorsFile{Cursors: make(map[string]CursorEntry)}
 	}
-	ps.Cursor = cursor
-	ps.LastUpdated = time.Now().UTC().Format("2006-01-02T15:04:05Z")
-	return s.saveProjectionState(projection, ps)
+	cf.Cursors[projection] = CursorEntry{
+		Position:    cursor,
+		LastUpdated: time.Now().UTC().Format("2006-01-02T15:04:05Z"),
+	}
+	return s.saveCursors(cf)
 }
 
-func (s *Store) loadProjectionState(projection string) (*ProjectionState, error) {
-	data, err := os.ReadFile(filepath.Join(s.dir, projectionFileName(projection)))
+// GetCursorEntry returns the full cursor entry for a projection, or a zero entry if not set.
+func (s *Store) GetCursorEntry(projection string) (CursorEntry, error) {
+	cf, err := s.loadCursors()
+	if err != nil {
+		return CursorEntry{}, nil
+	}
+	entry, ok := cf.Cursors[projection]
+	if !ok {
+		return CursorEntry{}, nil
+	}
+	return entry, nil
+}
+
+func (s *Store) loadCursors() (*CursorsFile, error) {
+	data, err := os.ReadFile(filepath.Join(s.stateDir, "cursors.json"))
 	if err != nil {
 		if os.IsNotExist(err) {
-			return &ProjectionState{Cursor: "0"}, nil
+			return &CursorsFile{Cursors: make(map[string]CursorEntry)}, nil
 		}
-		return nil, fmt.Errorf("read projection state for %s: %w", projection, err)
+		return nil, fmt.Errorf("read cursors: %w", err)
 	}
-	var ps ProjectionState
-	if err := json.Unmarshal(data, &ps); err != nil {
-		return nil, fmt.Errorf("parse projection state for %s: %w", projection, err)
+	var cf CursorsFile
+	if err := json.Unmarshal(data, &cf); err != nil {
+		return nil, fmt.Errorf("parse cursors: %w", err)
 	}
-	return &ps, nil
+	if cf.Cursors == nil {
+		cf.Cursors = make(map[string]CursorEntry)
+	}
+	return &cf, nil
 }
 
-func (s *Store) saveProjectionState(projection string, ps *ProjectionState) error {
-	if err := s.ensureDir(); err != nil {
-		return fmt.Errorf("create store dir: %w", err)
+func (s *Store) saveCursors(cf *CursorsFile) error {
+	if err := os.MkdirAll(s.stateDir, 0755); err != nil {
+		return fmt.Errorf("create state dir: %w", err)
 	}
-	data, err := json.MarshalIndent(ps, "", "  ")
+	data, err := json.MarshalIndent(cf, "", "  ")
 	if err != nil {
-		return fmt.Errorf("marshal projection state for %s: %w", projection, err)
+		return fmt.Errorf("marshal cursors: %w", err)
 	}
-	return os.WriteFile(filepath.Join(s.dir, projectionFileName(projection)), data, 0644)
+	return os.WriteFile(filepath.Join(s.stateDir, "cursors.json"), data, 0644)
 }
 
-// --- Projection state operations ---
+// --- State operations (state/<name>.json) ---
 
-// LoadState loads the materialized state for a projection into target.
-// Reads from the self-contained projection file's .state field.
-func (s *Store) LoadState(projection string, target interface{}) error {
-	ps, err := s.loadProjectionState(projection)
+// LoadState loads state from state/<name>.json directly into target.
+func (s *Store) LoadState(name string, target interface{}) error {
+	data, err := os.ReadFile(filepath.Join(s.stateDir, name+".json"))
 	if err != nil {
-		return err
+		if os.IsNotExist(err) {
+			return nil // no state yet
+		}
+		return fmt.Errorf("read state %s: %w", name, err)
 	}
-	if ps.State == nil {
-		return nil // no state yet
-	}
-
-	// Re-marshal the state field and unmarshal into target
-	stateJSON, err := json.Marshal(ps.State)
-	if err != nil {
-		return fmt.Errorf("re-marshal state for %s: %w", projection, err)
-	}
-	if err := json.Unmarshal(stateJSON, target); err != nil {
-		return fmt.Errorf("parse state for %s: %w", projection, err)
+	if err := json.Unmarshal(data, target); err != nil {
+		return fmt.Errorf("parse state %s: %w", name, err)
 	}
 	return nil
 }
 
-// SaveState writes the materialized state for a projection.
-// Updates the state field in the self-contained projection file.
-func (s *Store) SaveState(projection string, state interface{}) error {
-	ps, _ := s.loadProjectionState(projection)
-	if ps == nil {
-		ps = &ProjectionState{Cursor: "0"}
+// SaveState writes state directly to state/<name>.json.
+func (s *Store) SaveState(name string, state interface{}) error {
+	if err := os.MkdirAll(s.stateDir, 0755); err != nil {
+		return fmt.Errorf("create state dir: %w", err)
 	}
-	ps.State = state
-	ps.LastUpdated = time.Now().UTC().Format("2006-01-02T15:04:05Z")
-	return s.saveProjectionState(projection, ps)
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal state %s: %w", name, err)
+	}
+	return os.WriteFile(filepath.Join(s.stateDir, name+".json"), data, 0644)
 }
 
-// --- Manifest operations ---
+// --- Config operations (config/<name>.json) ---
 
-const manifestFile = "manifest.json"
-
-// ProjectionManifest declares what projections are active.
-type ProjectionManifest struct {
-	Projections map[string]ProjectionEntry `json:"projections"`
-}
-
-// ProjectionEntry describes a single active projection.
-type ProjectionEntry struct {
-	Handler     string   `json:"handler"`
-	EventTypes  []string `json:"event_types"`
-	StateFile   string   `json:"state_file"`
-	LastUpdated string   `json:"last_updated"`
-}
-
-// LoadManifest loads the projection manifest from disk.
-// Returns an empty manifest if the file doesn't exist.
-func (s *Store) LoadManifest() (*ProjectionManifest, error) {
-	data, err := os.ReadFile(filepath.Join(s.dir, manifestFile))
+// LoadConfig loads config from config/<name>.json into target.
+func (s *Store) LoadConfig(name string, target interface{}) error {
+	data, err := os.ReadFile(filepath.Join(s.configDir, name+".json"))
 	if err != nil {
 		if os.IsNotExist(err) {
-			return &ProjectionManifest{
-				Projections: make(map[string]ProjectionEntry),
-			}, nil
+			return nil // no config yet
 		}
-		return nil, fmt.Errorf("read manifest: %w", err)
+		return fmt.Errorf("read config %s: %w", name, err)
 	}
-	var m ProjectionManifest
-	if err := json.Unmarshal(data, &m); err != nil {
-		return nil, fmt.Errorf("parse manifest: %w", err)
+	if err := json.Unmarshal(data, target); err != nil {
+		return fmt.Errorf("parse config %s: %w", name, err)
 	}
-	if m.Projections == nil {
-		m.Projections = make(map[string]ProjectionEntry)
-	}
-	return &m, nil
+	return nil
 }
 
-// SaveManifest writes the projection manifest to disk.
-func (s *Store) SaveManifest(m *ProjectionManifest) error {
-	if err := s.ensureDir(); err != nil {
-		return fmt.Errorf("create store dir: %w", err)
+// SaveConfig writes config to config/<name>.json.
+func (s *Store) SaveConfig(name string, config interface{}) error {
+	if err := os.MkdirAll(s.configDir, 0755); err != nil {
+		return fmt.Errorf("create config dir: %w", err)
 	}
-	data, err := json.MarshalIndent(m, "", "  ")
+	data, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
-		return fmt.Errorf("marshal manifest: %w", err)
+		return fmt.Errorf("marshal config %s: %w", name, err)
 	}
-	return os.WriteFile(filepath.Join(s.dir, manifestFile), data, 0644)
+	return os.WriteFile(filepath.Join(s.configDir, name+".json"), data, 0644)
 }

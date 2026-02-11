@@ -137,18 +137,22 @@ func (s *Server) handleInit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		SiteTitle string `json:"site_title"`
-		Author    string `json:"author"`
-		Email     string `json:"email"`
-		BaseURL   string `json:"base_url"`
+		SiteTitle    string `json:"site_title"`
+		Author       string `json:"author"`
+		Email        string `json:"email"`
+		BaseURL      string `json:"base_url"`
+		DiscoveryURL string `json:"discovery_url"`
+		DiscoveryKey string `json:"discovery_key"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		// Empty body is OK - all fields are optional
 		req = struct {
-			SiteTitle string `json:"site_title"`
-			Author    string `json:"author"`
-			Email     string `json:"email"`
-			BaseURL   string `json:"base_url"`
+			SiteTitle    string `json:"site_title"`
+			Author       string `json:"author"`
+			Email        string `json:"email"`
+			BaseURL      string `json:"base_url"`
+			DiscoveryURL string `json:"discovery_url"`
+			DiscoveryKey string `json:"discovery_key"`
 		}{}
 	}
 
@@ -168,8 +172,37 @@ func (s *Server) handleInit(w http.ResponseWriter, r *http.Request) {
 	// Reload keys after successful init
 	s.LoadKeys()
 
+	// Write .env with discovery credentials and base URL.
+	// Use user-provided values when available, fall back to server defaults.
+	dsURL := req.DiscoveryURL
+	if dsURL == "" {
+		dsURL = s.DiscoveryURL
+	}
+	dsKey := req.DiscoveryKey
+	if dsKey == "" {
+		dsKey = s.DiscoveryKey
+	}
+	envPath := filepath.Join(s.DataDir, ".env")
+	envVars := map[string]string{
+		"DISCOVERY_SERVICE_URL": dsURL,
+		"DISCOVERY_SERVICE_KEY": dsKey,
+	}
+	if req.BaseURL != "" {
+		req.BaseURL = strings.TrimSuffix(req.BaseURL, "/")
+		envVars["POLIS_BASE_URL"] = req.BaseURL
+		s.BaseURL = req.BaseURL
+	}
+	s.writeEnvFile(envPath, envVars)
+
+	// Update server state with the (possibly user-provided) discovery config
+	s.DiscoveryURL = dsURL
+	s.DiscoveryKey = dsKey
+
 	// Create config file (for webapp settings like hooks, discovery)
-	s.Config = &Config{}
+	// SetupWizardDismissed defaults to false so wizard shows after init
+	s.Config = &Config{
+		SetupWizardDismissed: false,
+	}
 	s.ApplyDiscoveryDefaults()
 	if err := s.SaveConfig(); err != nil {
 		log.Printf("[warning] Failed to save config: %v", err)
@@ -181,7 +214,53 @@ func (s *Server) handleInit(w http.ResponseWriter, r *http.Request) {
 		"site_dir":   result.SiteDir,
 		"public_key": result.PublicKey,
 		"site_title": s.GetSiteTitle(),
+		"base_url":   s.BaseURL,
 	})
+}
+
+// writeEnvFile writes or updates key=value pairs in a .env file.
+// If the file exists, it updates existing keys in place and appends new ones.
+// Otherwise it creates a new file with all pairs.
+func (s *Server) writeEnvFile(envPath string, vars map[string]string) {
+	data, err := os.ReadFile(envPath)
+	if err == nil {
+		// File exists - update existing keys, track which ones we found
+		lines := strings.Split(string(data), "\n")
+		remaining := make(map[string]string)
+		for k, v := range vars {
+			remaining[k] = v
+		}
+		for i, line := range lines {
+			trimmed := strings.TrimSpace(line)
+			for key, val := range remaining {
+				if strings.HasPrefix(trimmed, key+"=") || strings.HasPrefix(trimmed, "#"+key+"=") {
+					lines[i] = key + "=" + val
+					delete(remaining, key)
+					break
+				}
+			}
+		}
+		// Append any keys that weren't found in existing file
+		for key, val := range remaining {
+			lines = append(lines, key+"="+val)
+		}
+		if err := os.WriteFile(envPath, []byte(strings.Join(lines, "\n")), 0644); err != nil {
+			s.LogWarn("Failed to update .env: %v", err)
+		}
+	} else {
+		// Create new .env file
+		var b strings.Builder
+		b.WriteString("# Polis Configuration\n")
+		// Write in a stable order
+		for _, key := range []string{"POLIS_BASE_URL", "DISCOVERY_SERVICE_URL", "DISCOVERY_SERVICE_KEY"} {
+			if val, ok := vars[key]; ok {
+				b.WriteString(key + "=" + val + "\n")
+			}
+		}
+		if err := os.WriteFile(envPath, []byte(b.String()), 0644); err != nil {
+			s.LogWarn("Failed to create .env: %v", err)
+		}
+	}
 }
 
 // handleLink creates a symlink from data/ to an existing polis site.
@@ -1318,6 +1397,11 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	// Check which hook files exist
 	existingHooks := s.getExistingHooks()
 
+	setupWizardDismissed := false
+	if s.Config != nil {
+		setupWizardDismissed = s.Config.SetupWizardDismissed
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"site": map[string]interface{}{
@@ -1331,8 +1415,9 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			"show_frontmatter":     showFrontmatter,
 			"base_url":             baseURL,
 		},
-		"automations":    automations,
-		"existing_hooks": existingHooks,
+		"automations":             automations,
+		"existing_hooks":          existingHooks,
+		"setup_wizard_dismissed":  setupWizardDismissed,
 	})
 }
 
@@ -2083,6 +2168,80 @@ func (s *Server) handleSiteUnregister(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleDeployCheck checks if the site is publicly accessible at its POLIS_BASE_URL.
+func (s *Server) handleDeployCheck(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	baseURL := s.GetBaseURL()
+	if baseURL == "" {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"deployed": false,
+			"error":    "POLIS_BASE_URL not set",
+		})
+		return
+	}
+
+	domain := polisurl.ExtractDomain(baseURL)
+	if domain == "" {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"deployed": false,
+			"domain":   "",
+			"error":    "Could not extract domain from POLIS_BASE_URL",
+		})
+		return
+	}
+
+	// Try to fetch .well-known/polis from the live domain
+	checkURL := fmt.Sprintf("https://%s/.well-known/polis", domain)
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(checkURL)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"deployed": false,
+			"domain":   domain,
+		})
+		return
+	}
+	defer resp.Body.Close()
+
+	deployed := resp.StatusCode == http.StatusOK
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"deployed": deployed,
+		"domain":   domain,
+	})
+}
+
+// handleSetupWizardDismiss marks the setup wizard as dismissed in config.
+func (s *Server) handleSetupWizardDismiss(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if s.Config == nil {
+		s.Config = &Config{}
+	}
+	s.Config.SetupWizardDismissed = true
+	if err := s.SaveConfig(); err != nil {
+		s.LogError("Failed to save config after dismissing setup wizard: %v", err)
+		http.Error(w, "Failed to save config", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+	})
+}
+
 // Snippets API handlers
 
 // handleSnippets handles GET /api/snippets?path={subdir} and POST /api/snippets
@@ -2334,6 +2493,10 @@ func (s *Server) handleFollowing(w http.ResponseWriter, r *http.Request) {
 			"data":    result,
 		})
 
+		// Trigger feed sync in the background so the new author's
+		// content is available by the time the user opens Conversations.
+		go s.syncFeed()
+
 	case http.MethodDelete:
 		if s.PrivateKey == nil {
 			http.Error(w, "Not configured: no private key", http.StatusBadRequest)
@@ -2377,23 +2540,22 @@ func (s *Server) handleFollowing(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleFeed returns cached feed items (instant, no network).
-// GET /api/feed?type=post|comment
+// GET /api/feed?type=post|comment&status=read|unread
 func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	cm := feed.NewCacheManager(s.DataDir)
+	discoveryDomain := s.GetDiscoveryDomain()
+	cm := feed.NewCacheManager(s.DataDir, discoveryDomain)
 	typeFilter := r.URL.Query().Get("type")
+	statusFilter := r.URL.Query().Get("status")
 
-	var items []feed.CachedFeedItem
-	var err error
-	if typeFilter != "" {
-		items, err = cm.ListByType(typeFilter)
-	} else {
-		items, err = cm.List()
-	}
+	items, err := cm.ListFiltered(feed.FilterOptions{
+		Type:   typeFilter,
+		Status: statusFilter,
+	})
 	if err != nil {
 		s.LogError("feed list failed: %v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -2408,7 +2570,6 @@ func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request) {
 	}
 
 	stale, _ := cm.IsStale()
-	manifest, _ := cm.LoadManifest()
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -2416,11 +2577,11 @@ func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request) {
 		"total":        len(items),
 		"unread":       unread,
 		"stale":        stale,
-		"last_refresh": manifest.LastRefresh,
+		"last_refresh": cm.LastUpdated(),
 	})
 }
 
-// handleFeedRefresh runs Aggregate + Merge and returns the updated cache.
+// handleFeedRefresh triggers a stream-based feed sync and returns the updated cache.
 // POST /api/feed/refresh
 func (s *Server) handleFeedRefresh(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -2428,25 +2589,11 @@ func (s *Server) handleFeedRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	followingPath := following.DefaultPath(s.DataDir)
-	client := remote.NewClient()
+	// Trigger stream-based sync
+	s.syncFeed()
 
-	result, err := feed.Aggregate(followingPath, client, feed.AggregateOptions{})
-	if err != nil {
-		s.LogError("feed aggregate failed: %v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	cm := feed.NewCacheManager(s.DataDir)
-	newCount, err := cm.Merge(result)
-	if err != nil {
-		s.LogError("feed merge failed: %v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	s.LogInfo("Feed refresh: checked %d authors, %d new items cached", result.AuthorsChecked, newCount)
+	discoveryDomain := s.GetDiscoveryDomain()
+	cm := feed.NewCacheManager(s.DataDir, discoveryDomain)
 
 	items, _ := cm.List()
 	unread := 0
@@ -2456,17 +2603,14 @@ func (s *Server) handleFeedRefresh(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	manifest, _ := cm.LoadManifest()
-
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"items":        items,
 		"total":        len(items),
 		"unread":       unread,
-		"new_items":    newCount,
+		"new_items":    len(items),
 		"stale":        false,
-		"last_refresh": manifest.LastRefresh,
-		"errors":       result.Errors,
+		"last_refresh": cm.LastUpdated(),
 	})
 }
 
@@ -2490,7 +2634,8 @@ func (s *Server) handleFeedRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cm := feed.NewCacheManager(s.DataDir)
+	discoveryDomain := s.GetDiscoveryDomain()
+	cm := feed.NewCacheManager(s.DataDir, discoveryDomain)
 
 	var err error
 	if req.All {
@@ -2528,7 +2673,8 @@ func (s *Server) handleFeedCounts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cm := feed.NewCacheManager(s.DataDir)
+	discoveryDomain := s.GetDiscoveryDomain()
+	cm := feed.NewCacheManager(s.DataDir, discoveryDomain)
 
 	items, err := cm.List()
 	if err != nil {
@@ -2738,7 +2884,7 @@ func (s *Server) handleActivityStream(w http.ResponseWriter, r *http.Request) {
 
 	client := discovery.NewClient(discoveryURL, apiKey)
 	actorFilter := discovery.JoinDomains(domains)
-	result, err := client.StreamQuery(since, limit, "", actorFilter)
+	result, err := client.StreamQuery(since, limit, "", actorFilter, "")
 	if err != nil {
 		s.LogWarn("activity stream query failed: %v", err)
 		// Return empty on error rather than failing
@@ -2807,7 +2953,7 @@ func (s *Server) handleFollowerCount(w http.ResponseWriter, r *http.Request) {
 
 	client := discovery.NewClient(discoveryURL, apiKey)
 	typeFilter := discovery.JoinDomains(handler.EventTypes())
-	result, err := client.StreamQuery(cursor, 1000, typeFilter, "")
+	result, err := client.StreamQuery(cursor, 1000, typeFilter, "", "")
 	if err != nil {
 		s.LogWarn("follower count stream query failed: %v", err)
 		// Try to return existing state
@@ -2880,7 +3026,7 @@ func (s *Server) handleNotifications(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	mgr := notification.NewManager(s.DataDir)
+	mgr := notification.NewManager(s.DataDir, s.GetDiscoveryDomain())
 
 	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
@@ -2897,7 +3043,7 @@ func (s *Server) handleNotifications(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if items == nil {
-		items = []notification.Notification{}
+		items = []notification.StateEntry{}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -2917,7 +3063,7 @@ func (s *Server) handleNotificationCount(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	mgr := notification.NewManager(s.DataDir)
+	mgr := notification.NewManager(s.DataDir, s.GetDiscoveryDomain())
 	unread, err := mgr.CountUnread()
 	if err != nil {
 		s.LogError("Failed to count notifications: %v", err)
@@ -2948,7 +3094,7 @@ func (s *Server) handleNotificationRead(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	mgr := notification.NewManager(s.DataDir)
+	mgr := notification.NewManager(s.DataDir, s.GetDiscoveryDomain())
 	marked, err := mgr.MarkRead(req.IDs, req.All)
 	if err != nil {
 		s.LogError("Failed to mark notifications as read: %v", err)

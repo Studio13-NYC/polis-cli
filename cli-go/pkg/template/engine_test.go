@@ -320,6 +320,76 @@ func TestMaxRecursionDepth(t *testing.T) {
 	}
 }
 
+func TestPostTitleWithPartialSyntax(t *testing.T) {
+	// Regression test: a post title containing {{> partial}} must not be
+	// interpreted as a partial include. This reproduces the crash on
+	// discover.polis.pub where a post title was:
+	// "The template engine is Mustache-like: {{variable}}, {{> partial}}, {{#section}}"
+	engine := New(Config{})
+	ctx := NewRenderContext()
+	ctx.Posts = []PostData{
+		{
+			URL:            "/posts/template-post.html",
+			Title:          `Mustache-like: {{variable}}, {{> partial}}, {{#section}}`,
+			Published:      "2026-02-01T10:00:00Z",
+			PublishedHuman: "February 1, 2026",
+		},
+	}
+
+	template := `{{#posts}}<a href="{{url}}">{{title}}</a>{{/posts}}`
+
+	result, err := engine.Render(template, ctx)
+	if err != nil {
+		t.Fatalf("Render should not fail on title containing partial syntax, got: %v", err)
+	}
+
+	// The title should appear literally in the output
+	if !strings.Contains(result, `{{> partial}}`) {
+		t.Errorf("Expected literal {{> partial}} in output, got: %s", result)
+	}
+}
+
+func TestPostTitleWithPartialSyntaxViaSnippet(t *testing.T) {
+	// Regression test: reproduces the real-world discover.polis.pub crash where
+	// the index template uses {{> theme:post-item}} inside {{#posts}}, and
+	// the snippet contains {{title}}. The recursive renderWithDepth call
+	// inside processPartials substitutes {{title}} with the user value,
+	// which must not be re-interpreted as template syntax.
+	tempDir := t.TempDir()
+	themeDir := filepath.Join(tempDir, ".polis", "themes", "sols", "snippets")
+	os.MkdirAll(themeDir, 0755)
+	os.WriteFile(filepath.Join(themeDir, "post-item.html"), []byte(
+		`<a href="{{url}}"><span>{{title}}</span></a>`), 0644)
+
+	engine := New(Config{
+		DataDir:     tempDir,
+		ActiveTheme: "sols",
+	})
+	ctx := NewRenderContext()
+	ctx.Posts = []PostData{
+		{
+			URL:            "/posts/template-post.html",
+			Title:          `The syntax: {{variable}}, {{> partial}}, {{#section}}`,
+			Published:      "2026-02-01T10:00:00Z",
+			PublishedHuman: "February 1, 2026",
+		},
+	}
+
+	tmpl := `{{#posts}}{{> theme:post-item}}{{/posts}}`
+
+	result, err := engine.Render(tmpl, ctx)
+	if err != nil {
+		t.Fatalf("Render should not fail on title with partial syntax via snippet, got: %v", err)
+	}
+
+	if !strings.Contains(result, `{{> partial}}`) {
+		t.Errorf("Expected literal {{> partial}} in output, got: %s", result)
+	}
+	if !strings.Contains(result, "/posts/template-post.html") {
+		t.Errorf("Expected URL in output, got: %s", result)
+	}
+}
+
 func TestFormatHumanDate(t *testing.T) {
 	tests := []struct {
 		input    string

@@ -78,6 +78,7 @@ const App = {
     _feedItems: null,
     _feedTypeFilter: '',
     _feedRefreshing: false,
+    _hideRead: false,
 
     // Screen management
     screens: {
@@ -913,7 +914,10 @@ const App = {
                                 <div class="item-title">${this.escapeHtml(post.title)}</div>
                                 <div class="item-path">${this.escapeHtml(post.path)}</div>
                             </div>
-                            <span class="item-date">${this.formatDate(post.published)}</span>
+                            <div class="item-date-group">
+                                <span class="item-date">${this.formatDate(post.published)}</span>
+                                <span class="item-time">${this.formatTime(post.published)}</span>
+                            </div>
                         </div>
                     `).join('')}
                 </div>
@@ -959,7 +963,10 @@ const App = {
                                 <div class="item-title">${this.escapeHtml(draft.id)}</div>
                                 <div class="item-path">drafts/${this.escapeHtml(draft.id)}.md</div>
                             </div>
-                            <span class="item-date">${this.formatDate(draft.modified)}</span>
+                            <div class="item-date-group">
+                                <span class="item-date">${this.formatDate(draft.modified)}</span>
+                                <span class="item-time">${this.formatTime(draft.modified)}</span>
+                            </div>
                         </div>
                     `).join('')}
                 </div>
@@ -1017,7 +1024,10 @@ const App = {
                                 <div class="item-path">Re: ${this.escapeHtml(this.truncateUrl(c.in_reply_to))}</div>
                             </div>
                             <div class="item-meta-right">
-                                <span class="item-date">${this.formatDate(c.timestamp)}</span>
+                                <div class="item-date-group">
+                                    <span class="item-date">${this.formatDate(c.timestamp)}</span>
+                                    <span class="item-time">${this.formatTime(c.timestamp)}</span>
+                                </div>
                                 <span class="comment-status-badge ${status}">${status}</span>
                             </div>
                         </div>
@@ -2895,6 +2905,7 @@ echo "File: $POLIS_PATH"</code>
             this.siteInfo = settings.site || {};
             const savedMode = this.siteInfo.view_mode || 'list';
             this.setViewMode(savedMode, false); // Don't save on init
+            this._hideRead = !!settings.hide_read;
         } catch (err) {
             console.error('Failed to load view mode:', err);
             this.setViewMode('list', false);
@@ -4451,6 +4462,7 @@ echo "File: $POLIS_PATH"</code>
                     <button class="feed-filter-tab ${this._feedTypeFilter === '' ? 'active' : ''}" onclick="App.setFeedTypeFilter('')">All</button>
                     <button class="feed-filter-tab ${this._feedTypeFilter === 'post' ? 'active' : ''}" onclick="App.setFeedTypeFilter('post')">Posts</button>
                     <button class="feed-filter-tab ${this._feedTypeFilter === 'comment' ? 'active' : ''}" onclick="App.setFeedTypeFilter('comment')">Comments</button>
+                    <button class="feed-read-toggle ${!this._hideRead ? 'active' : ''}" onclick="App.toggleHideRead(!App._hideRead)">${this._hideRead ? 'Show All' : 'Unread Only'}</button>
                 </div>
             `;
 
@@ -4464,14 +4476,19 @@ echo "File: $POLIS_PATH"</code>
                 `;
             }
 
-            if (items.length === 0) {
+            // Filter out read items if toggle is on
+            const displayItems = this._hideRead ? items.filter(item => !item.read_at) : items;
+
+            if (displayItems.length === 0) {
                 const emptyMsg = this.counts.feed === 0 && this.counts.following === 0
                     ? `<h3>No authors followed</h3><p>Follow some authors to see their posts here.</p><button class="primary" onclick="App.setSidebarMode('social'); App.setActiveView('following');">Browse Following</button>`
+                    : this._hideRead
+                    ? `<h3>All caught up</h3><p>No unread items. Toggle "Hide Read" off to see all items.</p>`
                     : `<h3>No items</h3><p>${this._feedTypeFilter ? 'No ' + this._feedTypeFilter + 's in the feed.' : 'No items in the feed yet. Click Refresh to check for new content.'}</p>`;
                 container.innerHTML = `${filterHtml}${staleHtml}<div class="content-list"><div class="empty-state">${emptyMsg}</div></div>`;
 
-                // Auto-refresh if stale
-                if (result.stale && !this._feedRefreshing) {
+                // Always background-refresh to pick up new content
+                if (!this._feedRefreshing) {
                     this._autoRefreshFeed();
                 }
                 return;
@@ -4481,14 +4498,15 @@ echo "File: $POLIS_PATH"</code>
                 ${filterHtml}
                 ${staleHtml}
                 <div class="content-list">
-                    ${items.map((item, idx) => {
+                    ${displayItems.map((item, idx) => {
+                        const realIdx = items.indexOf(item);
                         const typeLabel = item.type === 'comment' ? 'Comment' : 'Post';
                         const badgeClass = item.type === 'comment' ? 'feed-type-badge comment' : 'feed-type-badge post';
                         const isUnread = !item.read_at;
                         const unreadClass = isUnread ? ' feed-item-unread' : '';
                         const unreadDot = isUnread ? '<span class="unread-dot"></span>' : '';
                         return `
-                            <div class="content-item feed-item${unreadClass}" onclick="App.openFeedItem(${idx})">
+                            <div class="content-item feed-item${unreadClass}" onclick="App.openFeedItem(${realIdx})">
                                 <div class="item-info">
                                     <div class="item-title">${unreadDot}${this.escapeHtml(item.title)}</div>
                                     <div class="item-path">
@@ -4496,7 +4514,10 @@ echo "File: $POLIS_PATH"</code>
                                         ${this.escapeHtml(item.author_domain)}
                                     </div>
                                 </div>
-                                <span class="item-date">${this.formatDate(item.published)}</span>
+                                <div class="item-date-group">
+                                    <span class="item-date">${this.formatDate(item.published)}</span>
+                                    <span class="item-time">${this.formatTime(item.published)}</span>
+                                </div>
                                 <div class="feed-item-actions">
                                     <button class="feed-action-btn" onclick="event.stopPropagation(); App.markFeedUnread('${item.id}')">Mark Unread</button>
                                     <button class="feed-action-btn" onclick="event.stopPropagation(); App.markUnreadFromHere('${item.id}')">Unread From Here</button>
@@ -4507,8 +4528,8 @@ echo "File: $POLIS_PATH"</code>
                 </div>
             `;
 
-            // Auto-refresh if stale
-            if (result.stale && !this._feedRefreshing) {
+            // Always background-refresh to pick up new content
+            if (!this._feedRefreshing) {
                 this._autoRefreshFeed();
             }
         } catch (err) {
@@ -4520,6 +4541,19 @@ echo "File: $POLIS_PATH"</code>
         this._feedTypeFilter = type;
         const contentList = document.getElementById('content-list');
         if (contentList) this.renderFeedList(contentList);
+    },
+
+    toggleHideRead(hideRead) {
+        this._hideRead = hideRead;
+        // Persist to server
+        this.api('POST', '/api/settings/hide-read', { hide_read: hideRead }).catch(err => {
+            console.error('Failed to save hide-read setting:', err);
+        });
+        // Re-render feed
+        const contentList = document.getElementById('content-list');
+        if (contentList && this.currentView === 'feed') {
+            this.renderFeedList(contentList);
+        }
     },
 
     async openFeedItem(idx) {
@@ -4570,6 +4604,9 @@ echo "File: $POLIS_PATH"</code>
                 const contentList = document.getElementById('content-list');
                 if (contentList) await this.renderFeedList(contentList);
             }
+
+            // Update bell dot (feed refresh also syncs notifications server-side)
+            this.fetchNotificationCount();
         } catch (err) {
             this.showToast('Refresh failed: ' + err.message, 'error');
         } finally {
@@ -4679,10 +4716,19 @@ echo "File: $POLIS_PATH"</code>
             if (follows.length === 0) {
                 container.innerHTML = `
                     <div class="content-list">
-                        <div class="empty-state">
-                            <h3>Not following anyone</h3>
-                            <p>Follow authors to see their posts in your feed.</p>
-                            <button class="primary" onclick="App.openFollowPanel()">Follow Author</button>
+                        <div class="empty-state onboarding-empty">
+                            <p>Following an author means their posts appear in your Conversations feed
+                               and their comments on your site are automatically blessed.</p>
+                            <div class="content-item following-item onboarding-follow-card">
+                                <div class="item-info">
+                                    <div class="item-title">discover.polis.pub</div>
+                                </div>
+                                <div class="following-item-actions">
+                                    <button class="primary" onclick="App.followDiscover()">Follow</button>
+                                </div>
+                                <div class="onboarding-follow-desc">A community hub that aggregates conversations from across the polis network.</div>
+                            </div>
+                            <button class="secondary" onclick="App.openFollowPanel()">Follow Another Author</button>
                         </div>
                     </div>
                 `;
@@ -4717,8 +4763,16 @@ echo "File: $POLIS_PATH"</code>
     openFollowPanel() {
         const panel = document.getElementById('follow-panel');
         const input = document.getElementById('follow-url-input');
+        const suggestion = document.getElementById('follow-suggestion');
         if (panel) panel.classList.remove('hidden');
         if (input) { input.value = ''; input.focus(); }
+        if (suggestion) {
+            if (this.counts.following === 0) {
+                suggestion.classList.remove('hidden');
+            } else {
+                suggestion.classList.add('hidden');
+            }
+        }
     },
 
     closeFollowPanel() {
@@ -4749,6 +4803,22 @@ echo "File: $POLIS_PATH"</code>
                 let msg = 'Now following ' + url;
                 if (blessed > 0) msg += ` (blessed ${blessed} comment${blessed > 1 ? 's' : ''})`;
                 this.showToast(msg, 'success');
+            }
+            await this.loadAllCounts();
+            await this.loadViewContent();
+        } catch (err) {
+            this.showToast('Failed to follow: ' + err.message, 'error');
+        }
+    },
+
+    async followDiscover() {
+        try {
+            this.showToast('Following discover.polis.pub...', 'info', 2000);
+            const result = await this.api('POST', '/api/following', { url: 'https://discover.polis.pub/' });
+            if (result.data && result.data.already_followed) {
+                this.showToast('Already following discover.polis.pub', 'info');
+            } else {
+                this.showToast('Now following discover.polis.pub', 'success');
             }
             await this.loadAllCounts();
             await this.loadViewContent();
@@ -4907,7 +4977,10 @@ echo "File: $POLIS_PATH"</code>
                         ${detail}
                     </div>
                 </div>
-                <span class="item-date">${this.formatDate(evt.timestamp)}</span>
+                <div class="item-date-group">
+                    <span class="item-date">${this.formatDate(evt.timestamp)}</span>
+                    <span class="item-time">${this.formatTime(evt.timestamp)}</span>
+                </div>
             </div>
         `;
     },
@@ -5004,6 +5077,17 @@ echo "File: $POLIS_PATH"</code>
         });
     },
 
+    // Utility: format time in local timezone
+    formatTime(isoString) {
+        if (!isoString) return '';
+        const date = new Date(isoString);
+        return date.toLocaleTimeString('en-US', {
+            hour: 'numeric',
+            minute: '2-digit',
+            hour12: true
+        });
+    },
+
     // --- Notification Methods ---
 
     notificationState: { unreadCount: 0, pollTimer: null, showAll: false, offset: 0, hasMore: true },
@@ -5029,6 +5113,7 @@ echo "File: $POLIS_PATH"</code>
         try {
             const resp = await this.api('GET', '/api/notifications/count');
             this.notificationState.unreadCount = resp.unread || 0;
+
             const dot = document.getElementById('notification-dot');
             if (dot) {
                 dot.classList.toggle('hidden', this.notificationState.unreadCount === 0);

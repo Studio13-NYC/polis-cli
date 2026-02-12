@@ -1418,6 +1418,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		"automations":             automations,
 		"existing_hooks":          existingHooks,
 		"setup_wizard_dismissed":  setupWizardDismissed,
+		"hide_read":               s.Config != nil && s.Config.HideRead,
 	})
 }
 
@@ -1846,6 +1847,40 @@ func (s *Server) handleShowFrontmatter(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success":          true,
 		"show_frontmatter": req.ShowFrontmatter,
+	})
+}
+
+func (s *Server) handleHideRead(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		HideRead bool `json:"hide_read"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	// Ensure config exists
+	if s.Config == nil {
+		s.Config = &Config{}
+	}
+
+	// Update and save
+	s.Config.HideRead = req.HideRead
+	if err := s.SaveConfig(); err != nil {
+		s.LogError("failed to save config: %v", err)
+		http.Error(w, "Failed to save config", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":   true,
+		"hide_read": req.HideRead,
 	})
 }
 
@@ -2589,11 +2624,15 @@ func (s *Server) handleFeedRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Trigger stream-based sync
-	s.syncFeed()
-
+	// Count items before sync to determine how many are actually new
 	discoveryDomain := s.GetDiscoveryDomain()
 	cm := feed.NewCacheManager(s.DataDir, discoveryDomain)
+	beforeItems, _ := cm.List()
+	beforeCount := len(beforeItems)
+
+	// Trigger stream-based sync (feed + notifications so bell dot updates)
+	s.syncFeed()
+	go s.syncNotifications()
 
 	items, _ := cm.List()
 	unread := 0
@@ -2603,12 +2642,17 @@ func (s *Server) handleFeedRefresh(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	newItems := len(items) - beforeCount
+	if newItems < 0 {
+		newItems = 0
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"items":        items,
 		"total":        len(items),
 		"unread":       unread,
-		"new_items":    len(items),
+		"new_items":    newItems,
 		"stale":        false,
 		"last_refresh": cm.LastUpdated(),
 	})
@@ -3025,6 +3069,9 @@ func (s *Server) handleNotifications(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+
+	// Trigger async sync for next open; read cached data immediately for fast response
+	go s.syncNotifications()
 
 	mgr := notification.NewManager(s.DataDir, s.GetDiscoveryDomain())
 

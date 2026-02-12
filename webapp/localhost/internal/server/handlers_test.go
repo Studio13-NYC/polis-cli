@@ -4045,6 +4045,49 @@ func TestHandleFeedRefresh_EmptyFollowing(t *testing.T) {
 	}
 }
 
+func TestHandleFeed_NotStaleAfterCursorRefresh(t *testing.T) {
+	s := newTestServer(t)
+	discoveryDomain := s.GetDiscoveryDomain()
+
+	// Set a cursor with a backdated timestamp to simulate a stale cache
+	cm := feed.NewCacheManager(s.DataDir, discoveryDomain)
+	cm.SetCursor("100")
+
+	cursorsPath := filepath.Join(s.DataDir, ".polis", "ds", discoveryDomain, "state", "cursors.json")
+	staleData, _ := json.Marshal(map[string]interface{}{
+		"cursors": map[string]interface{}{
+			"polis.feed": map[string]interface{}{
+				"position":     "100",
+				"last_updated": "2020-01-01T00:00:00Z",
+			},
+		},
+	})
+	os.WriteFile(cursorsPath, staleData, 0644)
+
+	// Confirm GET /api/feed reports stale
+	req := httptest.NewRequest(http.MethodGet, "/api/feed", nil)
+	w := httptest.NewRecorder()
+	s.handleFeed(w, req)
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["stale"].(bool) != true {
+		t.Fatal("cache should be stale before refresh")
+	}
+
+	// Simulate what syncFeed does after a successful sync: SetCursor with same position
+	cm.SetCursor("100")
+
+	// GET /api/feed should now report not stale
+	req = httptest.NewRequest(http.MethodGet, "/api/feed", nil)
+	w = httptest.NewRecorder()
+	s.handleFeed(w, req)
+	resp = map[string]interface{}{}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["stale"].(bool) != false {
+		t.Error("cache should not be stale after cursor refresh with same position")
+	}
+}
+
 func TestHandleFeedRefresh_MethodNotAllowed(t *testing.T) {
 	s := newTestServer(t)
 
@@ -4919,5 +4962,112 @@ func TestHandleSettings_IncludesSetupWizardDismissed(t *testing.T) {
 	}
 	if dismissed != true {
 		t.Errorf("expected setup_wizard_dismissed=true, got %v", dismissed)
+	}
+}
+
+func TestHandleHideRead_Toggle(t *testing.T) {
+	s := newConfiguredServer(t)
+
+	// Toggle on
+	body := jsonBody(t, map[string]bool{"hide_read": true})
+	req := httptest.NewRequest(http.MethodPost, "/api/settings/hide-read", body)
+	w := httptest.NewRecorder()
+	s.handleHideRead(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if !s.Config.HideRead {
+		t.Error("expected HideRead=true after toggle on")
+	}
+
+	// Toggle off
+	body = jsonBody(t, map[string]bool{"hide_read": false})
+	req = httptest.NewRequest(http.MethodPost, "/api/settings/hide-read", body)
+	w = httptest.NewRecorder()
+	s.handleHideRead(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if s.Config.HideRead {
+		t.Error("expected HideRead=false after toggle off")
+	}
+}
+
+func TestHandleHideRead_MethodNotAllowed(t *testing.T) {
+	s := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/settings/hide-read", nil)
+	w := httptest.NewRecorder()
+	s.handleHideRead(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+func TestHandleSettings_IncludesHideRead(t *testing.T) {
+	s := newConfiguredServer(t)
+	s.Config.HideRead = true
+
+	req := httptest.NewRequest(http.MethodGet, "/api/settings", nil)
+	w := httptest.NewRecorder()
+	s.handleSettings(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+
+	hideRead, ok := resp["hide_read"]
+	if !ok {
+		t.Error("expected hide_read in settings response")
+	}
+	if hideRead != true {
+		t.Errorf("expected hide_read=true, got %v", hideRead)
+	}
+}
+
+// ============================================================================
+// handleNotifications Tests
+// ============================================================================
+
+func TestHandleNotifications_Empty(t *testing.T) {
+	s := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/notifications", nil)
+	w := httptest.NewRecorder()
+	s.handleNotifications(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+
+	notifications := resp["notifications"].([]interface{})
+	if len(notifications) != 0 {
+		t.Errorf("expected 0 notifications, got %d", len(notifications))
+	}
+	if resp["total"].(float64) != 0 {
+		t.Errorf("expected total 0, got %v", resp["total"])
+	}
+	if resp["limit"].(float64) != 20 {
+		t.Errorf("expected default limit 20, got %v", resp["limit"])
+	}
+}
+
+func TestHandleNotifications_MethodNotAllowed(t *testing.T) {
+	s := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/notifications", nil)
+	w := httptest.NewRecorder()
+	s.handleNotifications(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405, got %d", w.Code)
 	}
 }

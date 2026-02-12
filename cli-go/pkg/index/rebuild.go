@@ -250,7 +250,7 @@ func rebuildCommentsIndex(dataDir string, opts RebuildOptions) (int, error) {
 
 // clearNotifications clears notification state files.
 // Handles legacy (.polis/notifications.jsonl), old (.polis/ds/*/notifications/state.jsonl),
-// and current (.polis/ds/*/state/notifications.jsonl) paths.
+// and current (.polis/ds/*/state/polis.notification.jsonl) paths.
 func clearNotifications(dataDir string) (int, error) {
 	count := 0
 
@@ -275,8 +275,8 @@ func clearNotifications(dataDir string) (int, error) {
 			if !entry.IsDir() {
 				continue
 			}
-			// Current path: state/notifications.jsonl
-			statePath := filepath.Join(dsDir, entry.Name(), "state", "notifications.jsonl")
+			// Current path: state/polis.notification.jsonl
+			statePath := filepath.Join(dsDir, entry.Name(), "state", "polis.notification.jsonl")
 			if data, err := os.ReadFile(statePath); err == nil {
 				for _, line := range strings.Split(string(data), "\n") {
 					if strings.TrimSpace(line) != "" {
@@ -284,6 +284,16 @@ func clearNotifications(dataDir string) (int, error) {
 					}
 				}
 				os.WriteFile(statePath, []byte{}, 0644)
+			}
+			// Previous path: state/notifications.jsonl (pre-rename)
+			prevStatePath := filepath.Join(dsDir, entry.Name(), "state", "notifications.jsonl")
+			if data, err := os.ReadFile(prevStatePath); err == nil {
+				for _, line := range strings.Split(string(data), "\n") {
+					if strings.TrimSpace(line) != "" {
+						count++
+					}
+				}
+				os.WriteFile(prevStatePath, []byte{}, 0644)
 			}
 			// Old path: notifications/state.jsonl (pre-migration)
 			oldStatePath := filepath.Join(dsDir, entry.Name(), "notifications", "state.jsonl")

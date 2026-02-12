@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -66,6 +67,9 @@ type Config struct {
 
 	// Setup wizard dismissed state (false = show wizard after init)
 	SetupWizardDismissed bool `json:"setup_wizard_dismissed,omitempty"`
+
+	// Hide read items in feed/activity views (default false)
+	HideRead bool `json:"hide_read,omitempty"`
 }
 
 // Server holds the application state
@@ -657,12 +661,33 @@ func (s *Server) syncNotifications() {
 	var config stream.NotificationConfig
 	_ = store.LoadConfig("notifications", &config)
 
-	// Seed rules from defaults if empty (first sync)
+	// Seed rules from defaults if empty, or merge any new default rules
 	rules := config.Rules
 	if len(rules) == 0 {
 		rules = notification.DefaultRules()
 		config.Rules = rules
 		_ = store.SaveConfig("notifications", &config)
+	} else {
+		// Merge new default rules not present in saved config
+		defaults := notification.DefaultRules()
+		existingIDs := make(map[string]bool, len(rules))
+		for _, r := range rules {
+			existingIDs[r.ID] = true
+		}
+		added := false
+		for _, d := range defaults {
+			if !existingIDs[d.ID] {
+				rules = append(rules, d)
+				added = true
+			}
+		}
+		if added {
+			config.Rules = rules
+			_ = store.SaveConfig("notifications", &config)
+			// Reset cursor so newly added rules can process past events
+			_ = store.SetCursor("polis.notification", "0")
+			s.LogInfo("notification sync: added new default rules, cursor reset")
+		}
 	}
 
 	// Build muted domains set
@@ -700,7 +725,7 @@ func (s *Server) syncNotifications() {
 		} else {
 			entries := handler.Process(result.Events)
 			allEntries = append(allEntries, entries...)
-			if result.Cursor > newCursor {
+			if cursorGreater(result.Cursor, newCursor) {
 				newCursor = result.Cursor
 			}
 		}
@@ -719,7 +744,7 @@ func (s *Server) syncNotifications() {
 		} else {
 			entries := handler.Process(result.Events)
 			allEntries = append(allEntries, entries...)
-			if result.Cursor > newCursor {
+			if cursorGreater(result.Cursor, newCursor) {
 				newCursor = result.Cursor
 			}
 		}
@@ -751,7 +776,7 @@ func (s *Server) syncNotifications() {
 				} else {
 					entries := handler.Process(result.Events)
 					allEntries = append(allEntries, entries...)
-					if result.Cursor > newCursor {
+					if cursorGreater(result.Cursor, newCursor) {
 						newCursor = result.Cursor
 					}
 				}
@@ -774,6 +799,18 @@ func (s *Server) syncNotifications() {
 	if newCursor != cursor {
 		_ = store.SetCursor("polis.notification", newCursor)
 	}
+}
+
+// cursorGreater compares two cursor position strings numerically.
+// Stream cursors are stringified integers; string comparison fails for
+// multi-digit values (e.g., "30" < "4" lexicographically).
+func cursorGreater(a, b string) bool {
+	ai, errA := strconv.Atoi(a)
+	bi, errB := strconv.Atoi(b)
+	if errA != nil || errB != nil {
+		return a > b // fallback to string comparison
+	}
+	return ai > bi
 }
 
 // syncFeed queries the discovery stream for post and comment events
@@ -848,8 +885,8 @@ func (s *Server) syncFeed() {
 		}
 	}
 
-	// Update cursor
-	if result.Cursor != "" && result.Cursor != cursor {
+	// Update cursor (always set to refresh LastUpdated, even if position unchanged)
+	if result.Cursor != "" {
 		_ = cm.SetCursor(result.Cursor)
 	}
 }

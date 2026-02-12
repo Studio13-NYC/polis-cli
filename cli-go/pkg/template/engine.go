@@ -111,8 +111,13 @@ func (e *Engine) SetMarkdownRenderer(renderer MarkdownRenderer) {
 
 // Render renders a template string with the given context.
 // It processes variable substitution, partials ({{> path}}), and sections ({{#name}}...{{/name}}).
-func (e *Engine) Render(template string, ctx *RenderContext) (string, error) {
-	return e.renderWithDepth(template, ctx, 0)
+func (e *Engine) Render(tmpl string, ctx *RenderContext) (string, error) {
+	result, err := e.renderWithDepth(tmpl, ctx, 0)
+	if err != nil {
+		return "", err
+	}
+	// Restore escaped braces from user data (see escapedOpenBrace in sections.go)
+	return strings.ReplaceAll(result, escapedOpenBrace, "{{"), nil
 }
 
 // renderWithDepth renders a template with depth tracking to prevent infinite recursion.
@@ -175,13 +180,15 @@ func (e *Engine) substituteVariables(template string, ctx *RenderContext) string
 		"preview":         ctx.Preview,
 	}
 
-	// Replace all {{variable}} patterns
+	// Replace all {{variable}} patterns.
+	// Escape "{{" in substituted values to prevent template injection
+	// (see escapedOpenBrace in sections.go).
 	re := regexp.MustCompile(`\{\{(\w+)\}\}`)
 	return re.ReplaceAllStringFunc(template, func(match string) string {
 		// Extract variable name from {{name}}
 		name := match[2 : len(match)-2]
 		if val, ok := vars[name]; ok {
-			return val
+			return strings.ReplaceAll(val, "{{", escapedOpenBrace)
 		}
 		// Unknown variables are left as-is
 		return match

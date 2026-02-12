@@ -41,6 +41,7 @@ func SetupRoutes(mux *http.ServeMux, s *Server) {
 	mux.HandleFunc("/api/settings", s.handleSettings)
 	mux.HandleFunc("/api/settings/view-mode", s.handleViewMode)
 	mux.HandleFunc("/api/settings/show-frontmatter", s.handleShowFrontmatter)
+	mux.HandleFunc("/api/settings/hide-read", s.handleHideRead)
 	mux.HandleFunc("/api/content/", s.handleContent)
 	mux.HandleFunc("/api/automations", s.handleAutomations)
 	mux.HandleFunc("/api/automations/quick", s.handleAutomationsQuick)

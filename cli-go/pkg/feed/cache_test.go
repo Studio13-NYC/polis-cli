@@ -1,6 +1,7 @@
 package feed
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -433,6 +434,43 @@ func TestCacheManager_IsStale(t *testing.T) {
 	}
 }
 
+func TestCacheManager_IsStale_SameCursorRefreshesTimestamp(t *testing.T) {
+	dir := t.TempDir()
+	cm := NewCacheManager(dir, testDiscoveryDomain)
+
+	// Use a very short staleness window
+	cm.SaveConfig(&FeedConfig{StalenessMinutes: 1, MaxItems: 500, MaxAgeDays: 90})
+
+	// Set cursor, then manually backdate the LastUpdated to make it stale
+	cm.SetCursor("100")
+
+	// Overwrite cursor entry with an old timestamp to simulate staleness
+	cursorsPath := filepath.Join(dir, ".polis", "ds", testDiscoveryDomain, "state", "cursors.json")
+	cf := map[string]interface{}{
+		"cursors": map[string]interface{}{
+			"polis.feed": map[string]interface{}{
+				"position":     "100",
+				"last_updated": "2020-01-01T00:00:00Z",
+			},
+		},
+	}
+	data, _ := json.Marshal(cf)
+	os.WriteFile(cursorsPath, data, 0644)
+
+	stale, _ := cm.IsStale()
+	if !stale {
+		t.Fatal("should be stale with old timestamp")
+	}
+
+	// Re-set the same cursor position — this should refresh LastUpdated
+	cm.SetCursor("100")
+
+	stale, _ = cm.IsStale()
+	if stale {
+		t.Error("should not be stale after SetCursor with same position")
+	}
+}
+
 func TestCacheManager_Config(t *testing.T) {
 	dir := t.TempDir()
 	cm := NewCacheManager(dir, testDiscoveryDomain)
@@ -522,8 +560,8 @@ func TestCacheManager_CreatesDirectory(t *testing.T) {
 	}
 
 	// Verify cache file at new path
-	if _, err := os.Stat(filepath.Join(dir, ".polis", "ds", testDiscoveryDomain, "state", "feed-cache.jsonl")); err != nil {
-		t.Error("cache file should exist at state/feed-cache.jsonl")
+	if _, err := os.Stat(filepath.Join(dir, ".polis", "ds", testDiscoveryDomain, "state", "polis.feed.jsonl")); err != nil {
+		t.Error("cache file should exist at state/polis.feed.jsonl")
 	}
 }
 

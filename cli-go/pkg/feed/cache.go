@@ -53,14 +53,14 @@ func DefaultFeedConfig() FeedConfig {
 
 // CacheManager handles feed cache operations.
 type CacheManager struct {
-	cacheFile  string        // state/feed-cache.jsonl
+	cacheFile  string        // state/polis.feed.jsonl
 	configFile string        // config/feed.json
 	store      *stream.Store // for cursor operations
 }
 
-// CacheFile returns the path to feed-cache.jsonl for a given DS domain.
+// CacheFile returns the path to polis.feed.jsonl for a given DS domain.
 func CacheFile(dataDir, discoveryDomain string) string {
-	return filepath.Join(dataDir, ".polis", "ds", discoveryDomain, "state", "feed-cache.jsonl")
+	return filepath.Join(dataDir, ".polis", "ds", discoveryDomain, "state", "polis.feed.jsonl")
 }
 
 // ConfigFile returns the path to config/feed.json for a given DS domain.

@@ -1,6 +1,6 @@
 // Package notification manages the notification state layer.
 //
-// Notifications are stored as JSONL in .polis/ds/<domain>/state/notifications.jsonl.
+// Notifications are stored as JSONL in .polis/ds/<domain>/state/polis.notification.jsonl.
 // Each line is a StateEntry with lifecycle fields (created_at, read_at).
 // Rules and configuration live in config/notifications.json, managed by the stream package.
 package notification
@@ -39,9 +39,9 @@ func StateDir(dataDir, discoveryDomain string) string {
 	return filepath.Join(dataDir, ".polis", "ds", discoveryDomain, "state")
 }
 
-// StateFile returns the path to notifications.jsonl for a given DS domain.
+// StateFile returns the path to polis.notification.jsonl for a given DS domain.
 func StateFile(dataDir, discoveryDomain string) string {
-	return filepath.Join(StateDir(dataDir, discoveryDomain), "notifications.jsonl")
+	return filepath.Join(StateDir(dataDir, discoveryDomain), "polis.notification.jsonl")
 }
 
 // Manager handles notification state operations.

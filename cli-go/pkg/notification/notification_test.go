@@ -7,7 +7,7 @@ import (
 
 func TestStateFile(t *testing.T) {
 	path := StateFile("/data", "example.supabase.co")
-	expected := filepath.Join("/data", ".polis", "ds", "example.supabase.co", "state", "notifications.jsonl")
+	expected := filepath.Join("/data", ".polis", "ds", "example.supabase.co", "state", "polis.notification.jsonl")
 	if path != expected {
 		t.Errorf("StateFile() = %q, want %q", path, expected)
 	}

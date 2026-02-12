@@ -125,14 +125,26 @@ func TemplateVarsFromEvent(actor, timestamp string, payload map[string]interface
 		}
 	}
 
-	// Derive post_name from target_url (last path segment, without extension)
+	// Derive post_name from target_url or url (last path segment, without extension)
+	postURL := ""
 	if targetURL, ok := payload["target_url"].(string); ok && targetURL != "" {
-		base := path.Base(targetURL)
-		// Strip .md extension if present
+		postURL = targetURL
+	} else if u, ok := payload["url"].(string); ok && u != "" {
+		postURL = u
+	}
+	if postURL != "" {
+		base := path.Base(postURL)
 		if strings.HasSuffix(base, ".md") {
 			base = strings.TrimSuffix(base, ".md")
 		}
 		vars["post_name"] = base
+	}
+
+	// Extract title from metadata if available (post events include it)
+	if meta, ok := payload["metadata"].(map[string]interface{}); ok {
+		if title, ok := meta["title"].(string); ok && title != "" {
+			vars["title"] = title
+		}
 	}
 
 	return vars
@@ -144,6 +156,10 @@ func DedupeKey(ruleID string, payload map[string]interface{}) string {
 	// Use source_url as the primary content identifier (unique per comment/action)
 	if sourceURL, ok := payload["source_url"].(string); ok && sourceURL != "" {
 		return ruleID + ":" + sourceURL
+	}
+	// Post events use "url" instead of "source_url"
+	if postURL, ok := payload["url"].(string); ok && postURL != "" {
+		return ruleID + ":" + postURL
 	}
 	// For follow events, use actor + target_domain
 	if targetDomain, ok := payload["target_domain"].(string); ok && targetDomain != "" {

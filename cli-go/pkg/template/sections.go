@@ -99,8 +99,15 @@ func (e *Engine) renderPostsSection(content string, ctx *RenderContext, depth in
 			Year:      ctx.Year,
 		}
 
+		// Process partials first (before variable substitution) to prevent
+		// user data containing {{> partial}} from being interpreted as includes.
+		processed, err := e.processPartials(content, iterCtx, depth+1)
+		if err != nil {
+			return "", err
+		}
+
 		// Substitute loop-specific variables
-		rendered := e.substituteLoopVariables(content, map[string]string{
+		rendered := e.substituteLoopVariables(processed, map[string]string{
 			"url":             post.URL,
 			"title":           post.Title,
 			"published":       post.Published,
@@ -108,13 +115,7 @@ func (e *Engine) renderPostsSection(content string, ctx *RenderContext, depth in
 			"comment_count":   fmt.Sprintf("%d", post.CommentCount),
 		})
 
-		// Process any nested partials
-		processed, err := e.processPartials(rendered, iterCtx, depth+1)
-		if err != nil {
-			return "", err
-		}
-
-		builder.WriteString(processed)
+		builder.WriteString(rendered)
 	}
 
 	return builder.String(), nil
@@ -139,8 +140,14 @@ func (e *Engine) renderCommentsSection(content string, ctx *RenderContext, depth
 			Year:      ctx.Year,
 		}
 
+		// Process partials first (before variable substitution)
+		processed, err := e.processPartials(content, iterCtx, depth+1)
+		if err != nil {
+			return "", err
+		}
+
 		// Substitute loop-specific variables
-		rendered := e.substituteLoopVariables(content, map[string]string{
+		rendered := e.substituteLoopVariables(processed, map[string]string{
 			"url":             comment.URL,
 			"target_author":   comment.TargetAuthor,
 			"published":       comment.Published,
@@ -148,13 +155,7 @@ func (e *Engine) renderCommentsSection(content string, ctx *RenderContext, depth
 			"preview":         comment.Preview,
 		})
 
-		// Process any nested partials
-		processed, err := e.processPartials(rendered, iterCtx, depth+1)
-		if err != nil {
-			return "", err
-		}
-
-		builder.WriteString(processed)
+		builder.WriteString(rendered)
 	}
 
 	return builder.String(), nil
@@ -179,8 +180,14 @@ func (e *Engine) renderBlessedCommentsSection(content string, ctx *RenderContext
 			Year:      ctx.Year,
 		}
 
+		// Process partials first (before variable substitution)
+		processed, err := e.processPartials(content, iterCtx, depth+1)
+		if err != nil {
+			return "", err
+		}
+
 		// Substitute loop-specific variables
-		rendered := e.substituteLoopVariables(content, map[string]string{
+		rendered := e.substituteLoopVariables(processed, map[string]string{
 			"url":             bc.URL,
 			"author_name":     bc.AuthorName,
 			"published":       bc.Published,
@@ -188,13 +195,7 @@ func (e *Engine) renderBlessedCommentsSection(content string, ctx *RenderContext
 			"content":         bc.Content,
 		})
 
-		// Process any nested partials
-		processed, err := e.processPartials(rendered, iterCtx, depth+1)
-		if err != nil {
-			return "", err
-		}
-
-		builder.WriteString(processed)
+		builder.WriteString(rendered)
 	}
 
 	return builder.String(), nil
@@ -230,8 +231,14 @@ func (e *Engine) renderRecentPostsSection(content string, ctx *RenderContext, de
 			Year:      ctx.Year,
 		}
 
+		// Process partials first (before variable substitution)
+		processed, err := e.processPartials(content, iterCtx, depth+1)
+		if err != nil {
+			return "", err
+		}
+
 		// Substitute loop-specific variables
-		rendered := e.substituteLoopVariables(content, map[string]string{
+		rendered := e.substituteLoopVariables(processed, map[string]string{
 			"url":             post.URL,
 			"title":           post.Title,
 			"published":       post.Published,
@@ -239,26 +246,27 @@ func (e *Engine) renderRecentPostsSection(content string, ctx *RenderContext, de
 			"comment_count":   fmt.Sprintf("%d", post.CommentCount),
 		})
 
-		// Process any nested partials
-		processed, err := e.processPartials(rendered, iterCtx, depth+1)
-		if err != nil {
-			return "", err
-		}
-
-		builder.WriteString(processed)
+		builder.WriteString(rendered)
 	}
 
 	return builder.String(), nil
 }
 
+// escapedOpenBrace is a sentinel that replaces "{{" in user data during loop
+// variable substitution. This prevents user-supplied values (e.g. a post title
+// containing "{{> partial}}") from being interpreted as template syntax.
+// The sentinel is restored to "{{" by the top-level Render function.
+const escapedOpenBrace = "\x00\x00"
+
 // substituteLoopVariables replaces {{variable}} with values from a map.
 // This is used for loop-specific variables within section content.
+// Any "{{" in substituted values is escaped to prevent template injection.
 func (e *Engine) substituteLoopVariables(template string, vars map[string]string) string {
 	re := regexp.MustCompile(`\{\{(\w+)\}\}`)
 	return re.ReplaceAllStringFunc(template, func(match string) string {
 		name := match[2 : len(match)-2]
 		if val, ok := vars[name]; ok {
-			return val
+			return strings.ReplaceAll(val, "{{", escapedOpenBrace)
 		}
 		return match
 	})

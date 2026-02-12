@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.52.0] - 2026-02-12
+
+### Security
+
+- **Template injection fix**: User-supplied data containing `{{> partial}}` syntax in section loops could trigger unintended partial includes. Both `engine.go` and `sections.go` now sanitize interpolated values.
+
+### Added
+
+- **[Webapp] Following page onboarding**: New users see a guided card to discover authors via discover.polis.pub with one-click follow.
+- **[Webapp] Unread toggle on Conversations**: "Unread Only" / "Show All" toggle on the Conversations page, persisted across reloads.
+- **[Webapp] Local timestamps**: All feed items now display timestamps in the user's local timezone.
+- **Auto-merge default notification rules**: New default rules (e.g., `new-post`) are automatically merged into existing user rule sets on upgrade.
+
+### Fixed
+
+- **[Webapp] Notification cursor comparison**: Fixed cursor stuck at single-digit positions by switching from lexicographic to numeric comparison.
+- **[Webapp] Duplicate notifications**: Improved dedup key logic to prevent duplicate notifications from the same author.
+- **[Webapp] Slow notification bell**: Async notification sync eliminates 2-3s delay on page load.
+- **[Webapp] Toggle color theming**: Consistent toggle styling across light and dark themes.
+- **[Webapp] Conversations auto-refresh**: Conversations page now refreshes automatically when opened.
+- **[Webapp] "X new items" toast**: Shows actual new item count instead of total count.
+- **[Webapp] Feed title truncation**: Long titles are properly truncated with CSS ellipsis.
+
+### Changed
+
+- **DS state filenames standardized**: `notifications.jsonl` → `polis.notification.jsonl`, `feed-cache.jsonl` → `polis.feed.jsonl`.
+- **Usage message corrected**: `polis publish` → `polis post` in help output.
+
 ## [0.51.0] - 2026-02-11
 
 This release replaces HTTP polling with stream-driven architecture for feed and notifications, adds three new themes, restructures per-discovery-service data directories, and removes notification CLI subcommands in favor of the webapp.

@@ -17,7 +17,7 @@ func handlePublish(args []string) {
 
 	remaining := fs.Args()
 	if len(remaining) < 1 {
-		exitError("Usage: polis publish <file.md> [--filename <name>]")
+		exitError("Usage: polis post <file.md> [--filename <name>]")
 	}
 
 	inputFile := remaining[0]

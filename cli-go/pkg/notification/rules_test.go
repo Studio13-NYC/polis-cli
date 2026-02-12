@@ -142,9 +142,45 @@ func TestDedupeKey(t *testing.T) {
 		t.Errorf("DedupeKey() = %q", key)
 	}
 
+	// With url (post events use "url" instead of "source_url")
+	key = DedupeKey("new-post", map[string]interface{}{
+		"url":           "https://discover.polis.pub/posts/20260212/hello-world.md",
+		"target_domain": "discover.polis.pub",
+	})
+	if key != "new-post:https://discover.polis.pub/posts/20260212/hello-world.md" {
+		t.Errorf("DedupeKey() with url = %q, want post URL-based key", key)
+	}
+
+	// source_url takes priority over url
+	key = DedupeKey("new-comment", map[string]interface{}{
+		"source_url": "https://bob.com/comments/reply.md",
+		"url":        "https://bob.com/other.md",
+	})
+	if key != "new-comment:https://bob.com/comments/reply.md" {
+		t.Errorf("DedupeKey() source_url should take priority, got %q", key)
+	}
+
 	// Empty payload uses hash fallback
 	key = DedupeKey("test", map[string]interface{}{})
 	if key == "" {
 		t.Error("DedupeKey() should not be empty")
+	}
+}
+
+func TestTemplateVarsFromEvent_PostEvent(t *testing.T) {
+	// Post events have "url" instead of "target_url", and metadata.title
+	vars := TemplateVarsFromEvent("discover.polis.pub", "2026-02-12T04:00:00Z", map[string]interface{}{
+		"url":           "https://discover.polis.pub/posts/20260212/hello-world.md",
+		"target_domain": "discover.polis.pub",
+		"metadata": map[string]interface{}{
+			"title": "Hello World",
+		},
+	})
+
+	if vars["post_name"] != "hello-world" {
+		t.Errorf("post_name = %q, want hello-world (derived from url)", vars["post_name"])
+	}
+	if vars["title"] != "Hello World" {
+		t.Errorf("title = %q, want 'Hello World'", vars["title"])
 	}
 }

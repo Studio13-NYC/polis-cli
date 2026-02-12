@@ -583,6 +583,11 @@ You can use **markdown** formatting."></textarea>
                         <input type="url" id="follow-url-input" class="wizard-input" placeholder="https://author.polis.pub" />
                         <p class="wizard-hint">Enter the HTTPS URL of the polis site you want to follow. Their pending and denied comments will be automatically blessed.</p>
                     </div>
+                    <div id="follow-suggestion" class="follow-suggestion hidden">
+                        <div class="follow-suggestion-label">Suggested</div>
+                        <p>Try following <strong>discover.polis.pub</strong> — a community hub for discovering conversations across the network.</p>
+                        <button class="secondary" onclick="document.getElementById('follow-url-input').value='https://discover.polis.pub/'; document.getElementById('follow-url-input').focus(); this.parentElement.classList.add('hidden');">Use this URL</button>
+                    </div>
                 </div>
                 <div class="wizard-footer">
                     <button class="secondary" onclick="App.closeFollowPanel()">Cancel</button>

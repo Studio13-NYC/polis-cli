@@ -285,3 +285,26 @@ func TestGetSiteTitle_NoWellKnownPolis_NoConfig(t *testing.T) {
 		t.Errorf("Expected empty string when no .well-known/polis and no config, got '%s'", title)
 	}
 }
+
+func TestCursorGreater(t *testing.T) {
+	tests := []struct {
+		a, b string
+		want bool
+	}{
+		{"5", "4", true},
+		{"4", "5", false},
+		{"30", "4", true},  // was broken with string comparison
+		{"4", "30", false},
+		{"100", "9", true}, // multi-digit > single-digit
+		{"9", "100", false},
+		{"0", "0", false},
+		{"", "", false},
+		{"abc", "def", false}, // non-numeric fallback
+	}
+	for _, tt := range tests {
+		got := cursorGreater(tt.a, tt.b)
+		if got != tt.want {
+			t.Errorf("cursorGreater(%q, %q) = %v, want %v", tt.a, tt.b, got, tt.want)
+		}
+	}
+}

@@ -633,6 +633,9 @@ button.success:hover {
     font-weight: 500;
     margin-bottom: 0.25rem;
     color: var(--text-color);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .content-item:hover .item-title {
@@ -650,6 +653,20 @@ button.success:hover {
 .content-item .item-date {
     color: var(--gold);
     font-size: 0.75rem;
+    white-space: nowrap;
+}
+
+.content-item .item-date-group {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    flex-shrink: 0;
+    gap: 0.1rem;
+}
+
+.content-item .item-time {
+    color: var(--text-muted);
+    font-size: 0.65rem;
     white-space: nowrap;
 }
 
@@ -3789,6 +3806,30 @@ textarea:focus-visible,
     color: var(--text-color);
 }
 
+/* Feed Show All / Unread Only toggle button */
+.feed-read-toggle {
+    margin-left: auto;
+    background: none;
+    border: 1px solid var(--border-color);
+    color: var(--text-muted);
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.feed-read-toggle:hover {
+    border-color: var(--accent-color);
+    color: var(--accent-color);
+}
+
+.feed-read-toggle.active {
+    background: var(--accent-color);
+    color: #fff;
+    border-color: var(--accent-color);
+}
+
 /* Feed stale banner */
 .feed-stale-banner {
     padding: 0.4rem 1rem;
@@ -3838,7 +3879,8 @@ textarea:focus-visible,
     display: flex;
 }
 
-.feed-item:not(.feed-item-unread):hover .item-date {
+.feed-item:not(.feed-item-unread):hover .item-date,
+.feed-item:not(.feed-item-unread):hover .item-date-group {
     display: none;
 }
 
@@ -4445,4 +4487,59 @@ textarea:focus-visible,
 
 .wizard-collapsible.expanded .wizard-collapse-body {
     display: block;
+}
+
+/* Onboarding empty state on Following page */
+.onboarding-empty {
+    text-align: left;
+    max-width: 480px;
+    margin-left: auto;
+    margin-right: auto;
+}
+.onboarding-empty > p {
+    color: var(--text-muted);
+    margin-bottom: 1.25rem;
+    line-height: 1.5;
+}
+.onboarding-follow-card {
+    border: 1px solid var(--border-color);
+    border-left: 3px solid var(--accent-color);
+    border-radius: 4px;
+    margin-bottom: 1.25rem;
+    flex-wrap: wrap;
+}
+.onboarding-follow-desc {
+    width: 100%;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-top: 0.25rem;
+    line-height: 1.4;
+}
+
+/* Follow panel suggestion */
+.follow-suggestion {
+    margin-top: 1.25rem;
+    padding: 1rem;
+    background: var(--surface-color);
+    border: 1px solid var(--border-color);
+    border-left: 3px solid var(--accent-color);
+    border-radius: 4px;
+}
+.follow-suggestion.hidden { display: none; }
+.follow-suggestion-label {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--accent-color);
+    margin-bottom: 0.5rem;
+    font-weight: 600;
+}
+.follow-suggestion p {
+    font-size: 0.85rem;
+    color: var(--text-soft);
+    margin-bottom: 0.75rem;
+    line-height: 1.5;
+}
+.follow-suggestion button {
+    font-size: 0.8rem;
 }

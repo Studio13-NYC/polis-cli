@@ -81,7 +81,8 @@ func handleBlessingRequests(args []string) {
 		exitError("Could not extract domain from POLIS_BASE_URL")
 	}
 
-	client := discovery.NewClient(discoveryURL, discoveryKey)
+	privKey, _ := loadPrivateKey(dir)
+	client := discovery.NewAuthenticatedClient(discoveryURL, discoveryKey, domain, privKey)
 
 	requests, err := blessing.FetchPendingRequests(client, domain)
 	if err != nil {
@@ -175,14 +176,14 @@ func handleBlessingDeny(args []string) {
 		discoveryURL = "https://ltfpezriiaqvjupxbttw.supabase.co/functions/v1"
 	}
 
-	client := discovery.NewClient(discoveryURL, discoveryKey)
-
 	// To deny, we need to look up the pending relationship first
 	baseURL := os.Getenv("POLIS_BASE_URL")
 	if baseURL == "" {
 		exitError("POLIS_BASE_URL not set")
 	}
 	domain := polisurl.ExtractDomain(baseURL)
+
+	client := discovery.NewAuthenticatedClient(discoveryURL, discoveryKey, domain, privKey)
 
 	// Find the pending request matching this comment version
 	requests, err := blessing.FetchPendingRequests(client, domain)

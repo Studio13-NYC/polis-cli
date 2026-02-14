@@ -1,6 +1,7 @@
 package template
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -387,6 +388,136 @@ func TestPostTitleWithPartialSyntaxViaSnippet(t *testing.T) {
 	}
 	if !strings.Contains(result, "/posts/template-post.html") {
 		t.Errorf("Expected URL in output, got: %s", result)
+	}
+}
+
+func TestRecentPostsSection(t *testing.T) {
+	engine := New(Config{})
+	ctx := NewRenderContext()
+
+	// Create 15 posts
+	for i := 1; i <= 15; i++ {
+		ctx.Posts = append(ctx.Posts, PostData{
+			URL:            fmt.Sprintf("/posts/%d.html", i),
+			Title:          fmt.Sprintf("Post %d", i),
+			PublishedHuman: "January 1, 2026",
+		})
+	}
+
+	template := `{{#recent_posts}}<a href="{{url}}">{{title}}</a>
+{{/recent_posts}}`
+
+	result, err := engine.Render(template, ctx)
+	if err != nil {
+		t.Fatalf("Render failed: %v", err)
+	}
+
+	// Should contain exactly 10 posts (the limit)
+	count := strings.Count(result, "<a href=")
+	if count != 10 {
+		t.Errorf("Expected 10 posts rendered, got %d", count)
+	}
+
+	// Should contain post 10 but not post 11
+	if !strings.Contains(result, "Post 10") {
+		t.Errorf("Expected Post 10 in output")
+	}
+	if strings.Contains(result, "Post 11") {
+		t.Errorf("Post 11 should not be in output")
+	}
+}
+
+func TestRecentPostsSectionFewPosts(t *testing.T) {
+	engine := New(Config{})
+	ctx := NewRenderContext()
+
+	// Create only 5 posts (under limit)
+	for i := 1; i <= 5; i++ {
+		ctx.Posts = append(ctx.Posts, PostData{
+			URL:            fmt.Sprintf("/posts/%d.html", i),
+			Title:          fmt.Sprintf("Post %d", i),
+			PublishedHuman: "January 1, 2026",
+		})
+	}
+
+	template := `{{#recent_posts}}<a href="{{url}}">{{title}}</a>
+{{/recent_posts}}`
+
+	result, err := engine.Render(template, ctx)
+	if err != nil {
+		t.Fatalf("Render failed: %v", err)
+	}
+
+	// Should contain all 5 posts
+	count := strings.Count(result, "<a href=")
+	if count != 5 {
+		t.Errorf("Expected 5 posts rendered, got %d", count)
+	}
+}
+
+func TestRecentCommentsSection(t *testing.T) {
+	engine := New(Config{})
+	ctx := NewRenderContext()
+
+	// Create 15 comments
+	for i := 1; i <= 15; i++ {
+		ctx.Comments = append(ctx.Comments, CommentData{
+			URL:            fmt.Sprintf("/comments/%d.html", i),
+			TargetAuthor:   fmt.Sprintf("author%d.com", i),
+			PublishedHuman: "January 1, 2026",
+			Preview:        fmt.Sprintf("Comment %d", i),
+		})
+	}
+
+	template := `{{#recent_comments}}<span>{{target_author}}</span> {{preview}}
+{{/recent_comments}}`
+
+	result, err := engine.Render(template, ctx)
+	if err != nil {
+		t.Fatalf("Render failed: %v", err)
+	}
+
+	// Should contain exactly 10 comments (the limit)
+	count := strings.Count(result, "<span>")
+	if count != 10 {
+		t.Errorf("Expected 10 comments rendered, got %d", count)
+	}
+
+	// Should contain comment 10 but not comment 11
+	if !strings.Contains(result, "author10.com") {
+		t.Errorf("Expected author10.com in output")
+	}
+	if strings.Contains(result, "author11.com") {
+		t.Errorf("author11.com should not be in output")
+	}
+}
+
+func TestRecentCommentsSectionFewComments(t *testing.T) {
+	engine := New(Config{})
+	ctx := NewRenderContext()
+
+	// Create only 3 comments (under limit)
+	for i := 1; i <= 3; i++ {
+		ctx.Comments = append(ctx.Comments, CommentData{
+			URL:            fmt.Sprintf("/comments/%d.html", i),
+			TargetAuthor:   fmt.Sprintf("author%d.com", i),
+			PublishedHuman: "January 1, 2026",
+			Preview:        fmt.Sprintf("Comment %d", i),
+		})
+	}
+
+	template := `{{#recent_comments}}<span>{{target_author}}</span>
+{{/recent_comments}}`
+
+	result, err := engine.Render(template, ctx)
+	if err != nil {
+		t.Fatalf("Render failed: %v", err)
+	}
+
+	// Should contain all 3 comments
+	count := strings.Count(result, "<span>")
+	if count != 3 {
+		t.Errorf("Expected 3 comments rendered, got %d", count)
 	}
 }
 

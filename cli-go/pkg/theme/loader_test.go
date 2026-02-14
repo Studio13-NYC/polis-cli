@@ -221,6 +221,45 @@ func TestSelectRandomTheme_SingleTheme(t *testing.T) {
 	}
 }
 
+func TestLoad_OptionalArchiveTemplate(t *testing.T) {
+	tempDir := t.TempDir()
+	themesDir := filepath.Join(tempDir, ".polis", "themes")
+	createTestTheme(t, themesDir, "turbo")
+
+	// Add posts.html to the theme
+	os.WriteFile(filepath.Join(themesDir, "turbo", "posts.html"), []byte("<html>{{#posts}}{{title}}{{/posts}}</html>"), 0644)
+
+	templates, err := Load(tempDir, "", "turbo")
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	if templates.Archive == "" {
+		t.Error("Expected archive template to be loaded")
+	}
+
+	if templates.Archive != "<html>{{#posts}}{{title}}{{/posts}}</html>" {
+		t.Errorf("Unexpected archive template content: %s", templates.Archive)
+	}
+}
+
+func TestLoad_MissingArchiveTemplate(t *testing.T) {
+	tempDir := t.TempDir()
+	themesDir := filepath.Join(tempDir, ".polis", "themes")
+	createTestTheme(t, themesDir, "turbo")
+
+	// Do NOT add posts.html
+
+	templates, err := Load(tempDir, "", "turbo")
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	if templates.Archive != "" {
+		t.Errorf("Expected empty archive template, got: %s", templates.Archive)
+	}
+}
+
 func TestCalculateCSSPath(t *testing.T) {
 	tests := []struct {
 		filePath string

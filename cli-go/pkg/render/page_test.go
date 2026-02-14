@@ -1,6 +1,7 @@
 package render
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -193,6 +194,199 @@ func TestRenderAll(t *testing.T) {
 	}
 }
 
+func TestRenderIndex_LimitsRecentPosts(t *testing.T) {
+	tempDir := t.TempDir()
+	setupTestSite(t, tempDir)
+
+	// Create metadata/public.jsonl with 15 posts
+	metadataDir := filepath.Join(tempDir, "metadata")
+	os.MkdirAll(metadataDir, 0755)
+
+	var entries string
+	for i := 1; i <= 15; i++ {
+		entries += fmt.Sprintf(`{"path":"posts/post-%02d.md","title":"Post %d","published":"2026-01-%02dT12:00:00Z","type":"post"}`, i, i, i) + "\n"
+	}
+	os.WriteFile(filepath.Join(metadataDir, "public.jsonl"), []byte(entries), 0644)
+
+	renderer, err := NewPageRenderer(PageConfig{
+		DataDir:       tempDir,
+		BaseURL:       "https://example.com",
+		RenderMarkers: false,
+	})
+	if err != nil {
+		t.Fatalf("NewPageRenderer failed: %v", err)
+	}
+
+	err = renderer.RenderIndex()
+	if err != nil {
+		t.Fatalf("RenderIndex failed: %v", err)
+	}
+
+	// Read the generated index.html
+	content, err := os.ReadFile(filepath.Join(tempDir, "index.html"))
+	if err != nil {
+		t.Fatalf("Failed to read index.html: %v", err)
+	}
+
+	html := string(content)
+
+	// Should contain only 10 post items (the limit)
+	postCount := strings.Count(html, `class="post-item"`)
+	if postCount != 10 {
+		t.Errorf("Expected 10 post items on index page, got %d", postCount)
+	}
+
+	// Should contain "View all 15 posts" link
+	if !strings.Contains(html, "View all 15 posts") {
+		t.Errorf("Expected 'View all 15 posts' link, got: %s", html)
+	}
+}
+
+func TestRenderIndex_NoViewAllWhenFewPosts(t *testing.T) {
+	tempDir := t.TempDir()
+	setupTestSite(t, tempDir)
+
+	// Create metadata/public.jsonl with only 5 posts (under the limit)
+	metadataDir := filepath.Join(tempDir, "metadata")
+	os.MkdirAll(metadataDir, 0755)
+
+	var entries string
+	for i := 1; i <= 5; i++ {
+		entries += fmt.Sprintf(`{"path":"posts/post-%02d.md","title":"Post %d","published":"2026-01-%02dT12:00:00Z","type":"post"}`, i, i, i) + "\n"
+	}
+	os.WriteFile(filepath.Join(metadataDir, "public.jsonl"), []byte(entries), 0644)
+
+	renderer, err := NewPageRenderer(PageConfig{
+		DataDir:       tempDir,
+		BaseURL:       "https://example.com",
+		RenderMarkers: false,
+	})
+	if err != nil {
+		t.Fatalf("NewPageRenderer failed: %v", err)
+	}
+
+	err = renderer.RenderIndex()
+	if err != nil {
+		t.Fatalf("RenderIndex failed: %v", err)
+	}
+
+	content, err := os.ReadFile(filepath.Join(tempDir, "index.html"))
+	if err != nil {
+		t.Fatalf("Failed to read index.html: %v", err)
+	}
+
+	html := string(content)
+
+	// Should contain all 5 posts
+	postCount := strings.Count(html, `class="post-item"`)
+	if postCount != 5 {
+		t.Errorf("Expected 5 post items on index page, got %d", postCount)
+	}
+
+	// Should NOT contain "View all" link when posts <= 10
+	if strings.Contains(html, "View all") {
+		t.Errorf("Expected no 'View all' link when posts <= 10, got: %s", html)
+	}
+}
+
+func TestRenderArchive(t *testing.T) {
+	tempDir := t.TempDir()
+	setupTestSite(t, tempDir)
+
+	// Create metadata/public.jsonl with 15 posts
+	metadataDir := filepath.Join(tempDir, "metadata")
+	os.MkdirAll(metadataDir, 0755)
+
+	var entries string
+	for i := 1; i <= 15; i++ {
+		entries += fmt.Sprintf(`{"path":"posts/post-%02d.md","title":"Post %d","published":"2026-01-%02dT12:00:00Z","type":"post"}`, i, i, i) + "\n"
+	}
+	os.WriteFile(filepath.Join(metadataDir, "public.jsonl"), []byte(entries), 0644)
+
+	renderer, err := NewPageRenderer(PageConfig{
+		DataDir:       tempDir,
+		BaseURL:       "https://example.com",
+		RenderMarkers: false,
+	})
+	if err != nil {
+		t.Fatalf("NewPageRenderer failed: %v", err)
+	}
+
+	err = renderer.RenderArchive()
+	if err != nil {
+		t.Fatalf("RenderArchive failed: %v", err)
+	}
+
+	// Read the generated posts/index.html
+	content, err := os.ReadFile(filepath.Join(tempDir, "posts", "index.html"))
+	if err != nil {
+		t.Fatalf("Failed to read posts/index.html: %v", err)
+	}
+
+	html := string(content)
+
+	// Should contain ALL 15 posts (no limit on archive)
+	postCount := strings.Count(html, `class="post-item"`)
+	if postCount != 15 {
+		t.Errorf("Expected 15 post items on archive page, got %d", postCount)
+	}
+
+	// Should link back to home
+	if !strings.Contains(html, `../index.html`) {
+		t.Errorf("Expected back link to ../index.html")
+	}
+
+	// Should reference ../styles.css
+	if !strings.Contains(html, `All Posts`) {
+		t.Errorf("Expected 'All Posts' title")
+	}
+}
+
+func TestRenderArchive_NoTemplate(t *testing.T) {
+	tempDir := t.TempDir()
+
+	// Create a minimal test site WITHOUT posts.html
+	wellKnownDir := filepath.Join(tempDir, ".well-known")
+	os.MkdirAll(wellKnownDir, 0755)
+	os.WriteFile(filepath.Join(wellKnownDir, "polis"), []byte(`{
+		"base_url": "https://example.com",
+		"site_title": "Test Site",
+		"author_name": "Test Author"
+	}`), 0644)
+
+	themesDir := filepath.Join(tempDir, ".polis", "themes", "turbo")
+	os.MkdirAll(themesDir, 0755)
+	os.WriteFile(filepath.Join(themesDir, "post.html"), []byte("<html>{{title}}</html>"), 0644)
+	os.WriteFile(filepath.Join(themesDir, "comment.html"), []byte("<html>{{title}}</html>"), 0644)
+	os.WriteFile(filepath.Join(themesDir, "comment-inline.html"), []byte("<div>{{content}}</div>"), 0644)
+	os.WriteFile(filepath.Join(themesDir, "index.html"), []byte("<html>{{site_title}}</html>"), 0644)
+	os.WriteFile(filepath.Join(themesDir, "turbo.css"), []byte("/* test css */"), 0644)
+	// NO posts.html
+
+	metadataDir := filepath.Join(tempDir, "metadata")
+	os.MkdirAll(metadataDir, 0755)
+	os.WriteFile(filepath.Join(metadataDir, "manifest.json"), []byte(`{"active_theme":"turbo"}`), 0644)
+	os.WriteFile(filepath.Join(metadataDir, "public.jsonl"), []byte(`{"path":"posts/test.md","title":"Test","type":"post"}`), 0644)
+
+	renderer, err := NewPageRenderer(PageConfig{
+		DataDir: tempDir,
+	})
+	if err != nil {
+		t.Fatalf("NewPageRenderer failed: %v", err)
+	}
+
+	// RenderArchive should not error when posts.html doesn't exist
+	err = renderer.RenderArchive()
+	if err != nil {
+		t.Fatalf("RenderArchive should not error when template missing: %v", err)
+	}
+
+	// posts/index.html should NOT be created
+	if _, err := os.Stat(filepath.Join(tempDir, "posts", "index.html")); !os.IsNotExist(err) {
+		t.Error("posts/index.html should not exist when theme lacks posts.html")
+	}
+}
+
 // setupTestSite creates a minimal polis site structure for testing.
 func setupTestSite(t *testing.T, dir string) {
 	t.Helper()
@@ -227,10 +421,22 @@ func setupTestSite(t *testing.T, dir string) {
 <head><title>{{site_title}}</title></head>
 <body>
 <h1>{{site_title}}</h1>
-{{#posts}}<div><a href="{{url}}">{{title}}</a></div>{{/posts}}
+{{#recent_posts}}<div class="post-item"><a href="{{url}}">{{title}}</a></div>{{/recent_posts}}
+{{view_all_posts}}
+{{#recent_comments}}<div class="comment-item">{{target_author}}: {{preview}}</div>{{/recent_comments}}
 </body>
 </html>`
 	os.WriteFile(filepath.Join(themesDir, "index.html"), []byte(indexTemplate), 0644)
+
+	archiveTemplate := `<!DOCTYPE html>
+<html>
+<head><title>All Posts - {{site_title}}</title></head>
+<body>
+<a href="../index.html">Back</a>
+{{#posts}}<div class="post-item"><a href="{{url}}">{{title}}</a></div>{{/posts}}
+</body>
+</html>`
+	os.WriteFile(filepath.Join(themesDir, "posts.html"), []byte(archiveTemplate), 0644)
 
 	// Create CSS file (required by RenderAll)
 	os.WriteFile(filepath.Join(themesDir, "turbo.css"), []byte("/* test css */"), 0644)

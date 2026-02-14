@@ -705,7 +705,8 @@ func (s *Server) syncNotifications() {
 	// Get shared cursor
 	cursor, _ := store.GetCursor("polis.notification")
 
-	client := discovery.NewClient(s.DiscoveryURL, s.DiscoveryKey)
+	myDomainForAuth := discovery.ExtractDomainFromURL(s.GetBaseURL())
+	client := discovery.NewAuthenticatedClient(s.DiscoveryURL, s.DiscoveryKey, myDomainForAuth, s.PrivateKey)
 
 	// Group rules by relevance for targeted server-side filtering
 	groups := handler.RulesByRelevance()
@@ -792,6 +793,20 @@ func (s *Server) syncNotifications() {
 			s.LogError("notification sync: failed to append entries: %v", err)
 		} else if added > 0 {
 			s.LogInfo("notification sync: added %d new notifications", added)
+
+			// Prune old notifications to prevent unbounded growth
+			pruneCfg := notification.DefaultPruneConfig()
+			if config.MaxItems > 0 {
+				pruneCfg.MaxItems = config.MaxItems
+			}
+			if config.MaxAgeDays > 0 {
+				pruneCfg.MaxAgeDays = config.MaxAgeDays
+			}
+			if pruned, err := mgr.Prune(pruneCfg); err != nil {
+				s.LogError("notification sync: prune failed: %v", err)
+			} else if pruned > 0 {
+				s.LogInfo("notification sync: pruned %d old notifications", pruned)
+			}
 		}
 	}
 

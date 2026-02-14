@@ -20,6 +20,7 @@ type Templates struct {
 	Comment       string // comment.html - required
 	CommentInline string // comment-inline.html - required
 	Index         string // index.html - required
+	Archive       string // posts.html - optional (archive page)
 }
 
 // Manifest represents the site manifest (metadata/manifest.json).
@@ -78,6 +79,11 @@ func loadFromDir(themeDir string) (*Templates, error) {
 			return nil, fmt.Errorf("required template %q not found: %w", filename, err)
 		}
 		*dest = string(content)
+	}
+
+	// Load optional templates
+	if content, err := os.ReadFile(filepath.Join(themeDir, "posts.html")); err == nil {
+		templates.Archive = string(content)
 	}
 
 	return templates, nil

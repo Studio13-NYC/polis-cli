@@ -25,6 +25,8 @@ type NotificationHandler struct {
 type NotificationConfig struct {
 	Rules        []notification.Rule `json:"rules"`
 	MutedDomains []string            `json:"muted_domains"`
+	MaxItems     int                 `json:"max_items,omitempty"`
+	MaxAgeDays   int                 `json:"max_age_days,omitempty"`
 }
 
 func (h *NotificationHandler) TypePrefix() string { return "polis.notification" }

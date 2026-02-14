@@ -54,6 +54,9 @@ type RenderContext struct {
 	CommentCount int
 	PostCount    int
 
+	// Conditional HTML fragments
+	ViewAllPostsLink string // Pre-rendered "View all N posts" link (empty if ≤10)
+
 	// Comment-specific
 	InReplyToURL string
 	RootPostURL  string
@@ -65,6 +68,7 @@ type RenderContext struct {
 	Comments        []CommentData
 	BlessedComments []BlessedCommentData
 	RecentPosts     []PostData
+	RecentComments  []CommentData
 }
 
 // PostData represents a post in a loop.
@@ -173,6 +177,9 @@ func (e *Engine) substituteVariables(template string, ctx *RenderContext) string
 		"comment_count": fmt.Sprintf("%d", ctx.CommentCount),
 		"post_count":    fmt.Sprintf("%d", ctx.PostCount),
 
+		// Conditional fragments
+		"view_all_posts": ctx.ViewAllPostsLink,
+
 		// Comment-specific
 		"in_reply_to_url": ctx.InReplyToURL,
 		"root_post_url":   ctx.RootPostURL,
@@ -248,5 +255,6 @@ func NewRenderContext() *RenderContext {
 		Comments:        []CommentData{},
 		BlessedComments: []BlessedCommentData{},
 		RecentPosts:     []PostData{},
+		RecentComments:  []CommentData{},
 	}
 }

@@ -73,8 +73,9 @@ func handleNotificationsList(args []string) {
 	baseURL := os.Getenv("POLIS_BASE_URL")
 
 	if apiKey != "" && baseURL != "" {
-		client := discovery.NewClient(discoveryURL, apiKey)
 		domain := extractDomain(baseURL)
+		privKey, _ := loadPrivateKey(dir)
+		client := discovery.NewAuthenticatedClient(discoveryURL, apiKey, domain, privKey)
 
 		// Get pending blessings via relationship-query
 		resp, err := client.QueryRelationships("polis.blessing", map[string]string{

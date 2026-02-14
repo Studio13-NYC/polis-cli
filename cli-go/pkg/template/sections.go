@@ -14,7 +14,8 @@ var sectionOpenPattern = regexp.MustCompile(`\{\{#(\w+)\}\}`)
 // - {{#posts}}...{{/posts}} - Loop over posts
 // - {{#comments}}...{{/comments}} - Loop over comments
 // - {{#blessed_comments}}...{{/blessed_comments}} - Loop over blessed comments on a post
-// - {{#recent_posts}}...{{/recent_posts}} - Loop over 3 most recent posts
+// - {{#recent_posts}}...{{/recent_posts}} - Loop over 10 most recent posts
+// - {{#recent_comments}}...{{/recent_comments}} - Loop over 10 most recent comments
 func (e *Engine) processSections(template string, ctx *RenderContext, depth int) (string, error) {
 	// Process sections iteratively since Go regex doesn't support backreferences
 	result := template
@@ -56,6 +57,8 @@ func (e *Engine) processSections(template string, ctx *RenderContext, depth int)
 			output, err = e.renderBlessedCommentsSection(sectionContent, ctx, depth)
 		case "recent_posts":
 			output, err = e.renderRecentPostsSection(sectionContent, ctx, depth)
+		case "recent_comments":
+			output, err = e.renderRecentCommentsSection(sectionContent, ctx, depth)
 		default:
 			// Unknown section - leave as-is and continue
 			break
@@ -70,7 +73,7 @@ func (e *Engine) processSections(template string, ctx *RenderContext, depth int)
 		result = result[:match[0]] + output + result[closeTagStart+len(closeTag):]
 
 		// Avoid checking unsupported section names again
-		if sectionName != "posts" && sectionName != "comments" && sectionName != "blessed_comments" && sectionName != "recent_posts" {
+		if sectionName != "posts" && sectionName != "comments" && sectionName != "blessed_comments" && sectionName != "recent_posts" && sectionName != "recent_comments" {
 			// Skip to after this section to avoid infinite loop on unknown sections
 			result = result[:match[0]] + openTag + sectionContent + closeTag + result[match[0]:]
 			break
@@ -202,12 +205,12 @@ func (e *Engine) renderBlessedCommentsSection(content string, ctx *RenderContext
 }
 
 // renderRecentPostsSection renders the {{#recent_posts}} section.
-// This shows the 3 most recent posts.
+// This shows the 10 most recent posts.
 func (e *Engine) renderRecentPostsSection(content string, ctx *RenderContext, depth int) (string, error) {
-	// Use RecentPosts if available, otherwise use first 3 posts
+	// Use RecentPosts if available, otherwise use first 10 posts
 	posts := ctx.RecentPosts
 	if len(posts) == 0 && len(ctx.Posts) > 0 {
-		limit := 3
+		limit := 10
 		if len(ctx.Posts) < limit {
 			limit = len(ctx.Posts)
 		}
@@ -244,6 +247,57 @@ func (e *Engine) renderRecentPostsSection(content string, ctx *RenderContext, de
 			"published":       post.Published,
 			"published_human": post.PublishedHuman,
 			"comment_count":   fmt.Sprintf("%d", post.CommentCount),
+		})
+
+		builder.WriteString(rendered)
+	}
+
+	return builder.String(), nil
+}
+
+// renderRecentCommentsSection renders the {{#recent_comments}} section.
+// This shows the 10 most recent comments.
+func (e *Engine) renderRecentCommentsSection(content string, ctx *RenderContext, depth int) (string, error) {
+	// Use RecentComments if available, otherwise use first 10 comments
+	comments := ctx.RecentComments
+	if len(comments) == 0 && len(ctx.Comments) > 0 {
+		limit := 10
+		if len(ctx.Comments) < limit {
+			limit = len(ctx.Comments)
+		}
+		comments = ctx.Comments[:limit]
+	}
+
+	var builder strings.Builder
+
+	for _, comment := range comments {
+		// Create a temporary context for this iteration
+		iterCtx := &RenderContext{
+			URL:            comment.URL,
+			Published:      comment.Published,
+			PublishedHuman: comment.PublishedHuman,
+			TargetAuthor:   comment.TargetAuthor,
+			Preview:        comment.Preview,
+
+			// Copy site-level variables
+			SiteURL:   ctx.SiteURL,
+			SiteTitle: ctx.SiteTitle,
+			Year:      ctx.Year,
+		}
+
+		// Process partials first (before variable substitution)
+		processed, err := e.processPartials(content, iterCtx, depth+1)
+		if err != nil {
+			return "", err
+		}
+
+		// Substitute loop-specific variables
+		rendered := e.substituteLoopVariables(processed, map[string]string{
+			"url":             comment.URL,
+			"target_author":   comment.TargetAuthor,
+			"published":       comment.Published,
+			"published_human": comment.PublishedHuman,
+			"preview":         comment.Preview,
 		})
 
 		builder.WriteString(rendered)

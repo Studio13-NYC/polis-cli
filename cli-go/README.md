@@ -75,13 +75,7 @@ result, _ := publish.PublishPost(dataDir, content, filename, privateKey)
 
 ## Commands
 
-Currently implemented commands:
-
-- `polis render [--force]` - Render markdown posts and comments to HTML
-- `polis version` - Show version information
-- `polis help` - Show help message
-
-For the full CLI with all commands, use the bash CLI at `cli-bash/bin/polis`.
+The Go CLI implements all Polis commands (`init`, `post`, `comment`, `render`, `blessing`, `follow`, `clone`, `migrate`, etc.). See the [CLI Command Reference](../docs/USAGE.md) for the full list.
 
 ## Template System
 

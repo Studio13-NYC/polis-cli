@@ -106,6 +106,96 @@ func TestLoadNonExistent(t *testing.T) {
 	}
 }
 
+func TestMetadataRoundTrip(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "following.json")
+
+	f := &FollowingFile{
+		Version: Version,
+		Following: []FollowingEntry{
+			{URL: "https://alice.com", AddedAt: "2025-01-01T00:00:00Z", SiteTitle: "Alice's Blog", AuthorName: "Alice"},
+			{URL: "https://bob.com", AddedAt: "2025-01-02T00:00:00Z"},
+		},
+	}
+
+	if err := Save(path, f); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	alice := loaded.Get("https://alice.com")
+	if alice == nil {
+		t.Fatal("Expected alice entry")
+	}
+	if alice.SiteTitle != "Alice's Blog" {
+		t.Errorf("SiteTitle = %q, want %q", alice.SiteTitle, "Alice's Blog")
+	}
+	if alice.AuthorName != "Alice" {
+		t.Errorf("AuthorName = %q, want %q", alice.AuthorName, "Alice")
+	}
+
+	bob := loaded.Get("https://bob.com")
+	if bob == nil {
+		t.Fatal("Expected bob entry")
+	}
+	if bob.SiteTitle != "" {
+		t.Errorf("Expected empty SiteTitle for bob, got %q", bob.SiteTitle)
+	}
+}
+
+func TestUpdateMetadata(t *testing.T) {
+	f := &FollowingFile{
+		Version:   Version,
+		Following: []FollowingEntry{{URL: "https://alice.com", AddedAt: "2025-01-01T00:00:00Z"}},
+	}
+
+	updated := f.UpdateMetadata("https://alice.com", "Alice's Site", "Alice A.")
+	if !updated {
+		t.Error("Expected UpdateMetadata to return true")
+	}
+
+	entry := f.Get("https://alice.com")
+	if entry.SiteTitle != "Alice's Site" {
+		t.Errorf("SiteTitle = %q, want %q", entry.SiteTitle, "Alice's Site")
+	}
+	if entry.AuthorName != "Alice A." {
+		t.Errorf("AuthorName = %q, want %q", entry.AuthorName, "Alice A.")
+	}
+
+	// Non-existent entry
+	updated = f.UpdateMetadata("https://nobody.com", "X", "Y")
+	if updated {
+		t.Error("Expected UpdateMetadata to return false for non-existent URL")
+	}
+}
+
+func TestEntriesMissingMetadata(t *testing.T) {
+	f := &FollowingFile{
+		Version: Version,
+		Following: []FollowingEntry{
+			{URL: "https://alice.com", AddedAt: "2025-01-01T00:00:00Z", SiteTitle: "Alice's Blog"},
+			{URL: "https://bob.com", AddedAt: "2025-01-02T00:00:00Z"},
+			{URL: "https://carol.com", AddedAt: "2025-01-03T00:00:00Z", AuthorName: "Carol"},
+			{URL: "https://dave.com", AddedAt: "2025-01-04T00:00:00Z"},
+		},
+	}
+
+	missing := f.EntriesMissingMetadata()
+	if len(missing) != 2 {
+		t.Fatalf("Expected 2 missing, got %d", len(missing))
+	}
+	if missing[0].URL != "https://bob.com" {
+		t.Errorf("Expected bob first, got %s", missing[0].URL)
+	}
+	if missing[1].URL != "https://dave.com" {
+		t.Errorf("Expected dave second, got %s", missing[1].URL)
+	}
+}
+
 func TestGet(t *testing.T) {
 	f := &FollowingFile{
 		Version:   Version,

@@ -35,10 +35,11 @@
         <div class="container">
             <h2 class="section-title">Recent Posts</h2>
             <div class="post-list">
-{{#posts}}
+{{#recent_posts}}
                 {{> theme:post-item}}
-{{/posts}}
+{{/recent_posts}}
             </div>
+            {{view_all_posts}}
         </div>
     </section>
 
@@ -47,9 +48,9 @@
         <div class="container">
             <h2 class="section-title">Recent Comments</h2>
             <div class="comment-list">
-{{#comments}}
+{{#recent_comments}}
                 {{> theme:comment-item}}
-{{/comments}}
+{{/recent_comments}}
             </div>
         </div>
     </section>

@@ -227,6 +227,66 @@ func (m *Manager) ListPaginated(offset, limit int, includeRead bool) ([]StateEnt
 	return filtered, total, nil
 }
 
+// PruneConfig controls how aggressively to prune old notifications.
+type PruneConfig struct {
+	MaxItems   int // Maximum entries to keep (0 = unlimited)
+	MaxAgeDays int // Maximum age in days (0 = unlimited)
+}
+
+// DefaultPruneConfig returns sensible defaults for notification pruning.
+func DefaultPruneConfig() PruneConfig {
+	return PruneConfig{
+		MaxItems:   500,
+		MaxAgeDays: 90,
+	}
+}
+
+// Prune removes old notifications that exceed the configured limits.
+// Returns the number of entries removed.
+func (m *Manager) Prune(cfg PruneConfig) (int, error) {
+	entries, err := m.List()
+	if err != nil {
+		return 0, err
+	}
+
+	if len(entries) == 0 {
+		return 0, nil
+	}
+
+	original := len(entries)
+
+	// Remove entries older than MaxAgeDays
+	if cfg.MaxAgeDays > 0 {
+		cutoff := time.Now().UTC().AddDate(0, 0, -cfg.MaxAgeDays)
+		var kept []StateEntry
+		for _, e := range entries {
+			t, err := time.Parse("2006-01-02T15:04:05Z", e.CreatedAt)
+			if err != nil {
+				kept = append(kept, e) // Keep entries with unparseable timestamps
+				continue
+			}
+			if !t.Before(cutoff) {
+				kept = append(kept, e)
+			}
+		}
+		entries = kept
+	}
+
+	// Trim to MaxItems (keep newest — JSONL appends chronologically)
+	if cfg.MaxItems > 0 && len(entries) > cfg.MaxItems {
+		entries = entries[len(entries)-cfg.MaxItems:]
+	}
+
+	removed := original - len(entries)
+	if removed > 0 {
+		if err := m.writeAll(entries); err != nil {
+			return 0, err
+		}
+	}
+
+	return removed, nil
+}
+
 // writeAll rewrites the entire state file.
 func (m *Manager) writeAll(entries []StateEntry) error {
 	if err := os.MkdirAll(filepath.Dir(m.stateFile), 0755); err != nil {

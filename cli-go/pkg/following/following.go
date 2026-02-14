@@ -25,8 +25,10 @@ type FollowingFile struct {
 
 // FollowingEntry represents a single followed author.
 type FollowingEntry struct {
-	URL     string `json:"url"`
-	AddedAt string `json:"added_at"`
+	URL        string `json:"url"`
+	AddedAt    string `json:"added_at"`
+	SiteTitle  string `json:"site_title,omitempty"`
+	AuthorName string `json:"author_name,omitempty"`
 }
 
 // DefaultPath returns the default path to following.json.
@@ -120,6 +122,29 @@ func (f *FollowingFile) Get(authorURL string) *FollowingEntry {
 		}
 	}
 	return nil
+}
+
+// UpdateMetadata sets the site title and author name for a matching entry.
+// Returns true if the entry was found and updated.
+func (f *FollowingFile) UpdateMetadata(url, siteTitle, authorName string) bool {
+	entry := f.Get(url)
+	if entry == nil {
+		return false
+	}
+	entry.SiteTitle = siteTitle
+	entry.AuthorName = authorName
+	return true
+}
+
+// EntriesMissingMetadata returns entries that have neither site_title nor author_name.
+func (f *FollowingFile) EntriesMissingMetadata() []FollowingEntry {
+	var missing []FollowingEntry
+	for _, e := range f.Following {
+		if e.SiteTitle == "" && e.AuthorName == "" {
+			missing = append(missing, e)
+		}
+	}
+	return missing
 }
 
 // Count returns the number of followed authors.

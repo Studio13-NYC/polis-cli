@@ -269,7 +269,10 @@ func handleCommentSync(args []string) {
 		discoveryURL = "https://ltfpezriiaqvjupxbttw.supabase.co/functions/v1"
 	}
 
-	client := discovery.NewClient(discoveryURL, discoveryKey)
+	baseURL := os.Getenv("POLIS_BASE_URL")
+	myDomain := discovery.ExtractDomainFromURL(baseURL)
+	privKey, _ := loadPrivateKey(dir)
+	client := discovery.NewAuthenticatedClient(discoveryURL, discoveryKey, myDomain, privKey)
 
 	result, err := comment.SyncPendingComments(dir, client, nil)
 	if err != nil {

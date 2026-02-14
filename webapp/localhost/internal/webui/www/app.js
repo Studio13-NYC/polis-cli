@@ -243,6 +243,7 @@ const App = {
                     await this.initViewMode();
                     await this.loadViewContent();
                     this.initNotifications();
+                    this.initFeedPolling();
                     this.showScreen('dashboard');
                     this.checkSetupBanner();
                     break;
@@ -4614,6 +4615,35 @@ echo "File: $POLIS_PATH"</code>
         }
     },
 
+    _feedPollTimer: null,
+
+    initFeedPolling() {
+        this.stopFeedPolling();
+        this._feedPollTimer = setInterval(async () => {
+            try {
+                const counts = await this.api('GET', '/api/feed/counts');
+                const prevUnread = this.counts.feedUnread || 0;
+                this.counts.feed = counts.total || 0;
+                this.counts.feedUnread = counts.unread || 0;
+                this.updateBadge('feed-count', this.counts.feedUnread, this.counts.feedUnread > 0);
+
+                if (this.counts.feedUnread !== prevUnread && this.currentView === 'feed') {
+                    const contentList = document.getElementById('content-list');
+                    if (contentList) await this.renderFeedList(contentList);
+                }
+            } catch (e) {
+                // Silently fail — feed polling is non-critical
+            }
+        }, 60000);
+    },
+
+    stopFeedPolling() {
+        if (this._feedPollTimer) {
+            clearInterval(this._feedPollTimer);
+            this._feedPollTimer = null;
+        }
+    },
+
     async _autoRefreshFeed() {
         if (this._feedRefreshing) return;
         this._feedRefreshing = true;
@@ -4739,15 +4769,19 @@ echo "File: $POLIS_PATH"</code>
                 <div class="content-list">
                     ${follows.map(f => {
                         const domain = f.url.replace('https://', '').replace('http://', '').replace(/\/$/, '');
-                        const lastChecked = f.last_checked ? this.formatDate(f.last_checked) : 'Never';
+                        const title = f.site_title || f.author_name || domain;
+                        const subtitle = f.author_name && f.author_name !== title
+                            ? `${this.escapeHtml(f.author_name)} · ${this.escapeHtml(domain)}`
+                            : this.escapeHtml(domain);
+                        const addedAt = f.added_at ? this.formatDate(f.added_at) : '';
                         return `
                             <div class="content-item following-item">
                                 <div class="item-info">
-                                    <div class="item-title">${this.escapeHtml(domain)}</div>
-                                    <div class="item-path">${this.escapeHtml(f.url)}</div>
+                                    <div class="item-title">${this.escapeHtml(title)}</div>
+                                    <div class="item-path">${subtitle}</div>
                                 </div>
                                 <div class="following-item-actions">
-                                    <span class="item-date">Checked: ${lastChecked}</span>
+                                    ${addedAt ? `<span class="item-date">Followed: ${addedAt}</span>` : ''}
                                     <button class="danger-small" onclick="event.stopPropagation(); App.unfollowAuthor('${this.escapeHtml(f.url)}')">Unfollow</button>
                                 </div>
                             </div>
@@ -4907,6 +4941,7 @@ echo "File: $POLIS_PATH"</code>
 
     _activityCursor: '0',
     _activityEvents: [],
+    _activityMaxEvents: 500,
 
     async renderActivityStream(container) {
         try {
@@ -4916,6 +4951,11 @@ echo "File: $POLIS_PATH"</code>
 
             if (events.length > 0) {
                 this._activityEvents = this._activityEvents.concat(events);
+                if (this._activityEvents.length > this._activityMaxEvents) {
+                    this._activityEvents = this._activityEvents.slice(
+                        this._activityEvents.length - this._activityMaxEvents
+                    );
+                }
                 this._activityCursor = result.cursor || this._activityCursor;
             }
 

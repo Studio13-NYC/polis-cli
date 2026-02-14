@@ -5,6 +5,32 @@ All notable changes to the Go CLI will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.53.0] - 2026-02-13
+
+This release improves homepage performance with limited post/comment sections and archive pages, adds quality of life improvements to the webapp (feed auto-refresh, following metadata display), and introduces authenticated discovery queries for privacy-sensitive operations.
+
+### Breaking Changes
+
+- **[Discovery] Authenticated queries for sensitive data**: Discovery service read endpoints now enforce access controls. Unauthenticated callers to `ds-content-query` only see blessed comments (pending/denied are filtered). Querying `ds-relationship-query` for `status=pending` or `status=denied` blessing records requires signed authentication headers (`X-Polis-Domain`, `X-Polis-Signature`, `X-Polis-Timestamp`). The `ds-stream` endpoint filters out `polis.blessing.denied` events for unauthenticated consumers. CLI commands that query pending/denied blessings (`polis blessing requests`, `polis follow` auto-bless, `polis notifications`) now use authenticated clients. Clients older than 0.53.0 will see reduced data from these endpoints.
+
+### Added
+
+- **Homepage post/comment limits**: New `{{#recent_posts}}` and `{{#recent_comments}}` template sections limit homepage display to the 10 most recent items. All 6 built-in themes updated to use these sections.
+- **Archive page**: Running `polis render` now generates `posts/index.html` with a chronological list of all posts. Themes with a `posts.html` template automatically get this page.
+- **"View all posts" link**: Homepage displays a "View all N posts" link when you have more than 10 posts.
+- **Signed GET authentication**: Discovery client supports optional domain ownership proof on GET requests via authentication headers. New `discovery.NewAuthenticatedClient()` constructor.
+- **Notification pruning**: `notification.Prune()` enforces configurable limits (default 500 items, 90 days) to prevent unbounded JSONL growth.
+- **Following metadata enrichment**: `following.json` now stores `site_title` and `author_name` from each followed author's `.well-known/polis`.
+- **[Webapp] Feed auto-refresh**: Conversations tab polls for new items every 60 seconds.
+- **[Webapp] Following metadata backfill**: Following list lazily enriches entries by fetching `.well-known/polis` from remote sites.
+- **[Webapp] Following list improvements**: Displays site titles and author names instead of bare domains.
+- **[Webapp] Activity stream cap**: Activity stream caps at 500 events, trimming oldest entries.
+
+### Changed
+
+- **Authenticated discovery queries**: Commands that query pending or denied blessings now use authenticated clients with signed request headers.
+- **[Webapp] Authenticated discovery queries**: Handlers that query pending or denied blessings now use authenticated clients.
+
 ## [0.50.0]
 
 ### Breaking Changes

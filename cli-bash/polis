@@ -28,7 +28,7 @@ set -e
 #   4. Hardcoded defaults
 
 # Fixed constants (never configurable - required for discovery)
-VERSION="0.52.0"
+VERSION="0.53.0"
 WELL_KNOWN_DIR=".well-known"
 WELL_KNOWN_FILE="polis"
 
@@ -7736,6 +7736,13 @@ load_theme() {
         json_error "render" "INVALID_STATE" "Theme '$theme_name' missing index.html"
     fi
 
+    # Load optional archive template
+    if [ -f "$theme_dir/posts.html" ]; then
+        TEMPLATES[archive]=$(cat "$theme_dir/posts.html")
+    else
+        TEMPLATES[archive]=""
+    fi
+
     ACTIVE_THEME="$theme_name"
 
     # Copy theme CSS to styles.css
@@ -8366,7 +8373,7 @@ render_sections() {
     fi
 
     # Process {{#recent_posts}}...{{/recent_posts}} blocks
-    # Shows up to 3 recent posts, excluding the current post (identified by context URL)
+    # Shows up to 10 recent posts, excluding the current post (identified by context URL)
     if echo "$result" | grep -q '{{#recent_posts}}'; then
         local inner_template
         inner_template=$(echo "$result" | perl -0777 -ne 'print $1 if /\{\{#recent_posts\}\}(.*?)\{\{\/recent_posts\}\}/s')
@@ -8380,7 +8387,7 @@ render_sections() {
             num_posts=$(echo "$sorted_posts" | jq 'length')
 
             local rendered_count=0
-            for ((i=0; i<num_posts && rendered_count<3; i++)); do
+            for ((i=0; i<num_posts && rendered_count<10; i++)); do
                 local path=$(echo "$sorted_posts" | jq -r ".[$i].path // empty")
                 local title=$(echo "$sorted_posts" | jq -r ".[$i].title // \"Untitled\"")
                 local published=$(echo "$sorted_posts" | jq -r ".[$i].published // empty")
@@ -8426,6 +8433,68 @@ render_sections() {
         result=$(echo "$result" | perl -0777 -pe '
             BEGIN { local $/; open my $fh, "<", "'"$tmp_replacement"'"; $repl = <$fh>; close $fh; }
             s/\{\{#recent_posts\}\}.*?\{\{\/recent_posts\}\}/$repl/s;
+        ')
+        rm -f "$tmp_replacement"
+    fi
+
+    # Process {{#recent_comments}}...{{/recent_comments}} blocks
+    # Shows up to 10 recent comments
+    if echo "$result" | grep -q '{{#recent_comments}}'; then
+        local inner_template
+        inner_template=$(echo "$result" | perl -0777 -ne 'print $1 if /\{\{#recent_comments\}\}(.*?)\{\{\/recent_comments\}\}/s')
+        local recent_comments_html=""
+
+        if [ -f "$PUBLIC_INDEX" ]; then
+            local sorted_comments
+            sorted_comments=$(jq -s '[.[] | select(.type == "comment")] | sort_by(.published) | reverse' "$PUBLIC_INDEX" 2>/dev/null)
+
+            local num_comments
+            num_comments=$(echo "$sorted_comments" | jq 'length')
+
+            local rendered_count=0
+            for ((i=0; i<num_comments && rendered_count<10; i++)); do
+                local path=$(echo "$sorted_comments" | jq -r ".[$i].path // empty")
+                local published=$(echo "$sorted_comments" | jq -r ".[$i].published // empty")
+                local in_reply_to=$(echo "$sorted_comments" | jq -r "(.[$i].in_reply_to | if type == \"object\" then .url else . end) // empty")
+
+                [ -z "$path" ] && continue
+
+                local url="${path%.md}.html"
+                local published_human=$(format_date_human "$published")
+
+                # Extract target author from in_reply_to URL
+                local target_author=""
+                if [ -n "$in_reply_to" ]; then
+                    target_author=$(echo "$in_reply_to" | sed -E 's|https?://([^/]+).*|\1|')
+                fi
+
+                # Get preview from file body
+                local preview=""
+                if [ -f "$path" ]; then
+                    preview=$(extract_body_from_file "$path" | head -c 100 | tr '\n' ' ')
+                    [ ${#preview} -ge 100 ] && preview="${preview}..."
+                fi
+
+                # Render inner template with item variables
+                local item_html="$inner_template"
+                item_html=$(render_partials "$item_html")
+                item_html="${item_html//\{\{url\}\}/$(escape_for_replacement "$url")}"
+                item_html="${item_html//\{\{published\}\}/$(escape_for_replacement "$published")}"
+                item_html="${item_html//\{\{published_human\}\}/$(escape_for_replacement "$published_human")}"
+                item_html="${item_html//\{\{target_author\}\}/$(escape_for_replacement "$target_author")}"
+                item_html="${item_html//\{\{preview\}\}/$(escape_for_replacement "$preview")}"
+
+                recent_comments_html+="$item_html"
+                ((++rendered_count))
+            done
+        fi
+
+        # Replace the entire section with rendered recent comments
+        local tmp_replacement=$(mktemp)
+        echo -n "$recent_comments_html" > "$tmp_replacement"
+        result=$(echo "$result" | perl -0777 -pe '
+            BEGIN { local $/; open my $fh, "<", "'"$tmp_replacement"'"; $repl = <$fh>; close $fh; }
+            s/\{\{#recent_comments\}\}.*?\{\{\/recent_comments\}\}/$repl/s;
         ')
         rm -f "$tmp_replacement"
     fi
@@ -8632,14 +8701,60 @@ render_index() {
     # Process {{#section}}...{{/section}} loops (posts, comments)
     result=$(render_sections "$result")
 
+    # Build view_all_posts link (only shown when more than 10 posts)
+    local view_all_posts=""
+    if [ "$post_count" -gt 10 ]; then
+        view_all_posts="<a href=\"posts/\" class=\"view-all\">View all $post_count posts &rarr;</a>"
+    fi
+
     result="${result//\{\{site_title\}\}/$(escape_for_replacement "$site_title")}"
     result="${result//\{\{site_url\}\}/$(escape_for_replacement "$POLIS_BASE_URL")}"
     result="${result//\{\{posts_list\}\}/$(escape_for_replacement "$posts_list")}"
     result="${result//\{\{post_count\}\}/$(escape_for_replacement "$post_count")}"
+    result="${result//\{\{view_all_posts\}\}/$(escape_for_replacement "$view_all_posts")}"
     result="${result//\{\{year\}\}/$(escape_for_replacement "$(date +%Y)")}"
 
     echo "$result" > "index.html"
     info_human "  Written: index.html"
+}
+
+# Render archive page (posts/index.html)
+# Lists all posts (unlimited). Only called if theme has posts.html.
+render_archive() {
+    local post_count=0
+
+    # Get site info
+    local site_title=""
+    if [ -f "$WELL_KNOWN_DIR/polis" ]; then
+        site_title=$(jq -r '.site_title // empty' "$WELL_KNOWN_DIR/polis" 2>/dev/null)
+    fi
+    if [ -z "$site_title" ]; then
+        site_title="${POLIS_BASE_URL#https://}"
+        site_title="${site_title#http://}"
+    fi
+
+    # Count posts
+    if [ -f "$PUBLIC_INDEX" ]; then
+        post_count=$(jq -s '[.[] | select(.type == "post" or .type == null)] | length' "$PUBLIC_INDEX" 2>/dev/null) || post_count=0
+    fi
+
+    # Substitute template
+    local result="${TEMPLATES[archive]}"
+
+    # Process {{> partial}} includes first
+    result=$(render_partials "$result")
+
+    # Process {{#section}}...{{/section}} loops (posts)
+    result=$(render_sections "$result")
+
+    result="${result//\{\{site_title\}\}/$(escape_for_replacement "$site_title")}"
+    result="${result//\{\{site_url\}\}/$(escape_for_replacement "$POLIS_BASE_URL")}"
+    result="${result//\{\{post_count\}\}/$(escape_for_replacement "$post_count")}"
+    result="${result//\{\{year\}\}/$(escape_for_replacement "$(date +%Y)")}"
+
+    mkdir -p "posts"
+    echo "$result" > "posts/index.html"
+    info_human "  Written: posts/index.html"
 }
 
 # Command: polis render
@@ -8771,6 +8886,12 @@ cmd_render() {
     # Generate index
     render_index
     info_human "Generated: index.html"
+
+    # Generate archive page (if theme has posts.html)
+    if [ -n "${TEMPLATES[archive]:-}" ]; then
+        render_archive
+        info_human "Generated: posts/index.html"
+    fi
 
     # Regenerate manifest.json
     generate_manifest true

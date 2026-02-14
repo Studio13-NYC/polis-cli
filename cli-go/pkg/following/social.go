@@ -88,6 +88,12 @@ func FollowWithBlessing(followingPath string, authorURL string, discoveryClient 
 		result.AlreadyFollowed = true
 	}
 
+	// Enrich with metadata from .well-known/polis (already fetched above)
+	if entry := f.Get(authorURL); entry != nil {
+		entry.SiteTitle = remoteWK.SiteTitle
+		entry.AuthorName = remoteWK.Author
+	}
+
 	if err := Save(followingPath, f); err != nil {
 		return nil, err
 	}

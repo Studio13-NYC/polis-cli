@@ -17,12 +17,14 @@ import (
 
 // Client is an HTTP client for the discovery service.
 type Client struct {
-	BaseURL    string
-	APIKey     string
-	HTTPClient *http.Client
+	BaseURL       string
+	APIKey        string
+	Domain        string // optional: for signed GET requests
+	PrivateKeyPEM []byte // optional: for signed GET requests
+	HTTPClient    *http.Client
 }
 
-// NewClient creates a new discovery service client.
+// NewClient creates a new discovery service client (unauthenticated GET requests).
 func NewClient(baseURL, apiKey string) *Client {
 	return &Client{
 		BaseURL: baseURL,
@@ -31,6 +33,70 @@ func NewClient(baseURL, apiKey string) *Client {
 			Timeout: 30 * time.Second,
 		},
 	}
+}
+
+// NewAuthenticatedClient creates a discovery client that signs GET requests
+// with domain ownership proof via X-Polis-Domain/Signature/Timestamp headers.
+func NewAuthenticatedClient(baseURL, apiKey, domain string, privateKeyPEM []byte) *Client {
+	return &Client{
+		BaseURL:       baseURL,
+		APIKey:        apiKey,
+		Domain:        domain,
+		PrivateKeyPEM: privateKeyPEM,
+		HTTPClient: &http.Client{
+			Timeout: 30 * time.Second,
+		},
+	}
+}
+
+// queryAuthPayload is the canonical payload for signed GET request authentication.
+// Field order is critical — must match the TS side's buildQueryAuthCanonicalJSON.
+type queryAuthPayload struct {
+	Action    string `json:"action"`
+	Domain    string `json:"domain"`
+	Timestamp string `json:"timestamp"`
+}
+
+// MakeQueryAuthCanonicalJSON creates the canonical JSON for signed GET auth.
+// Must produce identical output to the TS side's buildQueryAuthCanonicalJSON.
+func MakeQueryAuthCanonicalJSON(domain, timestamp string) ([]byte, error) {
+	return json.Marshal(queryAuthPayload{
+		Action:    "query",
+		Domain:    domain,
+		Timestamp: timestamp,
+	})
+}
+
+// addAuthHeaders adds X-Polis-Domain, X-Polis-Signature, X-Polis-Timestamp
+// headers to a request if the client has auth credentials configured.
+// No-op if Domain/PrivateKeyPEM are empty (backward compatible).
+func (c *Client) addAuthHeaders(req *http.Request) error {
+	if c.Domain == "" || len(c.PrivateKeyPEM) == 0 {
+		return nil
+	}
+
+	timestamp := time.Now().UTC().Format("2006-01-02T15:04:05Z")
+
+	canonicalJSON, err := MakeQueryAuthCanonicalJSON(c.Domain, timestamp)
+	if err != nil {
+		return fmt.Errorf("failed to build auth canonical payload: %w", err)
+	}
+
+	signature, err := signing.SignContent(canonicalJSON, c.PrivateKeyPEM)
+	if err != nil {
+		return fmt.Errorf("failed to sign auth payload: %w", err)
+	}
+
+	// SSH signatures contain newlines (PEM format), which are invalid in
+	// HTTP headers. Strip them — the TS parser already strips whitespace
+	// via .replace(/\s/g, '') before extracting the base64 payload.
+	compactSig := strings.ReplaceAll(signature, "\n", "")
+
+	req.Header.Set("X-Polis-Domain", c.Domain)
+	req.Header.Set("X-Polis-Signature", compactSig)
+	req.Header.Set("X-Polis-Timestamp", timestamp)
+
+	return nil
 }
 
 // ============================================================================
@@ -261,6 +327,9 @@ func (c *Client) QueryContent(contentType string, filters map[string]string) (*C
 	}
 
 	httpReq.Header.Set("Authorization", "Bearer "+c.APIKey)
+	if err := c.addAuthHeaders(httpReq); err != nil {
+		return nil, err
+	}
 
 	resp, err := c.HTTPClient.Do(httpReq)
 	if err != nil {
@@ -365,6 +434,9 @@ func (c *Client) QueryRelationships(relType string, filters map[string]string) (
 	}
 
 	httpReq.Header.Set("Authorization", "Bearer "+c.APIKey)
+	if err := c.addAuthHeaders(httpReq); err != nil {
+		return nil, err
+	}
 
 	resp, err := c.HTTPClient.Do(httpReq)
 	if err != nil {
@@ -856,6 +928,9 @@ func (c *Client) StreamQuery(since string, limit int, typeFilter string, actorFi
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+c.APIKey)
+	if err := c.addAuthHeaders(httpReq); err != nil {
+		return nil, err
+	}
 
 	resp, err := c.HTTPClient.Do(httpReq)
 	if err != nil {

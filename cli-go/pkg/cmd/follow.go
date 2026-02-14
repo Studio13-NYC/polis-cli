@@ -43,13 +43,21 @@ func handleFollow(args []string) {
 	}
 	authorEmail := remoteWK.Email
 
-	// Load discovery client
+	// Load private key for signing
+	privKey, err := loadPrivateKey(dir)
+	if err != nil {
+		exitError("Failed to load private key: %v", err)
+	}
+
+	// Load discovery client (authenticated for pending/denied queries)
 	discoveryURL := os.Getenv("DISCOVERY_SERVICE_URL")
 	if discoveryURL == "" {
 		discoveryURL = "https://ltfpezriiaqvjupxbttw.supabase.co/functions/v1"
 	}
 	apiKey := os.Getenv("DISCOVERY_SERVICE_KEY")
-	client := discovery.NewClient(discoveryURL, apiKey)
+	baseURL := os.Getenv("POLIS_BASE_URL")
+	myDomain := discovery.ExtractDomainFromURL(baseURL)
+	client := discovery.NewAuthenticatedClient(discoveryURL, apiKey, myDomain, privKey)
 
 	// Fetch unblessed comments from this author on our posts via relationship-query
 	authorDomain := discovery.ExtractDomainFromURL(authorURL)
@@ -81,11 +89,6 @@ func handleFollow(args []string) {
 	// Bless all unblessed comments
 	blessedCount := 0
 	failedCount := 0
-
-	privKey, err := loadPrivateKey(dir)
-	if err != nil {
-		exitError("Failed to load private key: %v", err)
-	}
 
 	for _, rel := range allUnblessed {
 		// Grant blessing via relationship-update

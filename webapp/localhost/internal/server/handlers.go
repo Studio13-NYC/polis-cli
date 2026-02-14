@@ -1124,8 +1124,9 @@ func (s *Server) handleCommentsSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create discovery client
-	client := discovery.NewClient(s.DiscoveryURL, s.DiscoveryKey)
+	// Create authenticated discovery client (needed for pending/denied queries)
+	myDomain := discovery.ExtractDomainFromURL(s.GetBaseURL())
+	client := discovery.NewAuthenticatedClient(s.DiscoveryURL, s.DiscoveryKey, myDomain, s.PrivateKey)
 
 	// Sync pending comments
 	result, err := comment.SyncPendingComments(s.DataDir, client, s.Config.Hooks)
@@ -1152,11 +1153,10 @@ func (s *Server) handleBlessingRequests(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Create discovery client
-	client := discovery.NewClient(s.DiscoveryURL, s.DiscoveryKey)
-
-	// Get domain from base URL
+	// Create authenticated discovery client (needed for status=pending queries)
 	domain := s.GetSubdomain()
+	myDomain := discovery.ExtractDomainFromURL(s.GetBaseURL())
+	client := discovery.NewAuthenticatedClient(s.DiscoveryURL, s.DiscoveryKey, myDomain, s.PrivateKey)
 
 	// Fetch pending blessing requests
 	requests, err := blessing.FetchPendingRequests(client, domain)
@@ -2485,6 +2485,31 @@ func (s *Server) handleFollowing(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// Backfill metadata for entries missing site_title/author_name (cap 3 per request)
+		missing := f.EntriesMissingMetadata()
+		if len(missing) > 3 {
+			missing = missing[:3]
+		}
+		if len(missing) > 0 {
+			rc := remote.NewClient()
+			dirty := false
+			for _, m := range missing {
+				wk, err := rc.FetchWellKnown(m.URL)
+				if err != nil {
+					s.LogDebug("following backfill: failed to fetch %s: %v", m.URL, err)
+					continue
+				}
+				if f.UpdateMetadata(m.URL, wk.SiteTitle, wk.Author) {
+					dirty = true
+				}
+			}
+			if dirty {
+				if err := following.Save(followingPath, f); err != nil {
+					s.LogError("following backfill: save failed: %v", err)
+				}
+			}
+		}
+
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"following": f.All(),
@@ -2510,7 +2535,8 @@ func (s *Server) handleFollowing(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		discoveryClient := discovery.NewClient(s.DiscoveryURL, s.DiscoveryKey)
+		followDomain := discovery.ExtractDomainFromURL(s.GetBaseURL())
+		discoveryClient := discovery.NewAuthenticatedClient(s.DiscoveryURL, s.DiscoveryKey, followDomain, s.PrivateKey)
 		remoteClient := remote.NewClient()
 
 		result, err := following.FollowWithBlessing(followingPath, req.URL, discoveryClient, remoteClient, s.PrivateKey)
@@ -2551,7 +2577,8 @@ func (s *Server) handleFollowing(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		discoveryClient := discovery.NewClient(s.DiscoveryURL, s.DiscoveryKey)
+		unfollowDomain := discovery.ExtractDomainFromURL(s.GetBaseURL())
+		discoveryClient := discovery.NewAuthenticatedClient(s.DiscoveryURL, s.DiscoveryKey, unfollowDomain, s.PrivateKey)
 		remoteClient := remote.NewClient()
 
 		result, err := following.UnfollowWithDenial(followingPath, req.URL, discoveryClient, remoteClient, s.PrivateKey)

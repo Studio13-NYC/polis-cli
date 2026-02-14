@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/vdibart/polis-cli/cli-go/pkg/signing"
 )
 
 func TestCheckSiteRegistration_Registered(t *testing.T) {
@@ -264,6 +266,227 @@ func TestUnregisterSite_NotRegistered(t *testing.T) {
 		t.Error("Expected error for unregistered site")
 	}
 }
+
+// ============================================================================
+// Authenticated Client Tests
+// ============================================================================
+
+func TestNewAuthenticatedClient(t *testing.T) {
+	client := NewAuthenticatedClient("https://ds.example.com", "key123", "alice.com", []byte("fake-priv-key"))
+
+	if client.BaseURL != "https://ds.example.com" {
+		t.Errorf("Expected BaseURL=https://ds.example.com, got %s", client.BaseURL)
+	}
+	if client.APIKey != "key123" {
+		t.Errorf("Expected APIKey=key123, got %s", client.APIKey)
+	}
+	if client.Domain != "alice.com" {
+		t.Errorf("Expected Domain=alice.com, got %s", client.Domain)
+	}
+	if string(client.PrivateKeyPEM) != "fake-priv-key" {
+		t.Errorf("Expected PrivateKeyPEM=fake-priv-key, got %s", string(client.PrivateKeyPEM))
+	}
+}
+
+func TestAddAuthHeaders_WithoutAuth(t *testing.T) {
+	// Client without Domain/PrivateKeyPEM should NOT add auth headers
+	client := NewClient("https://ds.example.com", "key123")
+
+	req, _ := http.NewRequest("GET", "https://ds.example.com/test", nil)
+	if err := client.addAuthHeaders(req); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	if req.Header.Get("X-Polis-Domain") != "" {
+		t.Error("Expected no X-Polis-Domain header for unauthenticated client")
+	}
+	if req.Header.Get("X-Polis-Signature") != "" {
+		t.Error("Expected no X-Polis-Signature header for unauthenticated client")
+	}
+	if req.Header.Get("X-Polis-Timestamp") != "" {
+		t.Error("Expected no X-Polis-Timestamp header for unauthenticated client")
+	}
+}
+
+func TestAddAuthHeaders_WithAuth(t *testing.T) {
+	// Generate a real keypair for this test
+	privKey, _, err := generateTestKeypair()
+	if err != nil {
+		t.Fatalf("Failed to generate keypair: %v", err)
+	}
+
+	client := NewAuthenticatedClient("https://ds.example.com", "key123", "alice.com", privKey)
+
+	req, _ := http.NewRequest("GET", "https://ds.example.com/test", nil)
+	if err := client.addAuthHeaders(req); err != nil {
+		t.Fatalf("addAuthHeaders failed: %v", err)
+	}
+
+	domain := req.Header.Get("X-Polis-Domain")
+	signature := req.Header.Get("X-Polis-Signature")
+	timestamp := req.Header.Get("X-Polis-Timestamp")
+
+	if domain != "alice.com" {
+		t.Errorf("Expected X-Polis-Domain=alice.com, got %s", domain)
+	}
+	if signature == "" {
+		t.Error("Expected non-empty X-Polis-Signature")
+	}
+	if timestamp == "" {
+		t.Error("Expected non-empty X-Polis-Timestamp")
+	}
+
+	// Verify signature is in SSH format
+	if len(signature) < 20 || signature[:29] != "-----BEGIN SSH SIGNATURE-----" {
+		t.Errorf("Expected SSH signature format, got: %s...", signature[:min(40, len(signature))])
+	}
+}
+
+func TestQueryRelationships_AuthenticatedSendsHeaders(t *testing.T) {
+	privKey, _, err := generateTestKeypair()
+	if err != nil {
+		t.Fatalf("Failed to generate keypair: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify auth headers are present
+		domain := r.Header.Get("X-Polis-Domain")
+		signature := r.Header.Get("X-Polis-Signature")
+		timestamp := r.Header.Get("X-Polis-Timestamp")
+
+		if domain != "alice.com" {
+			t.Errorf("Expected X-Polis-Domain=alice.com, got %s", domain)
+		}
+		if signature == "" {
+			t.Error("Expected X-Polis-Signature to be present")
+		}
+		if timestamp == "" {
+			t.Error("Expected X-Polis-Timestamp to be present")
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"count":   0,
+			"records": []interface{}{},
+		})
+	}))
+	defer server.Close()
+
+	client := NewAuthenticatedClient(server.URL, "test-key", "alice.com", privKey)
+	_, err = client.QueryRelationships("polis.blessing", map[string]string{"status": "pending"})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+}
+
+func TestQueryContent_AuthenticatedSendsHeaders(t *testing.T) {
+	privKey, _, err := generateTestKeypair()
+	if err != nil {
+		t.Fatalf("Failed to generate keypair: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify auth headers are present
+		if r.Header.Get("X-Polis-Domain") != "alice.com" {
+			t.Errorf("Expected X-Polis-Domain=alice.com, got %s", r.Header.Get("X-Polis-Domain"))
+		}
+		if r.Header.Get("X-Polis-Signature") == "" {
+			t.Error("Expected X-Polis-Signature to be present")
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"count":   0,
+			"records": []interface{}{},
+		})
+	}))
+	defer server.Close()
+
+	client := NewAuthenticatedClient(server.URL, "test-key", "alice.com", privKey)
+	_, err = client.QueryContent("polis.comment", map[string]string{"actor": "bob.com"})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+}
+
+func TestStreamQuery_AuthenticatedSendsHeaders(t *testing.T) {
+	privKey, _, err := generateTestKeypair()
+	if err != nil {
+		t.Fatalf("Failed to generate keypair: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Polis-Domain") != "alice.com" {
+			t.Errorf("Expected X-Polis-Domain=alice.com, got %s", r.Header.Get("X-Polis-Domain"))
+		}
+		if r.Header.Get("X-Polis-Signature") == "" {
+			t.Error("Expected X-Polis-Signature to be present")
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"events":   []interface{}{},
+			"cursor":   "0",
+			"has_more": false,
+		})
+	}))
+	defer server.Close()
+
+	client := NewAuthenticatedClient(server.URL, "test-key", "alice.com", privKey)
+	_, err = client.StreamQuery("0", 100, "", "", "alice.com")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+}
+
+func TestMakeQueryAuthCanonicalJSON(t *testing.T) {
+	payload, err := MakeQueryAuthCanonicalJSON("alice.com", "2026-01-15T12:00:00Z")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	expected := `{"action":"query","domain":"alice.com","timestamp":"2026-01-15T12:00:00Z"}`
+	if string(payload) != expected {
+		t.Errorf("Canonical payload mismatch.\nExpected: %s\nGot:      %s", expected, string(payload))
+	}
+}
+
+func TestMakeQueryAuthCanonicalJSON_FieldOrder(t *testing.T) {
+	// Verify field order is consistent: action, domain, timestamp
+	payload, _ := MakeQueryAuthCanonicalJSON("bob.com", "2026-02-13T10:00:00Z")
+
+	var parsed map[string]interface{}
+	json.Unmarshal(payload, &parsed)
+
+	if _, ok := parsed["action"]; !ok {
+		t.Error("Expected 'action' field in canonical payload")
+	}
+	if _, ok := parsed["domain"]; !ok {
+		t.Error("Expected 'domain' field in canonical payload")
+	}
+	if _, ok := parsed["timestamp"]; !ok {
+		t.Error("Expected 'timestamp' field in canonical payload")
+	}
+	if parsed["action"] != "query" {
+		t.Errorf("Expected action=query, got %v", parsed["action"])
+	}
+}
+
+// generateTestKeypair creates a real Ed25519 keypair for testing.
+func generateTestKeypair() ([]byte, []byte, error) {
+	return signing.GenerateKeypair()
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// ============================================================================
+// Stream Tests
+// ============================================================================
 
 func TestStreamQuery_WithTargetFilter(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

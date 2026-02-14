@@ -35,6 +35,7 @@ type RenderStats struct {
 	CommentsRendered int
 	CommentsSkipped  int
 	IndexGenerated   bool
+	ArchiveGenerated bool
 }
 
 // NewPageRenderer creates a new page renderer.
@@ -200,11 +201,19 @@ func (r *PageRenderer) RenderIndex() error {
 	ctx.Posts = posts
 	ctx.Comments = comments
 
-	// Set recent posts (first 3)
-	if len(posts) > 3 {
-		ctx.RecentPosts = posts[:3]
+	// Set recent posts (first 10)
+	if len(posts) > 10 {
+		ctx.RecentPosts = posts[:10]
+		ctx.ViewAllPostsLink = fmt.Sprintf(`<a href="posts/" class="view-all">View all %d posts &rarr;</a>`, len(posts))
 	} else {
 		ctx.RecentPosts = posts
+	}
+
+	// Set recent comments (first 10)
+	if len(comments) > 10 {
+		ctx.RecentComments = comments[:10]
+	} else {
+		ctx.RecentComments = comments
 	}
 
 	// Render template
@@ -217,6 +226,50 @@ func (r *PageRenderer) RenderIndex() error {
 	indexPath := filepath.Join(r.config.DataDir, "index.html")
 	if err := os.WriteFile(indexPath, []byte(rendered), 0644); err != nil {
 		return fmt.Errorf("failed to write index.html: %w", err)
+	}
+
+	return nil
+}
+
+// RenderArchive generates the posts/index.html archive page.
+// No-ops silently if the theme doesn't have a posts.html template.
+func (r *PageRenderer) RenderArchive() error {
+	if r.templates.Archive == "" {
+		return nil
+	}
+
+	// Load posts from public.jsonl
+	posts, _, err := r.loadPublicIndex()
+	if err != nil {
+		return fmt.Errorf("failed to load public index: %w", err)
+	}
+
+	// Build render context with all posts (unlimited)
+	ctx := template.NewRenderContext()
+	ctx.SiteURL = r.config.BaseURL
+	ctx.SiteTitle = r.getSiteTitle()
+	ctx.CSSPath = "../styles.css"
+	ctx.HomePath = "../index.html"
+	ctx.AuthorName = r.getAuthorName()
+	ctx.AuthorURL = r.config.BaseURL
+	ctx.PostCount = len(posts)
+	ctx.Posts = posts
+
+	// Render template
+	rendered, err := r.engine.Render(r.templates.Archive, ctx)
+	if err != nil {
+		return fmt.Errorf("failed to render archive template: %w", err)
+	}
+
+	// Write output to posts/index.html
+	archiveDir := filepath.Join(r.config.DataDir, "posts")
+	if err := os.MkdirAll(archiveDir, 0755); err != nil {
+		return fmt.Errorf("failed to create posts directory: %w", err)
+	}
+
+	archivePath := filepath.Join(archiveDir, "index.html")
+	if err := os.WriteFile(archivePath, []byte(rendered), 0644); err != nil {
+		return fmt.Errorf("failed to write posts/index.html: %w", err)
 	}
 
 	return nil
@@ -300,6 +353,14 @@ func (r *PageRenderer) RenderAll(force bool) (*RenderStats, error) {
 		return nil, fmt.Errorf("failed to render index: %w", err)
 	}
 	stats.IndexGenerated = true
+
+	// Generate archive page
+	if err := r.RenderArchive(); err != nil {
+		return nil, fmt.Errorf("failed to render archive: %w", err)
+	}
+	if r.templates.Archive != "" {
+		stats.ArchiveGenerated = true
+	}
 
 	return stats, nil
 }

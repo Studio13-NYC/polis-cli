@@ -799,6 +799,23 @@ button:focus-visible,
 }
 
 /* ============================================
+   VIEW ALL LINK
+   ============================================ */
+
+.view-all {
+    display: block;
+    margin-top: 1rem;
+    font-size: 0.85rem;
+    color: var(--color-text-muted);
+    text-decoration: none;
+    transition: color 0.15s;
+}
+
+.view-all:hover {
+    color: var(--color-lavender);
+}
+
+/* ============================================
    RESPONSIVE
    ============================================ */
 

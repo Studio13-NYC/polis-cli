@@ -1,8 +1,10 @@
 package notification
 
 import (
+	"fmt"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestStateFile(t *testing.T) {
@@ -213,6 +215,112 @@ func TestListPaginated(t *testing.T) {
 	items, _, _ = mgr.ListPaginated(100, 10, true)
 	if len(items) != 0 {
 		t.Errorf("Expected 0 items for large offset, got %d", len(items))
+	}
+}
+
+func TestPrune_MaxItems(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr := NewManager(tmpDir, "test.supabase.co")
+
+	// Append 10 entries
+	var entries []StateEntry
+	for i := 0; i < 10; i++ {
+		entries = append(entries, StateEntry{
+			ID:        fmt.Sprintf("n%d", i),
+			RuleID:    "test",
+			Actor:     "a",
+			Icon:      "i",
+			Message:   "m",
+			EventIDs:  []int{i},
+			CreatedAt: fmt.Sprintf("2025-01-15T10:%02d:00Z", i),
+		})
+	}
+	mgr.Append(entries)
+
+	// Prune to 5
+	removed, err := mgr.Prune(PruneConfig{MaxItems: 5})
+	if err != nil {
+		t.Fatalf("Prune failed: %v", err)
+	}
+	if removed != 5 {
+		t.Errorf("Expected 5 removed, got %d", removed)
+	}
+
+	remaining, _ := mgr.List()
+	if len(remaining) != 5 {
+		t.Fatalf("Expected 5 remaining, got %d", len(remaining))
+	}
+	// Newest 5 should remain (n5..n9)
+	if remaining[0].ID != "n5" {
+		t.Errorf("Expected n5 first, got %s", remaining[0].ID)
+	}
+	if remaining[4].ID != "n9" {
+		t.Errorf("Expected n9 last, got %s", remaining[4].ID)
+	}
+}
+
+func TestPrune_MaxAgeDays(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr := NewManager(tmpDir, "test.supabase.co")
+
+	now := time.Now().UTC()
+	entries := []StateEntry{
+		{ID: "old1", RuleID: "test", Actor: "a", Icon: "i", Message: "m", EventIDs: []int{1},
+			CreatedAt: now.AddDate(0, 0, -120).Format("2006-01-02T15:04:05Z")},
+		{ID: "old2", RuleID: "test", Actor: "a", Icon: "i", Message: "m", EventIDs: []int{2},
+			CreatedAt: now.AddDate(0, 0, -100).Format("2006-01-02T15:04:05Z")},
+		{ID: "recent1", RuleID: "test", Actor: "a", Icon: "i", Message: "m", EventIDs: []int{3},
+			CreatedAt: now.AddDate(0, 0, -30).Format("2006-01-02T15:04:05Z")},
+		{ID: "recent2", RuleID: "test", Actor: "a", Icon: "i", Message: "m", EventIDs: []int{4},
+			CreatedAt: now.AddDate(0, 0, -1).Format("2006-01-02T15:04:05Z")},
+	}
+	mgr.Append(entries)
+
+	removed, err := mgr.Prune(PruneConfig{MaxAgeDays: 90})
+	if err != nil {
+		t.Fatalf("Prune failed: %v", err)
+	}
+	if removed != 2 {
+		t.Errorf("Expected 2 removed, got %d", removed)
+	}
+
+	remaining, _ := mgr.List()
+	if len(remaining) != 2 {
+		t.Fatalf("Expected 2 remaining, got %d", len(remaining))
+	}
+	if remaining[0].ID != "recent1" {
+		t.Errorf("Expected recent1 first, got %s", remaining[0].ID)
+	}
+}
+
+func TestPrune_NoChanges(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr := NewManager(tmpDir, "test.supabase.co")
+
+	mgr.Append([]StateEntry{
+		{ID: "n1", RuleID: "test", Actor: "a", Icon: "i", Message: "m", EventIDs: []int{1},
+			CreatedAt: time.Now().UTC().Format("2006-01-02T15:04:05Z")},
+	})
+
+	removed, err := mgr.Prune(PruneConfig{MaxItems: 500, MaxAgeDays: 90})
+	if err != nil {
+		t.Fatalf("Prune failed: %v", err)
+	}
+	if removed != 0 {
+		t.Errorf("Expected 0 removed, got %d", removed)
+	}
+}
+
+func TestPrune_Empty(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr := NewManager(tmpDir, "test.supabase.co")
+
+	removed, err := mgr.Prune(DefaultPruneConfig())
+	if err != nil {
+		t.Fatalf("Prune failed: %v", err)
+	}
+	if removed != 0 {
+		t.Errorf("Expected 0 removed, got %d", removed)
 	}
 }
 

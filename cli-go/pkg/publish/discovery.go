@@ -13,17 +13,40 @@ import (
 // Discovery service configuration. Set by the calling application
 // (CLI or webapp) during initialization. If any are empty, registration
 // is silently skipped.
+//
+// For multi-tenant use (e.g., hosted service), pass a *DiscoveryConfig
+// to RegisterPost/PublishPost/RepublishPost instead of using these globals.
 var (
 	DiscoveryURL string
 	DiscoveryKey string
 	BaseURL      string
 )
 
+// DiscoveryConfig holds per-tenant discovery service configuration.
+// When passed to RegisterPost, PublishPost, or RepublishPost, it overrides
+// the package-level globals, enabling safe multi-tenant operation.
+type DiscoveryConfig struct {
+	DiscoveryURL string
+	DiscoveryKey string
+	BaseURL      string
+}
+
+// resolveDiscoveryConfig returns the effective config: explicit if provided,
+// otherwise falls back to package-level globals.
+func resolveDiscoveryConfig(cfg *DiscoveryConfig) (dsURL, dsKey, baseURL string) {
+	if cfg != nil {
+		return cfg.DiscoveryURL, cfg.DiscoveryKey, cfg.BaseURL
+	}
+	return DiscoveryURL, DiscoveryKey, BaseURL
+}
+
 // RegisterPost registers a published post with the discovery service.
 // Called automatically by PublishPost/RepublishPost when discovery is configured.
 // Returns nil if discovery is not configured (silent skip) or on success.
-func RegisterPost(dataDir string, result *PublishResult, privateKey []byte) error {
-	if DiscoveryURL == "" || DiscoveryKey == "" || BaseURL == "" {
+// If cfg is nil, falls back to package-level globals.
+func RegisterPost(dataDir string, result *PublishResult, privateKey []byte, cfg *DiscoveryConfig) error {
+	dsURL, dsKey, baseURL := resolveDiscoveryConfig(cfg)
+	if dsURL == "" || dsKey == "" || baseURL == "" {
 		return nil
 	}
 
@@ -37,7 +60,7 @@ func RegisterPost(dataDir string, result *PublishResult, privateKey []byte) erro
 	}
 
 	// Build post URL from base URL + path
-	postURL := strings.TrimRight(BaseURL, "/") + "/" + result.Path
+	postURL := strings.TrimRight(baseURL, "/") + "/" + result.Path
 
 	now := time.Now().UTC().Format("2006-01-02T15:04:05Z")
 	metadata := map[string]interface{}{
@@ -59,7 +82,7 @@ func RegisterPost(dataDir string, result *PublishResult, privateKey []byte) erro
 		return fmt.Errorf("sign: %w", err)
 	}
 
-	client := discovery.NewClient(DiscoveryURL, DiscoveryKey)
+	client := discovery.NewClient(dsURL, dsKey)
 	req := &discovery.ContentRegisterRequest{
 		Type:      "polis.post",
 		URL:       postURL,

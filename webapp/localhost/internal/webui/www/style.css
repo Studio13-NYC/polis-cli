@@ -407,6 +407,16 @@ button.success:hover {
     font-size: 0.85rem;
 }
 
+.domain-display a {
+    color: var(--accent-color);
+    text-decoration: none;
+}
+
+.domain-display a:hover {
+    color: var(--accent-hover);
+    text-decoration: underline;
+}
+
 .notification-bell {
     background: none;
     border: none;
@@ -549,6 +559,105 @@ button.success:hover {
     margin-top: auto;
     padding: 1rem 0;
     border-top: 1px solid var(--border-color);
+}
+
+/* Write CTA in sidebar */
+.sidebar-write-cta {
+    padding: 0 0.5rem 0.5rem;
+}
+
+.write-cta-btn {
+    width: 100%;
+    padding: 0.6rem 1rem;
+    background: var(--accent-color);
+    color: var(--bg-color);
+    border: none;
+    border-radius: 6px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+    text-align: center;
+    transition: background 0.15s;
+}
+
+.write-cta-btn:hover {
+    background: var(--accent-hover);
+    box-shadow: 0 0 15px var(--accent-glow);
+}
+
+/* Filter Tabs (used in blessing requests view) */
+.filter-tabs {
+    display: flex;
+    gap: 0;
+    padding: 0 2rem;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.filter-tab {
+    padding: 0.6rem 1rem;
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s;
+}
+
+.filter-tab:hover {
+    color: var(--text-color);
+}
+
+.filter-tab.active {
+    color: var(--accent-color);
+    border-bottom-color: var(--accent-color);
+}
+
+/* Welcome Panel */
+.welcome-panel {
+    padding: 1.5rem 2rem;
+    border-bottom: 1px solid var(--border-color);
+    background: var(--bg-light);
+}
+
+.welcome-content h3 {
+    margin: 0 0 0.5rem;
+    font-size: 1.1rem;
+    color: var(--text-color);
+}
+
+.welcome-content a {
+    color: var(--accent-color);
+    text-decoration: none;
+}
+
+.welcome-content a:hover {
+    color: var(--accent-hover);
+    text-decoration: underline;
+}
+
+.welcome-content p {
+    margin: 0 0 1rem;
+    color: var(--text-muted);
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+
+.welcome-actions {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+}
+
+.welcome-actions .secondary {
+    color: var(--text-muted);
+    text-decoration: none;
+    font-size: 0.85rem;
+    padding: 0.5rem 1rem;
+}
+
+.welcome-actions .secondary:hover {
+    color: var(--text-color);
 }
 
 /* Content Area */
@@ -701,8 +810,53 @@ button.success:hover {
     margin-bottom: 1.5rem;
 }
 
+.empty-state a {
+    color: var(--accent-color);
+}
+
+.empty-state a:hover {
+    color: var(--accent-hover);
+}
+
 .empty-state button {
     padding: 0.625rem 1.25rem;
+}
+
+.empty-state .whats-new {
+    margin-top: 1.5rem;
+    text-align: left;
+    max-width: 420px;
+    margin-left: auto;
+    margin-right: auto;
+}
+
+.empty-state .whats-new summary {
+    cursor: pointer;
+    color: var(--accent-color);
+    font-size: 0.8rem;
+    text-align: center;
+}
+
+.empty-state .whats-new summary:hover {
+    color: var(--accent-hover);
+}
+
+.empty-state .whats-new-body {
+    margin-top: 0.75rem;
+    padding: 1rem;
+    border-left: 2px solid var(--accent-dim);
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    line-height: 1.6;
+}
+
+.empty-state .whats-new-body p {
+    margin-bottom: 0.5rem;
+    font-size: 0.8rem;
+}
+
+.empty-state .whats-new-body p:last-child {
+    margin-bottom: 0;
 }
 
 /* Comment Items */
@@ -1463,6 +1617,24 @@ button.success:hover {
     color: var(--accent-color);
 }
 
+.toast.suggestion {
+    border-left-color: var(--cyan);
+}
+
+.toast.suggestion .toast-icon {
+    background: rgba(0, 212, 255, 0.2);
+    color: var(--cyan);
+}
+
+.suggestion-content a {
+    color: var(--accent-color);
+    text-decoration: none;
+}
+
+.suggestion-content a:hover {
+    color: var(--cyan);
+}
+
 .toast-message {
     flex: 1;
     font-size: 0.85rem;
@@ -1541,6 +1713,29 @@ textarea:focus-visible,
 [tabindex]:focus-visible {
     outline: 2px solid var(--accent-color);
     outline-offset: 2px;
+}
+
+/* Suggested Authors */
+.suggested-author-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.suggested-by {
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    margin-top: 2px;
+}
+
+.suggested-actions {
+    flex-shrink: 0;
+    margin-left: 1rem;
+}
+
+.suggested-actions button.small {
+    padding: 0.3rem 0.8rem;
+    font-size: 0.75rem;
 }
 
 /* Responsive */
@@ -2845,657 +3040,6 @@ textarea:focus-visible,
     background: rgba(217, 112, 84, 0.15);
     color: var(--salmon);
 }
-
-/* ========================================
-   Browser Mode Styles
-   ======================================== */
-
-/* Mode Toggle in Header */
-.mode-toggle {
-    display: flex;
-    gap: 2px;
-    background: var(--bg-light);
-    border: 1px solid var(--border-color);
-    border-radius: 6px;
-    padding: 2px;
-    margin: 0 1rem;
-}
-
-.mode-btn {
-    padding: 0.4rem 0.6rem;
-    font-size: 1rem;
-    background: transparent;
-    border: none;
-    border-radius: 4px;
-    color: var(--text-muted);
-    cursor: pointer;
-    transition: all 0.15s;
-    line-height: 1;
-}
-
-.mode-btn:hover {
-    color: var(--text-color);
-    background: var(--surface-hover);
-}
-
-.mode-btn.active {
-    background: var(--accent-color);
-    color: var(--bg-color);
-}
-
-.mode-btn.active:hover {
-    background: var(--accent-hover);
-}
-
-/* Browser Container */
-.browser-container {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-    background: var(--bg-color);
-}
-
-/* Browser Navigation Bar */
-.browser-nav {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0.5rem 1rem;
-    background: var(--surface-color);
-    border-bottom: 1px solid var(--border-color);
-    flex-shrink: 0;
-}
-
-.browser-nav-btn {
-    padding: 0.5rem 0.75rem;
-    font-size: 1rem;
-    background: var(--bg-light);
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
-    color: var(--text-soft);
-    cursor: pointer;
-    transition: all 0.15s;
-    line-height: 1;
-}
-
-.browser-nav-btn:hover:not(:disabled) {
-    background: var(--surface-hover);
-    color: var(--text-color);
-    border-color: var(--accent-color);
-}
-
-.browser-nav-btn:disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
-}
-
-.browser-url {
-    flex: 1;
-    padding: 0.5rem 0.75rem;
-    font-family: var(--font-mono);
-    font-size: 0.85rem;
-    background: var(--bg-light);
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
-    color: var(--text-color);
-    outline: none;
-}
-
-.browser-url:focus {
-    border-color: var(--accent-color);
-}
-
-/* Browser Panes */
-.browser-panes {
-    display: flex;
-    flex: 1;
-    overflow: hidden;
-}
-
-.browser-code-pane,
-.browser-preview-pane {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-}
-
-.browser-preview-pane {
-    border-right: 1px solid var(--border-color);
-}
-
-.browser-markdown-display {
-    flex: 1;
-    padding: 1rem;
-    font-family: var(--font-mono);
-    font-size: 0.9rem;
-    line-height: 1.65;
-    background: var(--bg-light);
-    color: var(--text-soft);
-    overflow-y: auto;
-    white-space: pre-wrap;
-    word-wrap: break-word;
-}
-
-.browser-markdown-edit {
-    flex: 1;
-    width: 100%;
-    padding: 1rem;
-    font-family: var(--font-mono);
-    font-size: 0.9rem;
-    line-height: 1.65;
-    background: var(--bg-light);
-    color: var(--text-soft);
-    border: none;
-    outline: none;
-    resize: none;
-}
-
-.browser-markdown-edit::placeholder {
-    color: var(--text-muted);
-}
-
-.browser-preview {
-    flex: 1;
-    padding: 1.5rem;
-    overflow-y: auto;
-    background: var(--preview-bg);
-    color: var(--preview-text-soft);
-}
-
-.browser-preview .empty-state {
-    color: var(--preview-text-muted);
-    text-align: center;
-    padding: 2rem;
-}
-
-/* Browser preview - paper-like light theme for content readability */
-.browser-preview h1,
-.browser-preview h2,
-.browser-preview h3,
-.browser-preview h4,
-.browser-preview h5,
-.browser-preview h6 {
-    margin-top: 1.5em;
-    margin-bottom: 0.5em;
-    line-height: 1.3;
-    color: var(--preview-accent);
-}
-
-.browser-preview h1:first-child,
-.browser-preview h2:first-child,
-.browser-preview h3:first-child {
-    margin-top: 0;
-}
-
-.browser-preview h1 { font-size: 1.75rem; }
-.browser-preview h2 { font-size: 1.35rem; }
-.browser-preview h3 { font-size: 1.15rem; }
-
-.browser-preview p {
-    margin-bottom: 1em;
-}
-
-.browser-preview strong,
-.browser-preview b {
-    color: var(--preview-text);
-    font-weight: 600;
-}
-
-.browser-preview em {
-    color: var(--preview-accent-soft);
-    font-style: italic;
-}
-
-.browser-preview ul,
-.browser-preview ol {
-    margin-bottom: 1em;
-    padding-left: 1.5em;
-}
-
-.browser-preview li {
-    margin-bottom: 0.25em;
-}
-
-.browser-preview blockquote {
-    border-left: 3px solid var(--preview-quote-border);
-    padding-left: 1em;
-    margin: 1em 0;
-    color: var(--preview-text-muted);
-}
-
-.browser-preview code {
-    background: var(--preview-code-bg);
-    padding: 0.15rem 0.35rem;
-    border-radius: 3px;
-    font-size: 0.9em;
-    color: var(--preview-text);
-}
-
-.browser-preview pre {
-    background: var(--preview-code-bg);
-    padding: 1em;
-    border-radius: 4px;
-    overflow-x: auto;
-    margin: 1em 0;
-    color: var(--preview-text);
-}
-
-.browser-preview pre code {
-    background: none;
-    padding: 0;
-}
-
-.browser-preview img {
-    max-width: 100%;
-    height: auto;
-}
-
-.browser-preview hr {
-    border: none;
-    border-top: 1px solid var(--preview-border);
-    margin: 2em 0;
-}
-
-/* Browser status badge */
-.browser-status-badge {
-    font-size: 0.7rem;
-    padding: 0.15rem 0.5rem;
-    border-radius: 3px;
-    margin-left: 0.5rem;
-    font-weight: 500;
-}
-
-.browser-status-badge.read-only {
-    background: var(--bg-light);
-    color: var(--text-muted);
-}
-
-.browser-status-badge.editable {
-    background: rgba(138, 168, 88, 0.15);
-    color: var(--green);
-}
-
-.browser-status-badge.editing {
-    background: rgba(95, 175, 175, 0.15);
-    color: var(--accent-color);
-}
-
-/* Browser Actions Footer */
-.browser-actions {
-    display: flex;
-    align-items: center;
-    padding: 0.75rem 1rem;
-    background: var(--surface-color);
-    border-top: 1px solid var(--border-color);
-    flex-shrink: 0;
-}
-
-.browser-actions-spacer {
-    flex: 1;
-}
-
-.browser-actions button {
-    margin-left: 0.5rem;
-}
-
-.browser-actions button:first-child {
-    margin-left: 0;
-}
-
-/* Browser Home Page Styling */
-.browser-home-page {
-    padding: 2rem;
-}
-
-.browser-home-page h2 {
-    font-size: 1.25rem;
-    color: var(--salmon);
-    margin-bottom: 1.5rem;
-}
-
-.browser-home-list {
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
-}
-
-.browser-home-item {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 0.75rem 1rem;
-    background: var(--surface-color);
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
-    cursor: pointer;
-    transition: all 0.15s;
-}
-
-.browser-home-item:hover {
-    background: var(--surface-hover);
-    border-color: var(--accent-color);
-}
-
-.browser-home-item .item-title {
-    color: var(--text-color);
-    font-weight: 500;
-}
-
-.browser-home-item:hover .item-title {
-    color: var(--lavender);
-}
-
-.browser-home-item .item-date {
-    color: var(--gold);
-    font-size: 0.8rem;
-}
-
-.browser-home-page pre.browser-code-block {
-    background: var(--bg-light);
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
-    padding: 0.75rem 1rem;
-    font-family: var(--font-mono);
-    font-size: 0.9rem;
-    color: var(--gold);
-    margin: 1rem 0;
-    overflow-x: auto;
-}
-
-.browser-home-page ul {
-    margin: 1rem 0;
-    padding-left: 1.5rem;
-}
-
-.browser-home-page li {
-    margin-bottom: 0.5rem;
-    color: var(--text-soft);
-}
-
-/* Links in browser preview */
-.browser-preview a {
-    color: var(--preview-link);
-    text-decoration: none;
-    cursor: pointer;
-}
-
-.browser-preview a:hover {
-    color: var(--preview-link-hover);
-    text-decoration: underline;
-}
-
-/* ========================================
-   Rendered Site Content Styles
-   Styling for polis render output in browser mode
-   ======================================== */
-
-/* Post Items - from polis render templates */
-.browser-preview a.post-item {
-    display: flex;
-    align-items: baseline;
-    gap: 1rem;
-    padding: 0.75rem 1rem;
-    margin-bottom: 0.5rem;
-    background: var(--preview-bg-elevated);
-    border: 1px solid var(--preview-border);
-    border-radius: 4px;
-    text-decoration: none;
-    transition: all 0.15s;
-}
-
-.browser-preview a.post-item:hover {
-    background: var(--preview-bg-elevated);
-    border-color: var(--preview-border-hover);
-    text-decoration: none;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-}
-
-.browser-preview .post-item .post-date {
-    color: var(--preview-text-muted);
-    font-size: 0.85rem;
-    white-space: nowrap;
-    flex-shrink: 0;
-    min-width: 110px;
-}
-
-.browser-preview .post-item .post-title {
-    color: var(--preview-text);
-    font-weight: 500;
-    flex: 1;
-}
-
-.browser-preview a.post-item:hover .post-title {
-    color: var(--preview-link-hover);
-}
-
-.browser-preview .post-item .post-comments {
-    color: var(--preview-text-muted);
-    font-size: 0.8rem;
-    font-weight: 400;
-    margin-left: 0.5rem;
-}
-
-/* Comment Items - from polis render templates */
-.browser-preview a.comment-item {
-    display: grid;
-    grid-template-columns: auto 1fr;
-    grid-template-rows: auto auto;
-    gap: 0 1rem;
-    padding: 0.75rem 1rem;
-    margin-bottom: 0.5rem;
-    background: var(--preview-bg-elevated);
-    border: 1px solid var(--preview-border);
-    border-radius: 4px;
-    text-decoration: none;
-    transition: all 0.15s;
-}
-
-.browser-preview a.comment-item:hover {
-    background: var(--preview-bg-elevated);
-    border-color: var(--preview-border-hover);
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-    text-decoration: none;
-}
-
-/* Comment meta: spans both rows in first column */
-.browser-preview .comment-item .comment-meta {
-    display: contents;
-}
-
-/* Comment item layout: date on bottom row with preview */
-.browser-preview .comment-item .comment-date {
-    grid-column: 1;
-    grid-row: 2;
-    color: var(--preview-text-muted);
-    font-size: 0.85rem;
-    white-space: nowrap;
-}
-
-.browser-preview .comment-item .comment-author {
-    grid-column: 1;
-    grid-row: 1;
-    color: var(--preview-text-muted);
-    font-size: 0.8rem;
-    white-space: nowrap;
-}
-
-.browser-preview .comment-item .comment-preview {
-    grid-column: 2;
-    grid-row: 2;
-    color: var(--preview-text);
-    font-size: 0.9rem;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-/* Section headings in rendered content */
-.browser-preview h2 {
-    font-size: 1.25rem;
-    color: var(--preview-accent);
-    margin-top: 2rem;
-    margin-bottom: 1rem;
-}
-
-/* Footer in rendered content */
-.browser-preview .site-footer,
-.browser-preview footer {
-    margin-top: 3rem;
-    padding-top: 1.5rem;
-    border-top: 1px solid var(--preview-border);
-    text-align: center;
-}
-
-.browser-preview .footer-link {
-    color: var(--preview-link);
-    text-decoration: none;
-    font-weight: 600;
-    font-size: 0.9rem;
-}
-
-.browser-preview .footer-link:hover {
-    color: var(--preview-link-hover);
-    text-decoration: underline;
-}
-
-.browser-preview .footer-tagline {
-    display: block;
-    color: var(--preview-text-muted);
-    font-size: 0.8rem;
-    margin-top: 0.25rem;
-}
-
-/* Remote content display */
-.browser-remote-content {
-    padding: 2rem;
-    text-align: center;
-}
-
-.browser-remote-content .remote-notice {
-    font-size: 0.9rem;
-    color: var(--gold);
-    margin-bottom: 0.5rem;
-    font-weight: 500;
-}
-
-.browser-remote-content .remote-url {
-    font-family: var(--font-mono);
-    font-size: 0.85rem;
-    color: var(--text-muted);
-    word-break: break-all;
-    margin-bottom: 1rem;
-}
-
-.browser-remote-content .remote-url a {
-    color: var(--accent-color);
-}
-
-.browser-remote-content .remote-hint {
-    font-size: 0.85rem;
-    color: var(--text-muted);
-}
-
-.browser-remote-content.error .remote-notice {
-    color: var(--salmon);
-}
-
-.browser-remote-content .remote-error {
-    color: var(--salmon);
-    font-size: 0.85rem;
-    margin-bottom: 1rem;
-}
-
-/* Posts list section on index */
-.browser-preview .posts-list,
-.browser-preview .posts-section {
-    margin-top: 1.5rem;
-    margin-bottom: 2rem;
-}
-
-/* Site title spacing */
-.browser-preview .site-title,
-.browser-preview > h1:first-child {
-    margin-bottom: 1.5rem;
-}
-
-/* Section spacing in browser preview */
-.browser-preview section,
-.browser-preview .section {
-    margin-bottom: 2.5rem;
-}
-
-/* Blessed comments section on index */
-.browser-preview .blessed-comments-section {
-    margin-top: 3rem;
-    padding-top: 2rem;
-    border-top: 1px solid var(--preview-border);
-}
-
-.browser-preview .blessed-comments-section h2 {
-    margin-top: 0;
-}
-
-/* Post-specific comments section */
-.browser-preview .blessed-comments-section.post-comments {
-    margin-top: 3rem;
-    padding-top: 2rem;
-    border-top: 1px solid var(--preview-border);
-}
-
-.browser-preview .blessed-comments-section.post-comments h2 {
-    font-size: 1.1rem;
-}
-
-.browser-preview .blessed-comment-item {
-    display: flex;
-    align-items: flex-start;
-    gap: 1rem;
-    padding: 0.75rem 1rem;
-    margin-bottom: 0.5rem;
-    background: var(--preview-bg-elevated);
-    border: 1px solid var(--preview-border);
-    border-radius: 4px;
-    cursor: pointer;
-    transition: all 0.15s;
-}
-
-.browser-preview .blessed-comment-item:hover {
-    background: var(--preview-bg-elevated);
-    border-color: var(--preview-border-hover);
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-}
-
-/* Blessed comment: date and author stacked vertically */
-.browser-preview .blessed-comment-item .comment-date-author {
-    display: flex;
-    flex-direction: column;
-    flex-shrink: 0;
-    min-width: 130px;
-}
-
-.browser-preview .blessed-comment-item .comment-date {
-    color: var(--preview-text-muted);
-    font-size: 0.85rem;
-    white-space: nowrap;
-}
-
-.browser-preview .blessed-comment-item .comment-author {
-    color: var(--preview-text-muted);
-    font-size: 0.8rem;
-    white-space: nowrap;
-}
-
-.browser-preview .blessed-comment-item .comment-preview {
-    color: var(--preview-text);
-    font-size: 0.9rem;
-    flex: 1;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
 /* ========================================
    Snippet Edit Mode Styles
    ======================================== */
@@ -3639,66 +3183,6 @@ textarea:focus-visible,
     overflow-y: auto;
     white-space: pre-wrap;
     word-wrap: break-word;
-}
-
-/* Responsive browser mode */
-@media (max-width: 768px) {
-    .browser-panes {
-        flex-direction: column;
-    }
-
-    .browser-preview-pane {
-        border-right: none;
-        border-bottom: 1px solid var(--border-color);
-        height: 50%;
-    }
-
-    .browser-code-pane {
-        height: 50%;
-    }
-
-    .mode-toggle {
-        margin: 0 0.5rem;
-    }
-
-    .browser-nav {
-        flex-wrap: wrap;
-        gap: 0.35rem;
-    }
-
-    .browser-url {
-        order: 5;
-        flex-basis: 100%;
-    }
-
-    .browser-preview a.post-item {
-        flex-direction: column;
-        align-items: flex-start;
-        gap: 0.25rem;
-    }
-
-    .browser-preview .post-item .post-date {
-        min-width: auto;
-    }
-
-    .browser-preview a.comment-item,
-    .browser-preview .blessed-comment-item {
-        flex-direction: column;
-        align-items: flex-start;
-        gap: 0.5rem;
-    }
-
-    .browser-preview .comment-item .comment-meta,
-    .browser-preview .blessed-comment-item .comment-date-author {
-        flex-direction: row;
-        gap: 0.75rem;
-        min-width: auto;
-    }
-
-    .browser-preview .comment-item .comment-preview,
-    .browser-preview .blessed-comment-item .comment-preview {
-        white-space: normal;
-    }
 }
 
 /* Editor frontmatter display pane */
@@ -4542,4 +4026,83 @@ textarea:focus-visible,
 }
 .follow-suggestion button {
     font-size: 0.8rem;
+}
+
+/* ── Intent Result Overlay ────────────────────────────────────── */
+.intent-result-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    background: rgba(0, 0, 0, 0.7);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    animation: fade-in 0.2s ease-out;
+}
+@keyframes fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+.intent-result-card {
+    background: var(--surface-color);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    padding: 2.5rem;
+    max-width: 420px;
+    width: 90%;
+    text-align: center;
+}
+.intent-result-icon {
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    background: rgba(138, 168, 88, 0.15);
+    color: var(--green);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.4rem;
+    margin-bottom: 1rem;
+}
+.intent-result-title {
+    font-size: 1.1rem;
+    color: var(--text-color);
+    margin: 0 0 0.5rem;
+    font-weight: 600;
+}
+.intent-result-subtitle {
+    font-size: 0.85rem;
+    color: var(--text-soft);
+    margin: 0 0 1.5rem;
+    line-height: 1.5;
+}
+.intent-result-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+.intent-result-actions button {
+    width: 100%;
+    padding: 0.6rem 1rem;
+    border-radius: 6px;
+    font-size: 0.85rem;
+    cursor: pointer;
+    border: 1px solid var(--border-color);
+    transition: background 0.15s;
+}
+.intent-result-actions button.primary {
+    background: var(--accent-color);
+    color: var(--bg-color);
+    border-color: var(--accent-color);
+    font-weight: 600;
+}
+.intent-result-actions button.primary:hover {
+    background: var(--accent-hover);
+}
+.intent-result-actions button.secondary {
+    background: transparent;
+    color: var(--text-soft);
+}
+.intent-result-actions button.secondary:hover {
+    background: var(--surface-hover);
 }

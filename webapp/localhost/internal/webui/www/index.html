@@ -142,10 +142,6 @@
             <!-- Top Header -->
             <header class="top-header">
                 <h1>Polis</h1>
-                <div class="mode-toggle">
-                    <button id="list-mode-btn" class="mode-btn active hidden" data-mode="list" title="List Mode">☰</button>
-                    <button id="browser-mode-btn" class="mode-btn hidden" data-mode="browser" title="Browser Mode">◎</button>
-                </div>
                 <div class="header-right">
                     <span id="domain-display" class="domain-display"></span>
                     <button id="notification-bell" class="notification-bell" onclick="App.toggleNotifications()" title="Notifications">
@@ -176,7 +172,10 @@
 
                     <!-- My Site mode -->
                     <div id="sidebar-my-site">
-                        <div class="sidebar-section">
+                        <div class="sidebar-section sidebar-write-cta">
+                            <button class="nav-item write-cta-btn" onclick="App.newPost()">Write a post</button>
+                        </div>
+                        <div id="sidebar-section-posts" class="sidebar-section">
                             <div class="section-label">
                                 Posts
                                 <button class="section-add-btn" onclick="App.newPost()" title="New Post">+</button>
@@ -192,7 +191,7 @@
                                 </button>
                             </nav>
                         </div>
-                        <div class="sidebar-section">
+                        <div id="sidebar-section-comments" class="sidebar-section">
                             <div class="section-label">
                                 My Comments
                                 <button class="section-add-btn" onclick="App.newCommentDraft()" title="New Comment">+</button>
@@ -216,20 +215,16 @@
                                 </button>
                             </nav>
                         </div>
-                        <div class="sidebar-section">
+                        <div id="sidebar-section-on-my-posts" class="sidebar-section">
                             <div class="section-label">On My Posts</div>
                             <nav>
-                                <button class="nav-item" data-view="incoming-pending">
-                                    Pending
+                                <button class="nav-item" data-view="blessing-requests">
+                                    Blessing Requests
                                     <span id="incoming-pending-count" class="badge warning" style="display: none;">0</span>
-                                </button>
-                                <button class="nav-item" data-view="incoming-blessed">
-                                    Blessed
-                                    <span id="incoming-blessed-count" class="badge" style="display: none;">0</span>
                                 </button>
                             </nav>
                         </div>
-                        <div class="sidebar-section">
+                        <div id="sidebar-section-snippets" class="sidebar-section">
                             <div class="section-label">
                                 Snippets
                                 <button class="section-add-btn" onclick="App.newSnippet()" title="New Snippet">+</button>
@@ -257,7 +252,7 @@
 
                     <!-- Social mode -->
                     <div id="sidebar-social" class="hidden">
-                        <div class="sidebar-section">
+                        <div id="sidebar-section-discover" class="sidebar-section">
                             <div class="section-label">Discover</div>
                             <nav>
                                 <button class="nav-item" data-view="feed">
@@ -267,9 +262,12 @@
                                 <button class="nav-item" data-view="activity">
                                     Activity
                                 </button>
+                                <button class="nav-item" data-view="suggested-authors">
+                                    Suggested Authors
+                                </button>
                             </nav>
                         </div>
-                        <div class="sidebar-section">
+                        <div id="sidebar-section-authors" class="sidebar-section">
                             <div class="section-label">
                                 Authors
                                 <button class="section-add-btn" onclick="App.openFollowPanel()" title="Follow Author">+</button>
@@ -281,7 +279,7 @@
                                 </button>
                             </nav>
                         </div>
-                        <div class="sidebar-section">
+                        <div id="sidebar-section-stats" class="sidebar-section">
                             <div class="section-label">Stats</div>
                             <nav>
                                 <button class="nav-item" data-view="followers">
@@ -295,6 +293,9 @@
 
                 <!-- Content Area -->
                 <main class="content-area">
+                    <!-- Welcome Panel (lifecycle-aware) -->
+                    <div id="welcome-panel" class="welcome-panel hidden"></div>
+
                     <!-- Dynamic content header and body will be rendered by JS -->
                     <div class="content-header">
                         <h2 id="content-title">Published Posts</h2>
@@ -316,49 +317,6 @@
                 </main>
             </div>
 
-            <!-- Browser Container (shown in browser mode) -->
-            <div id="browser-container" class="browser-container hidden">
-                <!-- Navigation bar -->
-                <div class="browser-nav">
-                    <button id="browser-back" class="browser-nav-btn" title="Back" disabled>←</button>
-                    <button id="browser-forward" class="browser-nav-btn" title="Forward" disabled>→</button>
-                    <button id="browser-home" class="browser-nav-btn" title="Home">⌂</button>
-                    <input id="browser-url-input" class="browser-url" readonly placeholder="Navigate to content...">
-                    <button id="browser-settings" class="browser-nav-btn" title="Settings">⚙</button>
-                </div>
-
-                <!-- Split panes -->
-                <div class="browser-panes">
-                    <div class="browser-preview-pane">
-                        <div class="pane-header">
-                            <span>Preview</span>
-                            <div class="pane-header-spacer"></div>
-                            <button id="browser-snippet-edit" class="pane-toggle-btn" title="Toggle snippet editing mode">Snippets</button>
-                        </div>
-                        <div id="browser-preview-content" class="browser-preview"></div>
-                    </div>
-                    <div class="browser-code-pane">
-                        <div class="pane-header">
-                            <span id="browser-code-pane-label">Markdown</span>
-                            <span id="browser-snippet-parent-link" class="snippet-parent-link hidden"></span>
-                            <div class="pane-header-spacer"></div>
-                            <button id="includes-toggle" class="pane-toggle-btn hidden" title="View snippet includes">Includes</button>
-                            <button id="frontmatter-toggle" class="pane-toggle-btn" title="Toggle frontmatter visibility">Show FM</button>
-                            <button id="browser-edit-btn" class="pane-control-btn hidden" title="Edit">✎ <span>EDIT</span></button>
-                        </div>
-                        <div id="browser-markdown-display" class="browser-markdown-display"></div>
-                        <textarea id="browser-markdown-edit" class="browser-markdown-edit hidden" placeholder="Edit markdown content..."></textarea>
-                    </div>
-                </div>
-
-                <!-- Edit actions footer (hidden when not editing) -->
-                <div id="browser-actions" class="browser-actions hidden">
-                    <button id="browser-cancel" class="secondary">Cancel</button>
-                    <div class="browser-actions-spacer"></div>
-                    <button id="browser-save-draft" class="secondary">Save Draft</button>
-                    <button id="browser-publish" class="primary">Publish</button>
-                </div>
-            </div>
         </div>
 
         <!-- Editor Screen -->

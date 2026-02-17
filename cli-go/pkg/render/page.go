@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/vdibart/polis-cli/cli-go/pkg/following"
 	"github.com/vdibart/polis-cli/cli-go/pkg/metadata"
 	"github.com/vdibart/polis-cli/cli-go/pkg/template"
 	"github.com/vdibart/polis-cli/cli-go/pkg/theme"
@@ -131,6 +132,10 @@ func (r *PageRenderer) RenderFile(path string, fileType string, force bool) (str
 	ctx.AuthorName = r.getAuthorName()
 	ctx.AuthorURL = r.config.BaseURL
 
+	// Widget variables
+	ctx.AuthorDomain = r.getAuthorDomain()
+	ctx.PageType = fileType // "post" or "comment"
+
 	// Comment-specific fields
 	if fileType == "comment" {
 		ctx.InReplyToURL = fm["in_reply_to"]
@@ -200,6 +205,25 @@ func (r *PageRenderer) RenderIndex() error {
 	ctx.CommentCount = len(comments)
 	ctx.Posts = posts
 	ctx.Comments = comments
+	ctx.AuthorDomain = r.getAuthorDomain()
+	ctx.PageType = "index"
+
+	// Load following data (non-fatal if missing)
+	followPath := following.DefaultPath(r.config.DataDir)
+	followFile, err := following.Load(followPath)
+	if err == nil && followFile.Count() > 0 {
+		for _, entry := range followFile.All() {
+			domain := strings.TrimPrefix(entry.URL, "https://")
+			domain = strings.TrimPrefix(domain, "http://")
+			domain = strings.TrimSuffix(domain, "/")
+			ctx.Following = append(ctx.Following, template.FollowingData{
+				URL:        entry.URL,
+				Domain:     domain,
+				AuthorName: entry.AuthorName,
+				SiteTitle:  entry.SiteTitle,
+			})
+		}
+	}
 
 	// Set recent posts (first 10)
 	if len(posts) > 10 {
@@ -254,6 +278,8 @@ func (r *PageRenderer) RenderArchive() error {
 	ctx.AuthorURL = r.config.BaseURL
 	ctx.PostCount = len(posts)
 	ctx.Posts = posts
+	ctx.AuthorDomain = r.getAuthorDomain()
+	ctx.PageType = "index"
 
 	// Render template
 	rendered, err := r.engine.Render(r.templates.Archive, ctx)
@@ -513,6 +539,29 @@ func (r *PageRenderer) getAuthorName() string {
 	}
 
 	return wk.AuthorName
+}
+
+// getAuthorDomain returns the site domain from .well-known/polis.
+// Reads the "domain" field first, falls back to extracting domain from "base_url".
+func (r *PageRenderer) getAuthorDomain() string {
+	wkPath := filepath.Join(r.config.DataDir, ".well-known", "polis")
+	data, err := os.ReadFile(wkPath)
+	if err != nil {
+		return ""
+	}
+
+	var wk struct {
+		Domain  string `json:"domain"`
+		BaseURL string `json:"base_url"`
+	}
+	if err := json.Unmarshal(data, &wk); err != nil {
+		return ""
+	}
+
+	if wk.Domain != "" {
+		return wk.Domain
+	}
+	return extractDomain(wk.BaseURL)
 }
 
 // buildURL builds a full URL for a file path.

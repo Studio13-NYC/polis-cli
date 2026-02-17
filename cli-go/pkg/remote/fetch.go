@@ -28,11 +28,30 @@ func NewClient() *Client {
 type WellKnown struct {
 	Version    string `json:"version"`
 	Author     string `json:"author"`
-	Email      string `json:"email"`
+	Domain     string `json:"domain,omitempty"`
+	Email      string `json:"email,omitempty"`
 	PublicKey  string `json:"public_key"`
 	Created    string `json:"created"`
 	SiteTitle  string `json:"site_title,omitempty"`
+	BaseURL    string `json:"base_url,omitempty"`
 	Config     Config `json:"config,omitempty"`
+}
+
+// AuthorDomain returns the domain identity for this site.
+// Prefers the explicit Domain field, falls back to extracting from BaseURL.
+func (wk *WellKnown) AuthorDomain() string {
+	if wk.Domain != "" {
+		return wk.Domain
+	}
+	if wk.BaseURL != "" {
+		u := strings.TrimPrefix(wk.BaseURL, "https://")
+		u = strings.TrimPrefix(u, "http://")
+		if idx := strings.Index(u, "/"); idx >= 0 {
+			return u[:idx]
+		}
+		return u
+	}
+	return ""
 }
 
 // Config holds the configuration section from .well-known/polis.

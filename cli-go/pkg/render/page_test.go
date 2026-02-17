@@ -387,6 +387,120 @@ func TestRenderArchive_NoTemplate(t *testing.T) {
 	}
 }
 
+func TestRenderFile_AuthorDomainAndPageType(t *testing.T) {
+	tempDir := t.TempDir()
+	setupTestSite(t, tempDir)
+
+	// Override .well-known/polis with domain field
+	os.WriteFile(filepath.Join(tempDir, ".well-known", "polis"), []byte(`{
+		"base_url": "https://alice.polis.pub",
+		"site_title": "Test Site",
+		"author_name": "Test Author",
+		"domain": "alice.polis.pub"
+	}`), 0644)
+
+	// Update post template to include widget variables
+	themesDir := filepath.Join(tempDir, ".polis", "themes", "turbo")
+	postTmpl := `<!DOCTYPE html>
+<html>
+<head><title>{{title}}</title></head>
+<body>
+<div id="polis-widget" data-author="{{author_domain}}" data-page-type="{{page_type}}"></div>
+</body>
+</html>`
+	os.WriteFile(filepath.Join(themesDir, "post.html"), []byte(postTmpl), 0644)
+
+	postsDir := filepath.Join(tempDir, "posts")
+	os.MkdirAll(postsDir, 0755)
+	os.WriteFile(filepath.Join(postsDir, "test.md"), []byte("---\ntitle: Widget Test\npublished: 2026-01-15T12:00:00Z\n---\nHello"), 0644)
+
+	renderer, err := NewPageRenderer(PageConfig{
+		DataDir: tempDir,
+		BaseURL: "https://alice.polis.pub",
+	})
+	if err != nil {
+		t.Fatalf("NewPageRenderer failed: %v", err)
+	}
+
+	html, rendered, err := renderer.RenderFile("posts/test.md", "post", true)
+	if err != nil {
+		t.Fatalf("RenderFile failed: %v", err)
+	}
+	if !rendered {
+		t.Fatal("Expected file to be rendered")
+	}
+
+	if !strings.Contains(html, `data-author="alice.polis.pub"`) {
+		t.Errorf("Expected author_domain in rendered HTML, got: %s", html)
+	}
+	if !strings.Contains(html, `data-page-type="post"`) {
+		t.Errorf("Expected page_type=post in rendered HTML, got: %s", html)
+	}
+}
+
+func TestRenderFile_AuthorDomainFallsBackToBaseURL(t *testing.T) {
+	tempDir := t.TempDir()
+	setupTestSite(t, tempDir)
+
+	// .well-known/polis without domain field — should fall back to base_url extraction
+	os.WriteFile(filepath.Join(tempDir, ".well-known", "polis"), []byte(`{
+		"base_url": "https://bob.example.com",
+		"site_title": "Test Site",
+		"author_name": "Test Author"
+	}`), 0644)
+
+	// Template that exposes author_domain
+	themesDir := filepath.Join(tempDir, ".polis", "themes", "turbo")
+	postTmpl := `<div data-author="{{author_domain}}">{{title}}</div>`
+	os.WriteFile(filepath.Join(themesDir, "post.html"), []byte(postTmpl), 0644)
+
+	postsDir := filepath.Join(tempDir, "posts")
+	os.MkdirAll(postsDir, 0755)
+	os.WriteFile(filepath.Join(postsDir, "t.md"), []byte("---\ntitle: Test\n---\nContent"), 0644)
+
+	renderer, _ := NewPageRenderer(PageConfig{DataDir: tempDir, BaseURL: "https://bob.example.com"})
+
+	html, _, err := renderer.RenderFile("posts/t.md", "post", true)
+	if err != nil {
+		t.Fatalf("RenderFile failed: %v", err)
+	}
+
+	if !strings.Contains(html, `data-author="bob.example.com"`) {
+		t.Errorf("Expected author_domain extracted from base_url, got: %s", html)
+	}
+}
+
+func TestRenderIndex_PageTypeIsIndex(t *testing.T) {
+	tempDir := t.TempDir()
+	setupTestSite(t, tempDir)
+
+	// Update index template to include page_type
+	themesDir := filepath.Join(tempDir, ".polis", "themes", "turbo")
+	idxTmpl := `<!DOCTYPE html>
+<html>
+<head><title>{{site_title}}</title></head>
+<body>
+<div data-page-type="{{page_type}}">{{site_title}}</div>
+</body>
+</html>`
+	os.WriteFile(filepath.Join(themesDir, "index.html"), []byte(idxTmpl), 0644)
+
+	metadataDir := filepath.Join(tempDir, "metadata")
+	os.MkdirAll(metadataDir, 0755)
+	os.WriteFile(filepath.Join(metadataDir, "public.jsonl"), []byte(""), 0644)
+
+	renderer, _ := NewPageRenderer(PageConfig{DataDir: tempDir, BaseURL: "https://example.com"})
+	err := renderer.RenderIndex()
+	if err != nil {
+		t.Fatalf("RenderIndex failed: %v", err)
+	}
+
+	content, _ := os.ReadFile(filepath.Join(tempDir, "index.html"))
+	if !strings.Contains(string(content), `data-page-type="index"`) {
+		t.Errorf("Expected page_type=index in rendered index, got: %s", content)
+	}
+}
+
 // setupTestSite creates a minimal polis site structure for testing.
 func setupTestSite(t *testing.T, dir string) {
 	t.Helper()

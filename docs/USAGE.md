@@ -1,6 +1,6 @@
 # Polis CLI - Complete Usage Guide
 
-> This is the comprehensive command reference. For a quick introduction, see [README.md](README.md).
+> **Note:** This is the Bash CLI command reference. The Bash CLI is feature-frozen at v0.44.0. The **Go CLI** has identical commands, ships as a single binary with no external dependencies, and is the recommended choice for new users. For the webapp (local web interface), see [WEBAPP-USER-MANUAL.md](WEBAPP-USER-MANUAL.md).
 
 Command-line tool for managing decentralized social content with cryptographic signing and version control.
 
@@ -14,7 +14,20 @@ The Polis CLI enables authors to:
 - Request blessings from discovery services for authenticated comment discovery
 - Automate workflows with JSON mode for scripting and CI/CD integration
 
-## Installation
+## Go CLI
+
+The **Go CLI** is the recommended CLI for new users. It implements all commands listed below, ships as a single binary, and has **no external dependencies** (no jq, curl, OpenSSH, or pandoc required).
+
+- Primary command is `post` (the `publish` alias also works)
+- Same `--json` flag for machine-readable output
+- Same directory structure and file formats
+- Download pre-built binaries from the releases page, or build from source: `cd cli-go && go build -o polis ./cmd/polis`
+
+The command reference below applies to both CLIs — the commands, flags, and behavior are identical.
+
+## Installation (Bash CLI)
+
+> The sections below are specific to the **Bash CLI**. If you're using the Go CLI, you only need the single `polis` binary.
 
 ### Prerequisites
 
@@ -41,16 +54,16 @@ brew install pandoc  # Optional: for polis render
 
 ```bash
 # Option 1: Add to PATH (quick start)
-export PATH="/path/to/polis-cli/bin:$PATH"
+export PATH="/path/to/polis-cli/cli-bash:$PATH"
 
 # Option 2: Create symlink
-sudo ln -s /path/to/polis-cli/bin/polis /usr/local/bin/polis
+sudo ln -s /path/to/polis-cli/cli-bash/polis /usr/local/bin/polis
 
 # Verify installation
 polis --help
 ```
 
-### Option 3: Copy to your content repository (recommended)
+### Option 3: Copy to your content repository
 
 For production use, copy the CLI tools directly into your content repository. This keeps your site self-contained—CLI versions are locked to your content, and everything deploys together.
 
@@ -63,9 +76,8 @@ mkdir my-site && cd my-site
 git init
 
 # Copy CLI tools and themes
-cp ../polis-cli/bin/polis ./bin/
-cp ../polis-cli/bin/polis-tui ./bin/
-cp ../polis-cli/bin/polis-upgrade ./bin/
+cp ../polis-cli/cli-bash/polis ./bin/
+cp ../polis-cli/cli-bash/polis-upgrade ./bin/
 cp -r ../polis-cli/themes ./themes/
 
 # Initialize your site
@@ -77,7 +89,6 @@ cp -r ../polis-cli/themes ./themes/
 
 **What to copy:**
 - `bin/polis` — Main CLI
-- `bin/polis-tui` — Terminal UI (optional)
 - `bin/polis-upgrade` — Upgrade script (optional)
 - `themes/` — Theme templates (required for `polis init` and `polis render`)
 
@@ -92,6 +103,8 @@ cp -r ../polis-cli/themes ./themes/
 For a quick introduction, see the [README](../README.md). This guide covers detailed usage.
 
 ## Directory Structure
+
+> For a more detailed file structure reference including webapp-specific files, see [WEBAPP-USER-MANUAL.md §File Structure](WEBAPP-USER-MANUAL.md#file-structure).
 
 After running `polis init`, your directory will contain:
 
@@ -1340,7 +1353,7 @@ Always use `polis migrate <new-domain>` when changing domains - don't just edit 
 
 ## Terminal User Interface (polis-tui)
 
-For a menu-based interface with dashboard, git integration, and editor support, see [TUI.md](TUI.md).
+> **Deprecated** — The TUI is deprecated as of v0.46.0. Use the [webapp](WEBAPP-USER-MANUAL.md) instead for an interactive interface.
 
 ## Upgrading (polis-upgrade)
 
@@ -1416,8 +1429,9 @@ Run `polis rebuild` to regenerate `public.jsonl` from published files.
 ## Next Steps
 
 - Deploy your content to GitHub Pages, Netlify, or any static host
-- Read [SECURITY-MODEL.md](SECURITY-MODEL.md) for cryptographic details
+- Read [SECURITY-MODEL.md](SECURITY-MODEL.md) for the full cryptographic model and threat analysis
 - Customize your site with [TEMPLATING.md](TEMPLATING.md)
+- Try the [webapp](WEBAPP-USER-MANUAL.md) for a visual interface
 
 ## Support
 

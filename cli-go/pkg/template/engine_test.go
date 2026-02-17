@@ -521,6 +521,47 @@ func TestRecentCommentsSectionFewComments(t *testing.T) {
 	}
 }
 
+func TestAuthorDomainAndPageTypeSubstitution(t *testing.T) {
+	engine := New(Config{})
+	ctx := NewRenderContext()
+	ctx.AuthorDomain = "alice.polis.pub"
+	ctx.PageType = "post"
+
+	tmpl := `<div data-author="{{author_domain}}" data-page-type="{{page_type}}"></div>`
+
+	result, err := engine.Render(tmpl, ctx)
+	if err != nil {
+		t.Fatalf("Render failed: %v", err)
+	}
+
+	if !strings.Contains(result, `data-author="alice.polis.pub"`) {
+		t.Errorf("Expected author_domain substitution, got: %s", result)
+	}
+	if !strings.Contains(result, `data-page-type="post"`) {
+		t.Errorf("Expected page_type substitution, got: %s", result)
+	}
+}
+
+func TestAuthorDomainEmptyWhenUnset(t *testing.T) {
+	engine := New(Config{})
+	ctx := NewRenderContext()
+	// AuthorDomain and PageType not set — should substitute to empty strings
+
+	tmpl := `<div data-author="{{author_domain}}" data-page-type="{{page_type}}"></div>`
+
+	result, err := engine.Render(tmpl, ctx)
+	if err != nil {
+		t.Fatalf("Render failed: %v", err)
+	}
+
+	if !strings.Contains(result, `data-author=""`) {
+		t.Errorf("Expected empty author_domain, got: %s", result)
+	}
+	if !strings.Contains(result, `data-page-type=""`) {
+		t.Errorf("Expected empty page_type, got: %s", result)
+	}
+}
+
 func TestFormatHumanDate(t *testing.T) {
 	tests := []struct {
 		input    string
@@ -549,5 +590,47 @@ func TestTruncateSignature(t *testing.T) {
 
 	if !strings.HasSuffix(result, "...") {
 		t.Errorf("Expected truncated signature to end with ..., got: %s", result)
+	}
+}
+
+func TestFollowingSection(t *testing.T) {
+	engine := New(Config{})
+	ctx := NewRenderContext()
+	ctx.Following = []FollowingData{
+		{URL: "https://alice.polis.pub", Domain: "alice.polis.pub", AuthorName: "Alice", SiteTitle: "Alice's Blog"},
+		{URL: "https://bob.example.com", Domain: "bob.example.com", AuthorName: "", SiteTitle: ""},
+	}
+
+	tmpl := `{{#following}}<a href="{{url}}">{{author_name}}</a> {{/following}}`
+
+	result, err := engine.Render(tmpl, ctx)
+	if err != nil {
+		t.Fatalf("Render failed: %v", err)
+	}
+
+	if !strings.Contains(result, `<a href="https://alice.polis.pub">Alice</a>`) {
+		t.Errorf("Expected Alice link, got: %s", result)
+	}
+	// Bob has no author_name, should use domain as fallback
+	if !strings.Contains(result, `<a href="https://bob.example.com">bob.example.com</a>`) {
+		t.Errorf("Expected bob domain fallback, got: %s", result)
+	}
+}
+
+func TestFollowingSectionEmpty(t *testing.T) {
+	engine := New(Config{})
+	ctx := NewRenderContext()
+	// No following entries
+
+	tmpl := `<div>{{#following}}<a href="{{url}}">{{author_name}}</a>{{/following}}</div>`
+
+	result, err := engine.Render(tmpl, ctx)
+	if err != nil {
+		t.Fatalf("Render failed: %v", err)
+	}
+
+	// Should produce empty content for the section
+	if result != "<div></div>" {
+		t.Errorf("Expected empty following section, got: %s", result)
 	}
 }

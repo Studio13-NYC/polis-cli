@@ -920,10 +920,10 @@ func (s *Server) handleCommentSign(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Get author email from .well-known/polis (single source of truth)
-	authorEmail := s.GetAuthorEmail()
-	if authorEmail == "" {
-		http.Error(w, "Author email not configured - set email in .well-known/polis", http.StatusBadRequest)
+	// Get author domain from .well-known/polis (domain is the public identity)
+	authorDomain := s.GetAuthorDomain()
+	if authorDomain == "" {
+		http.Error(w, "Author identity not configured - set domain in .well-known/polis or POLIS_BASE_URL in .env", http.StatusBadRequest)
 		return
 	}
 
@@ -934,7 +934,7 @@ func (s *Server) handleCommentSign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	signed, err := comment.SignComment(s.DataDir, draft, authorEmail, siteURL, s.PrivateKey)
+	signed, err := comment.SignComment(s.DataDir, draft, authorDomain, siteURL, s.PrivateKey)
 	if err != nil {
 		s.LogError("failed to sign comment: %v", err)
 		http.Error(w, "Failed to sign comment", http.StatusInternalServerError)
@@ -2125,16 +2125,15 @@ func (s *Server) handleSiteRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get email and author_name from .well-known/polis (single source of truth)
-	var email, authorName string
+	// Get author_name from .well-known/polis (email is private, not sent to DS)
+	var authorName string
 	if wk, err := site.LoadWellKnown(s.DataDir); err == nil {
-		email = wk.Email
 		authorName = wk.Author
 	}
 
-	// Register with discovery service
+	// Register with discovery service (email omitted — private by default)
 	client := discovery.NewClient(s.DiscoveryURL, s.DiscoveryKey)
-	result, err := client.RegisterSite(domain, s.PrivateKey, email, authorName)
+	result, err := client.RegisterSite(domain, s.PrivateKey, "", authorName)
 	if err != nil {
 		s.LogError("Failed to register site: %v", err)
 		http.Error(w, "Registration failed", http.StatusInternalServerError)
@@ -3181,4 +3180,160 @@ func (s *Server) handleNotificationRead(w http.ResponseWriter, r *http.Request) 
 		"success": true,
 		"marked":  marked,
 	})
+}
+
+// ============================================================================
+// WIDGET API HANDLERS
+// ============================================================================
+
+// POST /api/widget/publish — Sign and publish content via widget token.
+// Generic endpoint dispatched by "type" field. Currently supports "comment".
+func (s *Server) handleWidgetPublish(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if s.PrivateKey == nil {
+		http.Error(w, "Not configured", http.StatusBadRequest)
+		return
+	}
+
+	var req struct {
+		Type     string                 `json:"type"`
+		Target   string                 `json:"target"`
+		Text     string                 `json:"text"`
+		Metadata map[string]interface{} `json:"metadata"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	switch req.Type {
+	case "comment":
+		s.handleWidgetPublishComment(w, r, req.Target, req.Text)
+	default:
+		http.Error(w, "Unsupported content type", http.StatusBadRequest)
+	}
+}
+
+// handleWidgetPublishComment handles the comment type for widget publish.
+func (s *Server) handleWidgetPublishComment(w http.ResponseWriter, r *http.Request, target, text string) {
+	if target == "" || text == "" {
+		http.Error(w, "target and text are required", http.StatusBadRequest)
+		return
+	}
+
+	authorDomain := s.GetAuthorDomain()
+	if authorDomain == "" {
+		http.Error(w, "Author identity not configured", http.StatusBadRequest)
+		return
+	}
+
+	siteURL := s.GetBaseURL()
+	if siteURL == "" {
+		http.Error(w, "POLIS_BASE_URL not configured", http.StatusBadRequest)
+		return
+	}
+
+	draft := &comment.CommentDraft{
+		InReplyTo: polisurl.NormalizeToMD(target),
+		Content:   text,
+	}
+
+	signed, err := comment.SignComment(s.DataDir, draft, authorDomain, siteURL, s.PrivateKey)
+	if err != nil {
+		s.LogError("widget publish comment: sign failed: %v", err)
+		http.Error(w, "Failed to sign comment", http.StatusInternalServerError)
+		return
+	}
+
+	// Attempt to send blessing request (beseech)
+	blessingStatus := "pending"
+	result, err := comment.BeseechComment(s.DataDir, signed.Meta.ID, s.PrivateKey)
+	if err != nil {
+		s.LogError("widget publish comment: beseech failed: %v", err)
+		blessingStatus = "error"
+	} else if result.AutoBlessed {
+		blessingStatus = "granted"
+		// Re-render if auto-blessed
+		if renderErr := s.RenderSite(); renderErr != nil {
+			s.LogError("widget publish comment: post-beseech render failed: %v", renderErr)
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":         true,
+		"content_url":     signed.Meta.CommentURL,
+		"comment_id":      signed.Meta.ID,
+		"blessing_status": blessingStatus,
+	})
+}
+
+// POST /api/widget/follow — Add author to following.json via widget token.
+func (s *Server) handleWidgetFollow(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if s.PrivateKey == nil {
+		http.Error(w, "Not configured", http.StatusBadRequest)
+		return
+	}
+
+	var req struct {
+		Author string `json:"author"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	if req.Author == "" {
+		http.Error(w, "author is required", http.StatusBadRequest)
+		return
+	}
+
+	// Normalize author to URL if it's just a domain
+	authorURL := req.Author
+	if !strings.HasPrefix(authorURL, "https://") {
+		authorURL = "https://" + authorURL
+	}
+
+	followingPath := following.DefaultPath(s.DataDir)
+	followDomain := discovery.ExtractDomainFromURL(s.GetBaseURL())
+	discoveryClient := discovery.NewAuthenticatedClient(s.DiscoveryURL, s.DiscoveryKey, followDomain, s.PrivateKey)
+	remoteClient := remote.NewClient()
+
+	result, err := following.FollowWithBlessing(followingPath, authorURL, discoveryClient, remoteClient, s.PrivateKey)
+	if err != nil {
+		s.LogError("widget follow failed: %v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"data":    result,
+	})
+}
+
+// GET /api/widget/connect — Issue widget token from session and redirect.
+// Query params: return=<url>
+// This endpoint is same-origin (dashboard) — session cookie auth is valid here.
+func (s *Server) handleWidgetConnect(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// This endpoint needs no special handling in the server package —
+	// widget token issuance happens in the hosted service layer.
+	// The server-side handler is a no-op placeholder that the hosted
+	// layer intercepts before it reaches here.
+	http.Error(w, "Widget connect is handled by the hosted service", http.StatusNotImplemented)
 }

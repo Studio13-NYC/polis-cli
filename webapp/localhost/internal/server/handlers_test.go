@@ -72,9 +72,11 @@ func newConfiguredServer(t *testing.T) *Server {
 	s.BaseURL = "https://test-site.polis.pub"
 
 	// Create .well-known/polis (single source of truth for identity)
+	// Domain is the public identity. Email kept for backward compat tests.
 	wellKnown := map[string]interface{}{
 		"subdomain":  "test-site",
 		"base_url":   "https://test-site.polis.pub",
+		"domain":     "test-site.polis.pub",
 		"site_title": "Test Site",
 		"public_key": string(pubKey),
 		"email":      "test@example.com",
@@ -2588,6 +2590,52 @@ func TestGetAuthorEmail_NoEmailField(t *testing.T) {
 	email := s.GetAuthorEmail()
 	if email != "" {
 		t.Errorf("expected empty email, got %q", email)
+	}
+}
+
+// ============================================================================
+// GetAuthorDomain Tests (Phase 0)
+// ============================================================================
+
+func TestGetAuthorDomain_FromDomainField(t *testing.T) {
+	s := newConfiguredServer(t) // has domain in .well-known/polis
+	domain := s.GetAuthorDomain()
+	if domain != "test-site.polis.pub" {
+		t.Errorf("expected test-site.polis.pub, got %q", domain)
+	}
+}
+
+func TestGetAuthorDomain_FallbackToBaseURL(t *testing.T) {
+	s := newTestServer(t)
+	s.BaseURL = "https://fallback.polis.pub"
+	// Create .well-known/polis without domain field
+	wellKnown := map[string]interface{}{
+		"public_key": "ssh-ed25519 AAAA...",
+		"author":     "Test",
+	}
+	data, _ := json.MarshalIndent(wellKnown, "", "  ")
+	os.WriteFile(filepath.Join(s.DataDir, ".well-known", "polis"), data, 0644)
+
+	domain := s.GetAuthorDomain()
+	if domain != "fallback.polis.pub" {
+		t.Errorf("expected fallback.polis.pub, got %q", domain)
+	}
+}
+
+func TestGetAuthorDomain_NoWellKnown(t *testing.T) {
+	s := newTestServer(t)
+	s.BaseURL = "https://nofile.polis.pub"
+	domain := s.GetAuthorDomain()
+	if domain != "nofile.polis.pub" {
+		t.Errorf("expected nofile.polis.pub (from BaseURL), got %q", domain)
+	}
+}
+
+func TestGetAuthorDomain_NothingConfigured(t *testing.T) {
+	s := newTestServer(t)
+	domain := s.GetAuthorDomain()
+	if domain != "" {
+		t.Errorf("expected empty domain, got %q", domain)
 	}
 }
 

@@ -5,6 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.54.0] - 2026-02-17
+
+This release shifts author identity from email to domain, simplifies the webapp with a streamlined sidebar and improved onboarding, and adds documentation for contributing, webapp usage, and security policy.
+
+### Changed
+
+- **Domain-based author identity**: Author identity now uses the domain (from `.well-known/polis` `domain` field or extracted from `POLIS_BASE_URL`) instead of email. Email is retained as a private legacy fallback. This affects comment frontmatter, discovery service registration, and blessing operations across both CLIs.
+- **[Bash CLI] `fetch_author_identity_from_wellknown()`**: Renamed from `fetch_author_email_from_wellknown()` with domain-first resolution (domain field > URL extraction > email fallback). Old name kept as backward-compatible alias.
+- **[Go CLI] Discovery registration uses domain**: `publish.RegisterPost()` and `comment.BeseechComment()` now pass domain identity to the discovery service instead of email.
+- **[Go CLI] Comment frontmatter includes email**: Comment creation now includes the author's email in frontmatter metadata when available.
+- **[Go CLI] Init flow simplified**: `site.Init()` accepts explicit Author and Email fields for headless provisioning scenarios.
+- **[Go CLI] Package state refactored for reuse**: `publish`, `comment`, and `stream` packages now accept discovery config as function parameters instead of relying on package-level globals.
+- **[Webapp] Simplified UI**: Removed browser split-pane mode (~2000 lines), replaced with progressive sidebar that adapts to site lifecycle stage. Merged blessing requests into a single view. Improved empty states and onboarding experience.
+- **[Webapp] Welcome flow**: New users see an educational "What just happened?" disclosure after init, replacing the previous multi-banner approach.
+
+### Fixed
+
+- **[Go CLI] Verify command robustness**: Improved error handling for edge cases in signature verification.
+- **[Go CLI] Template section rendering**: Additional test coverage for section rendering edge cases.
+- **[Webapp] Editor button fix**: Fixed missing `updateEditorFmToggle()` that prevented "create new post" buttons from working.
+- **[Webapp] Dashboard CTA clutter**: Reduced call-to-action buttons from 4 to 2 on My Site tab.
+
+### Added
+
+- **[Go CLI] New tests**: Added test suites for `comment`, `site/init`, `site/wellknown`, `render/page`, and `template/engine` packages.
+- **[Go CLI] Render page helpers**: New page rendering utilities in `render/page.go` for index page generation.
+
+### Documentation
+
+- **New: CONTRIBUTING.md**: Covers all four components (Go CLI, webapp, bash CLI, discovery service) with build commands, prerequisites, and conventions.
+- **New: WEBAPP-USER-MANUAL.md**: User guide for the localhost webapp with deployment instructions.
+- **New: SECURITY.md**: Security policy with vulnerability reporting instructions.
+- **New: docs/README.md**: Navigation index for the documentation directory.
+- **Updated: USAGE.md**: Added Go CLI section, corrected installation paths.
+- **Updated: SECURITY-MODEL.md**: Fixed key paths (`polis_key` → `id_ed25519`).
+- **Updated: GLOSSARY.md**: Added TUI deprecation note.
+- **Updated: DISCOVERY-STREAM-ARCHITECTURE.md**: Fixed cross-references.
+- **Skills paths updated**: Cleaned up command references across skill files.
+
 ## [0.53.0] - 2026-02-13
 
 This release improves homepage performance with limited post/comment sections and archive pages, adds quality of life improvements to the webapp (feed auto-refresh, following metadata display), and introduces authenticated discovery queries for privacy-sensitive operations.

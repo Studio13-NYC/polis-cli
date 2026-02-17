@@ -8,9 +8,7 @@ const App = {
     currentView: 'posts-published',  // Current active view in sidebar
     sidebarMode: 'my-site',  // 'my-site' or 'social'
     filenameManuallySet: false,  // Track if user manually edited the filename
-
-    // View mode state: 'list' or 'browser'
-    viewMode: 'list',
+    lifecycleStage: 'just_arrived',  // 'just_arrived', 'first_post', or 'active'
 
     // Setup wizard state
     setupWizardStep: 0,       // 0=configure, 1=deploy, 2=register
@@ -21,19 +19,8 @@ const App = {
     // Site info (loaded from /api/settings)
     siteInfo: null,
 
-    // Browser mode state
-    browserState: {
-        history: [],
-        historyIndex: -1,
-        currentUrl: null,
-        currentContent: null,
-        isEditing: false,
-        originalMarkdown: null,  // Store original for cancel
-        snippetEditMode: false,  // Toggle for snippet editing mode
-        editingSnippet: null,    // { id, path, source, content } when editing a snippet
-        showIncludes: false,     // Toggle for viewing includes in snippet
-        snippetNavStack: [],     // Stack for nested snippet navigation: [{path, source, content}]
-    },
+    // Hosted mode: set via window.__POLIS_HOSTED by the hosted service
+    isHosted: !!(window.__POLIS_HOSTED),
 
     // Snippet state
     snippetState: {
@@ -90,37 +77,8 @@ const App = {
         snippet: document.getElementById('snippet-screen'),
     },
 
-    // Browser mode elements
-    browserElements: {
-        container: document.getElementById('browser-container'),
-        mainContainer: document.querySelector('.main-container'),
-        backBtn: document.getElementById('browser-back'),
-        forwardBtn: document.getElementById('browser-forward'),
-        homeBtn: document.getElementById('browser-home'),
-        urlInput: document.getElementById('browser-url-input'),
-        settingsBtn: document.getElementById('browser-settings'),
-        markdownDisplay: document.getElementById('browser-markdown-display'),
-        markdownEdit: document.getElementById('browser-markdown-edit'),
-        previewContent: document.getElementById('browser-preview-content'),
-        actionsFooter: document.getElementById('browser-actions'),
-        cancelBtn: document.getElementById('browser-cancel'),
-        saveDraftBtn: document.getElementById('browser-save-draft'),
-        publishBtn: document.getElementById('browser-publish'),
-        listModeBtn: document.getElementById('list-mode-btn'),
-        browserModeBtn: document.getElementById('browser-mode-btn'),
-        frontmatterToggle: document.getElementById('frontmatter-toggle'),
-        editBtn: document.getElementById('browser-edit-btn'),
-        snippetEditToggle: document.getElementById('browser-snippet-edit'),
-        codePaneLabel: document.getElementById('browser-code-pane-label'),
-        snippetParentLink: document.getElementById('browser-snippet-parent-link'),
-        includesToggle: document.getElementById('includes-toggle'),
-    },
-
     // Site base URL for live links
     siteBaseUrl: '',
-
-    // Show frontmatter in markdown pane (default true)
-    showFrontmatter: true,
 
     showScreen(name) {
         Object.values(this.screens).forEach(s => {
@@ -160,6 +118,26 @@ const App = {
             }, duration);
         }
 
+        return toast;
+    },
+
+    // Suggestion toast — HTML content with action buttons, longer timeout
+    showSuggestion(html, duration = 8000) {
+        const container = document.getElementById('toast-container');
+        const toast = document.createElement('div');
+        toast.className = 'toast suggestion';
+        toast.innerHTML = `
+            <div class="toast-icon">&#9889;</div>
+            <div class="toast-message suggestion-content">${html}</div>
+            <button class="toast-close" onclick="this.parentElement.remove()">&times;</button>
+        `;
+        container.appendChild(toast);
+        if (duration > 0) {
+            setTimeout(() => {
+                toast.classList.add('toast-out');
+                setTimeout(() => toast.remove(), 200);
+            }, duration);
+        }
         return toast;
     },
 
@@ -216,14 +194,31 @@ const App = {
         }
         const response = await fetch(path, options);
         if (!response.ok) {
+            // In hosted mode, redirect to login on 401
+            if (this.isHosted && response.status === 401) {
+                window.location.href = '//' + window.__POLIS_BASE_DOMAIN;
+                return;
+            }
             const text = await response.text();
             throw new Error(text || response.statusText);
         }
         return response.json();
     },
 
+    // Intent state (set by URL params, consumed after dashboard loads)
+    _pendingIntent: null,
+
     // Initialize app
     async init() {
+        // Parse intent params from URL before anything else
+        this._pendingIntent = this.parseIntentParams();
+
+        // Handle widget_connect immediately (redirects away, no dashboard needed)
+        if (this._pendingIntent && this._pendingIntent.type === 'widget_connect') {
+            this.handleWidgetConnect(this._pendingIntent.returnUrl);
+            return;
+        }
+
         try {
             const status = await this.api('GET', '/api/status');
             const validation = status.validation || {};
@@ -234,21 +229,31 @@ const App = {
                         status.site_title || '';
                     // Show domain in header
                     this.updateDomainDisplay(status.base_url);
-                    // Store base URL for live links in browser mode
                     this.siteBaseUrl = status.base_url || '';
-                    // Load frontmatter visibility setting
-                    this.showFrontmatter = status.show_frontmatter !== false;
-                    this.updateFrontmatterToggle();
                     await this.loadAllCounts();
-                    await this.initViewMode();
                     await this.loadViewContent();
                     this.initNotifications();
                     this.initFeedPolling();
                     this.showScreen('dashboard');
                     this.checkSetupBanner();
+
+                    // Auto-issue widget token in hosted mode (fire and forget)
+                    if (this.isHosted) {
+                        this.ensureWidgetToken();
+                    }
+
+                    // Process pending intent after dashboard is ready
+                    if (this._pendingIntent) {
+                        await this.processIntent(this._pendingIntent);
+                        this._pendingIntent = null;
+                    }
                     break;
 
                 case 'not_found':
+                    if (this.isHosted) {
+                        // In hosted mode, site should always exist
+                        this.showToast('Site not ready yet. Refresh in a moment.', 'info');
+                    }
                     this.showScreen('welcome');
                     break;
 
@@ -264,14 +269,10 @@ const App = {
                         document.getElementById('domain-display').textContent =
                             status.site_title || '';
                         this.updateDomainDisplay(status.base_url);
-                        // Store base URL for live links in browser mode
                         this.siteBaseUrl = status.base_url || '';
-                        // Load frontmatter visibility setting
-                        this.showFrontmatter = status.show_frontmatter !== false;
-                        this.updateFrontmatterToggle();
                         this.initNotifications();
                         await this.loadAllCounts();
-                        await this.initViewMode();
+    
                         await this.loadViewContent();
                         this.showScreen('dashboard');
                         this.checkSetupBanner();
@@ -385,6 +386,7 @@ const App = {
             }
 
             this.updateBadges();
+            this.updateSidebar();
         } catch (err) {
             console.error('Failed to load counts:', err);
         }
@@ -421,6 +423,124 @@ const App = {
         }
     },
 
+    // Detect lifecycle stage from counts
+    detectLifecycleStage() {
+        const hasPosts = this.counts.posts > 0;
+        const hasIncomingBlessed = this.counts.incomingBlessed > 0;
+        const isActive = hasIncomingBlessed || this.counts.posts >= 3;
+
+        if (isActive) {
+            this.lifecycleStage = 'active';
+        } else if (hasPosts) {
+            this.lifecycleStage = 'first_post';
+        } else {
+            this.lifecycleStage = 'just_arrived';
+        }
+    },
+
+    // Update sidebar visibility based on lifecycle stage
+    updateSidebar() {
+        this.detectLifecycleStage();
+        const stage = this.lifecycleStage;
+
+        // My Site sidebar sections
+        const sections = {
+            posts: document.getElementById('sidebar-section-posts'),
+            comments: document.getElementById('sidebar-section-comments'),
+            onMyPosts: document.getElementById('sidebar-section-on-my-posts'),
+            snippets: document.getElementById('sidebar-section-snippets'),
+        };
+
+        // Social sidebar sections
+        const socialSections = {
+            discover: document.getElementById('sidebar-section-discover'),
+            authors: document.getElementById('sidebar-section-authors'),
+            stats: document.getElementById('sidebar-section-stats'),
+        };
+
+        // just_arrived: Write (new post btn) + Feed + Settings only
+        // first_post: + Posts, Comments
+        // active: + On My Posts, Snippets, full Social
+        if (stage === 'just_arrived') {
+            if (sections.posts) sections.posts.classList.add('hidden');
+            if (sections.comments) sections.comments.classList.add('hidden');
+            if (sections.onMyPosts) sections.onMyPosts.classList.add('hidden');
+            if (sections.snippets) sections.snippets.classList.add('hidden');
+        } else if (stage === 'first_post') {
+            if (sections.posts) sections.posts.classList.remove('hidden');
+            if (sections.comments) sections.comments.classList.remove('hidden');
+            if (sections.onMyPosts) sections.onMyPosts.classList.add('hidden');
+            if (sections.snippets) sections.snippets.classList.add('hidden');
+        } else {
+            // active: show everything
+            if (sections.posts) sections.posts.classList.remove('hidden');
+            if (sections.comments) sections.comments.classList.remove('hidden');
+            if (sections.onMyPosts) sections.onMyPosts.classList.remove('hidden');
+            if (sections.snippets) sections.snippets.classList.remove('hidden');
+        }
+        this.updateWelcomePanel();
+    },
+
+    // Update the welcome panel based on lifecycle stage and intent
+    updateWelcomePanel() {
+        const panel = document.getElementById('welcome-panel');
+        if (!panel) return;
+
+        // Hide welcome panel on Social tab — it's irrelevant there
+        if (this.sidebarMode === 'social') {
+            panel.classList.add('hidden');
+            return;
+        }
+
+        const stage = this.lifecycleStage;
+        const intent = this._pendingIntent;
+        let html = '';
+
+        if (intent && intent.type === 'comment' && intent.submitted) {
+            // Post-comment intent: comment was delivered
+            html = `
+                <div class="welcome-content">
+                    <h3>Comment submitted</h3>
+                    <p>Your comment was delivered. The author will decide whether to bless it.</p>
+                    <div class="welcome-actions">
+                        <button class="primary" onclick="App.newPost()">Write your first post</button>
+                        ${intent.target ? `<a href="${this.escapeHtml(intent.target)}" class="secondary" target="_blank">Back to the post</a>` : ''}
+                    </div>
+                </div>
+            `;
+        } else if (stage === 'first_post') {
+            html = `
+                <div class="welcome-content">
+                    <p>Share your post to start getting comments and followers.</p>
+                    <div class="welcome-actions">
+                        <button class="primary" onclick="App.newPost()">Write another post</button>
+                        <button class="secondary" onclick="App.copyShareLink()">Copy site link</button>
+                    </div>
+                </div>
+            `;
+        }
+        // active stage: no welcome panel
+
+        if (html) {
+            panel.innerHTML = html;
+            panel.classList.remove('hidden');
+        } else {
+            panel.classList.add('hidden');
+        }
+    },
+
+    // Copy site URL to clipboard
+    async copyShareLink() {
+        if (this.siteBaseUrl) {
+            try {
+                await navigator.clipboard.writeText(this.siteBaseUrl);
+                this.showToast('Site link copied', 'success');
+            } catch {
+                this.showToast('Copy failed', 'error');
+            }
+        }
+    },
+
     // Load content for current view
     async loadViewContent() {
         const contentTitle = document.getElementById('content-title');
@@ -430,7 +550,7 @@ const App = {
         switch (this.currentView) {
             case 'posts-published':
                 contentTitle.textContent = 'Published Posts';
-                contentActions.innerHTML = '<button id="new-post-btn" class="primary" onclick="App.newPost()">New Post</button>';
+                contentActions.innerHTML = this.lifecycleStage === 'just_arrived' ? '' : '<button id="new-post-btn" class="primary" onclick="App.newPost()">New Post</button>';
                 await this.renderPostsList(contentList);
                 break;
 
@@ -469,16 +589,10 @@ const App = {
                 break;
 
             // ON MY POSTS (incoming - others wrote these)
-            case 'incoming-pending':
-                contentTitle.textContent = 'Pending Blessing Requests';
+            case 'blessing-requests':
+                contentTitle.textContent = 'Blessing Requests';
                 contentActions.innerHTML = '';
-                await this.renderIncomingPendingList(contentList);
-                break;
-
-            case 'incoming-blessed':
-                contentTitle.textContent = 'Blessed Comments on My Posts';
-                contentActions.innerHTML = '';
-                await this.renderIncomingBlessedList(contentList);
+                await this.renderBlessingRequests(contentList);
                 break;
 
             case 'settings':
@@ -531,6 +645,12 @@ const App = {
                 contentTitle.textContent = 'Followers';
                 contentActions.innerHTML = '<button class="secondary sync-btn" onclick="App.refreshFollowers(true)">Full Refresh</button>';
                 await this.renderFollowersList(contentList);
+                break;
+
+            case 'suggested-authors':
+                contentTitle.textContent = 'Suggested Authors';
+                contentActions.innerHTML = '';
+                await this.renderSuggestedAuthors(contentList);
                 break;
 
         }
@@ -710,8 +830,6 @@ const App = {
             }, 300);
         });
 
-        // Browser mode events
-        this.bindBrowserEvents();
     },
 
     // Default discovery service values (public, hardcoded to match server defaults)
@@ -778,7 +896,6 @@ const App = {
             this.siteBaseUrl = result.base_url || '';
             this.initNotifications();
             await this.loadAllCounts();
-            await this.initViewMode();
             await this.loadViewContent();
             this.showScreen('dashboard');
 
@@ -843,7 +960,6 @@ const App = {
             this.updateDomainDisplay(result.base_url);
             this.initNotifications();
             await this.loadAllCounts();
-            await this.initViewMode();
             await this.loadViewContent();
             this.showScreen('dashboard');
         } catch (err) {
@@ -895,12 +1011,25 @@ const App = {
             this.updateBadge('posts-count', posts.length);
 
             if (posts.length === 0) {
+                const domain = this.siteBaseUrl ? new URL(this.siteBaseUrl).hostname : '';
                 container.innerHTML = `
                     <div class="content-list">
                         <div class="empty-state">
                             <h3>No published posts yet</h3>
-                            <p>Start writing your first post</p>
-                            <button class="primary" onclick="App.newPost()">New Post</button>
+                            <p>Write your first post to make your site come alive.</p>
+                            <button class="primary" onclick="App.newPost()">Write your first post</button>
+                            <details class="whats-new">
+                                <summary>Wait, what just happened?</summary>
+                                <div class="whats-new-body">
+                                    <p>We just created a Polis site for you!</p>
+                                    <p>See that <code>/_/</code> in the URL? Only you can access this dashboard.</p>
+                                    <p>Only you can publish to${domain ? ` <strong>${this.escapeHtml(domain)}</strong>` : ' your site'}, but everyone can see it &mdash; and verify you wrote it.</p>
+                                    <p>Anyone with a Polis site can comment on your posts, but you decide which comments appear here.</p>
+                                    <p>If you can't find your way back, we'll send a login link to your email.</p>
+                                    <p>And if you ever want to move on, you can download all your content and take it with you.</p>
+                                    <p>It's all yours. Enjoy.</p>
+                                </div>
+                            </details>
                         </div>
                     </div>
                 `;
@@ -1164,7 +1293,7 @@ const App = {
                     <div class="content-list">
                         <div class="empty-state">
                             <h3>No pending blessing requests</h3>
-                            <p>When someone comments on your posts, their blessing requests will appear here</p>
+                            <p>When someone comments on your posts, their blessing requests will appear here. <a href="https://polis.pub/docs/blessings" target="_blank" rel="noopener">What are blessings?</a></p>
                         </div>
                     </div>
                 `;
@@ -1311,6 +1440,90 @@ const App = {
         }
     },
 
+    // Render combined blessing requests view with tabs (pending/blessed/all)
+    _blessingRequestsFilter: 'pending',
+    async renderBlessingRequests(container, filter) {
+        if (filter) this._blessingRequestsFilter = filter;
+        const currentFilter = this._blessingRequestsFilter;
+
+        // Fetch both pending requests and blessed comments
+        let requests = [];
+        let allBlessed = [];
+        try {
+            const [reqResult, blessedResult] = await Promise.all([
+                this.api('GET', '/api/blessing/requests').catch(() => ({ requests: [] })),
+                this.api('GET', '/api/blessed-comments').catch(() => ({ comments: [] })),
+            ]);
+            requests = reqResult.requests || [];
+            for (const pc of (blessedResult.comments || [])) {
+                for (const c of (pc.blessed || [])) {
+                    allBlessed.push({ ...c, post: pc.post });
+                }
+            }
+        } catch (err) {
+            container.innerHTML = `<div class="content-list"><div class="empty-state"><h3>Failed to load</h3><p>${this.escapeHtml(err.message)}</p></div></div>`;
+            return;
+        }
+
+        // Update counts
+        this.counts.incomingPending = requests.length;
+        this.counts.incomingBlessed = allBlessed.length;
+        this.updateBadge('incoming-pending-count', requests.length, true);
+
+        // Build tab bar
+        const tabClass = (name) => name === currentFilter ? 'filter-tab active' : 'filter-tab';
+        const tabs = `
+            <div class="filter-tabs">
+                <button class="${tabClass('pending')}" onclick="App.renderBlessingRequests(document.getElementById('content-list'), 'pending')">Pending (${requests.length})</button>
+                <button class="${tabClass('blessed')}" onclick="App.renderBlessingRequests(document.getElementById('content-list'), 'blessed')">Blessed (${allBlessed.length})</button>
+                <button class="${tabClass('all')}" onclick="App.renderBlessingRequests(document.getElementById('content-list'), 'all')">All (${requests.length + allBlessed.length})</button>
+            </div>
+        `;
+
+        // Build items
+        let items = '';
+        if (currentFilter === 'pending' || currentFilter === 'all') {
+            items += requests.map(r => `
+                <div class="comment-item incoming-request" onclick="App.openPendingRequestDetail(${this.escapeHtml(JSON.stringify(JSON.stringify(r)))})">
+                    <div class="comment-header">
+                        <span class="comment-author">${this.escapeHtml(r.author)}</span>
+                        <span class="comment-date">${this.formatDate(r.timestamp)}</span>
+                        <span class="comment-status-badge pending">pending</span>
+                    </div>
+                    <div class="comment-target">
+                        On: <a href="${this.escapeHtml(r.in_reply_to)}" target="_blank" onclick="event.stopPropagation()">${this.escapeHtml(this.truncateUrl(r.in_reply_to))}</a>
+                    </div>
+                    <div class="comment-actions">
+                        <button class="primary" onclick="event.stopPropagation(); App.grantBlessing('${this.escapeHtml(r.comment_version)}', '${this.escapeHtml(r.comment_url)}', '${this.escapeHtml(r.in_reply_to)}')">Bless</button>
+                        <button class="secondary danger" onclick="event.stopPropagation(); App.denyBlessing('${this.escapeHtml(r.comment_url)}', '${this.escapeHtml(r.in_reply_to)}')">Deny</button>
+                    </div>
+                </div>
+            `).join('');
+        }
+        if (currentFilter === 'blessed' || currentFilter === 'all') {
+            items += allBlessed.map(c => `
+                <div class="content-item" onclick="App.openBlessedCommentDetail(${this.escapeHtml(JSON.stringify(JSON.stringify(c)))})">
+                    <div class="item-info">
+                        <span class="item-title">${this.escapeHtml(c.url ? c.url.split('/').pop() : 'comment')}</span>
+                        <span class="comment-status-badge blessed">blessed</span>
+                    </div>
+                    <div class="item-meta">On: ${this.escapeHtml(this.truncateUrl(c.post))}</div>
+                </div>
+            `).join('');
+        }
+
+        if (!items) {
+            const msg = currentFilter === 'pending'
+                ? 'No pending blessing requests'
+                : currentFilter === 'blessed'
+                ? 'No blessed comments yet'
+                : 'No blessing requests yet';
+            items = `<div class="empty-state"><h3>${msg}</h3><p>When someone comments on your posts, their requests appear here</p></div>`;
+        }
+
+        container.innerHTML = `${tabs}<div class="content-list">${items}</div>`;
+    },
+
     // Open blessed comment detail panel
     openBlessedCommentDetail(commentJson) {
         const comment = JSON.parse(commentJson);
@@ -1448,6 +1661,7 @@ const App = {
                         </div>
                     </div>
 
+                    ${this.isHosted ? '' : `
                     <div class="settings-section">
                         <div class="settings-section-label">Discovery Service</div>
                         <div class="settings-card">
@@ -1489,13 +1703,16 @@ const App = {
                             </div>
                         </div>
                     </div>
+                    `}
 
+                    ${this.isHosted ? '' : `
                     <div class="settings-section">
                         <div class="settings-section-label">Active Automations</div>
                         <div class="settings-card">
                             ${automationsHtml}
                         </div>
                     </div>
+                    `}
                 </div>
             `;
 
@@ -2328,6 +2545,15 @@ echo "File: $POLIS_PATH"</code>
                 const action = isRepublish ? 'Republished' : 'Published';
                 this.showToast(`${action}: ${result.title}`, 'success');
 
+                // Post-action suggestion: share your site
+                if (!isRepublish && this.siteBaseUrl) {
+                    const shareUrl = this.siteBaseUrl;
+                    this.showSuggestion(
+                        `Share your post? <a href="${this.escapeHtml(shareUrl)}" target="_blank" style="color:var(--teal)">${this.escapeHtml(shareUrl.replace(/^https?:\/\//, ''))}</a> ` +
+                        `<button onclick="navigator.clipboard.writeText('${this.escapeHtml(shareUrl)}'); this.textContent='Copied!'; this.disabled=true;" style="background:var(--teal);color:var(--bg-color);border:none;padding:2px 8px;border-radius:3px;font-family:inherit;cursor:pointer;font-size:.75rem;">Copy link</button>`
+                    );
+                }
+
                 // Clear editor and return to dashboard
                 this.currentDraftId = null;
                 this.currentPostPath = null;
@@ -2400,6 +2626,18 @@ echo "File: $POLIS_PATH"</code>
             this.editorUpdatePreview();
         } catch (err) {
             this.showToast('Failed to load post: ' + err.message, 'error');
+        }
+    },
+
+    // Show/hide frontmatter toggle based on editing context
+    updateEditorFmToggle() {
+        const btn = document.getElementById('editor-fm-toggle');
+        if (!btn) return;
+        if (this.currentPostPath) {
+            btn.classList.remove('hidden');
+            btn.textContent = 'Show FM';
+        } else {
+            btn.classList.add('hidden');
         }
     },
 
@@ -2506,8 +2744,13 @@ echo "File: $POLIS_PATH"</code>
                 this.showToast('Comment signed. Could not send blessing request: ' + beseechErr.message, 'warning', 6000);
             }
 
+            // Capture intent state before clearing
+            const wasFromIntent = !!this._intentComment;
+            const intentTarget = wasFromIntent ? this._intentComment.target : inReplyTo;
+
             // Clear form and return to dashboard
             this.currentCommentDraftId = null;
+            this._intentComment = null;
             document.getElementById('reply-to-url').value = '';
             document.getElementById('comment-input').value = '';
 
@@ -2524,6 +2767,14 @@ echo "File: $POLIS_PATH"</code>
                     item.classList.add('active');
                 }
             });
+
+            // Show intent-aware CTAs if comment was from an intent param
+            if (wasFromIntent) {
+                this.showCommentIntentResult(
+                    signResult.comment ? signResult.comment.url : '',
+                    intentTarget
+                );
+            }
         } catch (err) {
             this.showToast('Failed to sign comment: ' + err.message, 'error');
         } finally {
@@ -2580,6 +2831,21 @@ echo "File: $POLIS_PATH"</code>
             });
 
             this.showToast('Comment blessed!', 'success');
+
+            // Post-action suggestion: follow the commenter back
+            try {
+                const commenterDomain = new URL(commentUrl).hostname;
+                if (commenterDomain && this.siteBaseUrl) {
+                    const myDomain = new URL(this.siteBaseUrl).hostname;
+                    if (commenterDomain !== myDomain) {
+                        this.showSuggestion(
+                            `Follow <strong>${this.escapeHtml(commenterDomain)}</strong> back? ` +
+                            `<button onclick="App.quickFollow('${this.escapeHtml(commenterDomain)}'); this.textContent='Following!'; this.disabled=true;" style="background:var(--teal);color:var(--bg-color);border:none;padding:2px 8px;border-radius:3px;font-family:inherit;cursor:pointer;font-size:.75rem;">Follow</button>`
+                        );
+                    }
+                }
+            } catch (e) { /* non-fatal */ }
+
             await this.loadAllCounts();
             await this.loadViewContent();
         } catch (err) {
@@ -2626,7 +2892,7 @@ echo "File: $POLIS_PATH"</code>
                         ${breadcrumb}
                         <div class="empty-state">
                             <h3>No snippets yet</h3>
-                            <p>Snippets are reusable HTML/Markdown templates</p>
+                            <p>Snippets are reusable HTML/Markdown templates. <a href="https://polis.pub/docs/snippets" target="_blank" rel="noopener">Learn more</a></p>
                             <button class="primary" onclick="App.newSnippet()">Create Snippet</button>
                         </div>
                     </div>
@@ -2895,1499 +3161,6 @@ echo "File: $POLIS_PATH"</code>
         }
     },
 
-    // ========================================
-    // Browser Mode Functions
-    // ========================================
-
-    // Initialize view mode from settings
-    async initViewMode() {
-        try {
-            const settings = await this.api('GET', '/api/settings');
-            this.siteInfo = settings.site || {};
-            const savedMode = this.siteInfo.view_mode || 'list';
-            this.setViewMode(savedMode, false); // Don't save on init
-            this._hideRead = !!settings.hide_read;
-        } catch (err) {
-            console.error('Failed to load view mode:', err);
-            this.setViewMode('list', false);
-        }
-    },
-
-    // Set view mode and update UI
-    setViewMode(mode, save = true) {
-        this.viewMode = mode;
-
-        // Update toggle buttons
-        if (this.browserElements.listModeBtn && this.browserElements.browserModeBtn) {
-            this.browserElements.listModeBtn.classList.toggle('active', mode === 'list');
-            this.browserElements.browserModeBtn.classList.toggle('active', mode === 'browser');
-        }
-
-        // Apply mode visibility
-        this.applyViewMode();
-
-        // Save to server if requested
-        if (save) {
-            this.api('POST', '/api/settings/view-mode', { view_mode: mode }).catch(err => {
-                console.error('Failed to save view mode:', err);
-            });
-        }
-    },
-
-    // Apply view mode visibility
-    applyViewMode() {
-        const mainContainer = this.browserElements.mainContainer;
-        const browserContainer = this.browserElements.container;
-
-        if (!mainContainer || !browserContainer) return;
-
-        if (this.viewMode === 'browser') {
-            mainContainer.classList.add('hidden');
-            browserContainer.classList.remove('hidden');
-            // Show home page if no current content
-            if (!this.browserState.currentUrl) {
-                this.browserShowHome();
-            }
-        } else {
-            mainContainer.classList.remove('hidden');
-            browserContainer.classList.add('hidden');
-        }
-    },
-
-    // Navigate to a URL or path in browser mode
-    async browserNavigateTo(urlOrPath) {
-        const localPath = this.translateUrlToLocalPath(urlOrPath);
-        if (!localPath) {
-            // External link - check if it's a polis comment/post we can fetch
-            if (this.isPolisUrl(urlOrPath)) {
-                await this.browserLoadRemoteContent(urlOrPath);
-                return;
-            }
-            // Otherwise open in new tab
-            window.open(urlOrPath, '_blank');
-            return;
-        }
-
-        try {
-            const content = await this.fetchBrowserContent(localPath);
-            this.browserState.currentUrl = localPath;
-            this.browserState.currentContent = content;
-
-            // Update history
-            if (this.browserState.historyIndex < this.browserState.history.length - 1) {
-                // Clear forward history when navigating to new page
-                this.browserState.history = this.browserState.history.slice(0, this.browserState.historyIndex + 1);
-            }
-            this.browserState.history.push(localPath);
-            this.browserState.historyIndex = this.browserState.history.length - 1;
-
-            this.renderBrowserContent(content);
-            this.updateBrowserNavButtons();
-        } catch (err) {
-            this.showToast('Failed to load: ' + err.message, 'error');
-        }
-    },
-
-    // Check if a URL is a polis site URL (comment or post)
-    isPolisUrl(url) {
-        if (!url) return false;
-        // Match .polis.pub, .polis.site domains or any URL ending in .md
-        return url.match(/\.polis\.(pub|site)\//) || url.endsWith('.md');
-    },
-
-    // Load remote content and render markdown in preview
-    async browserLoadRemoteContent(url) {
-        // Update URL bar immediately
-        if (this.browserElements.urlInput) {
-            this.browserElements.urlInput.value = url;
-        }
-
-        // Update live links to the remote site
-        this.updateBrowserLiveLinks(url, true);
-
-        // Show loading state
-        if (this.browserElements.markdownDisplay) {
-            this.browserElements.markdownDisplay.textContent = '# Loading...\n\nFetching content from ' + url;
-        }
-        if (this.browserElements.previewContent) {
-            this.browserElements.previewContent.innerHTML = `
-                <div class="browser-remote-content">
-                    <p class="remote-notice">Loading remote content...</p>
-                    <p class="remote-url">${this.escapeHtml(url)}</p>
-                </div>
-            `;
-        }
-
-        try {
-            // Fetch the raw markdown from the remote URL
-            const response = await fetch(url);
-            if (!response.ok) {
-                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-            }
-            const markdown = await response.text();
-
-            // Render the markdown using the local render API (strip frontmatter for preview)
-            const markdownForPreview = this.stripFrontmatter(markdown);
-            let renderedHtml = '';
-            try {
-                const result = await this.api('POST', '/api/render', { markdown: markdownForPreview });
-                renderedHtml = result.html || '';
-            } catch (renderErr) {
-                console.warn('Failed to render markdown, showing raw:', renderErr);
-                renderedHtml = `<pre style="white-space: pre-wrap;">${this.escapeHtml(markdownForPreview)}</pre>`;
-            }
-
-            // Update state
-            this.browserState.currentUrl = url;
-            this.browserState.currentContent = {
-                path: url,
-                markdown: markdown,
-                html: renderedHtml,
-                editable: false,
-                type: 'remote',
-                remote: true
-            };
-
-            // Update history
-            if (this.browserState.historyIndex < this.browserState.history.length - 1) {
-                this.browserState.history = this.browserState.history.slice(0, this.browserState.historyIndex + 1);
-            }
-            this.browserState.history.push(url);
-            this.browserState.historyIndex = this.browserState.history.length - 1;
-
-            // Display markdown in left pane (respects frontmatter setting)
-            this.displayMarkdownContent(markdown);
-
-            // Render the preview with styled content
-            if (this.browserElements.previewContent) {
-                this.browserElements.previewContent.innerHTML = renderedHtml;
-            }
-
-            this.updateBrowserEditState(false);
-            this.updateBrowserNavButtons();
-        } catch (err) {
-            console.error('Failed to fetch remote content:', err);
-            if (this.browserElements.markdownDisplay) {
-                this.browserElements.markdownDisplay.textContent = `# Failed to Load\n\nCould not fetch content from:\n${url}\n\nError: ${err.message}`;
-            }
-            if (this.browserElements.previewContent) {
-                this.browserElements.previewContent.innerHTML = `
-                    <div class="browser-remote-content error">
-                        <p class="remote-notice">Failed to load remote content</p>
-                        <p class="remote-url">${this.escapeHtml(url)}</p>
-                        <p class="remote-error">${this.escapeHtml(err.message)}</p>
-                        <p><a href="${this.escapeHtml(url)}" target="_blank">Open in new tab</a></p>
-                    </div>
-                `;
-            }
-            // Hide live links on error
-            this.hideBrowserLiveLinks();
-        }
-    },
-
-    // Fetch content for browser mode
-    async fetchBrowserContent(path) {
-        return await this.api('GET', `/api/content/${encodeURIComponent(path)}`);
-    },
-
-    // Render content in browser mode
-    renderBrowserContent(content) {
-        // Update URL bar
-        if (this.browserElements.urlInput) {
-            this.browserElements.urlInput.value = content.path;
-        }
-
-        // Update live links to the live site
-        this.updateBrowserLiveLinks(content.path, false);
-
-        // Update markdown display (respects frontmatter setting)
-        this.displayMarkdownContent(content.markdown);
-
-        // Update preview
-        if (this.browserElements.previewContent) {
-            this.browserElements.previewContent.innerHTML = content.html;
-            this.attachBrowserLinkHandlers(this.browserElements.previewContent);
-
-            // If viewing index page, append all blessed comments section
-            if (content.path === 'index.html' || content.path === 'index.md') {
-                this.appendBlessedCommentsSection();
-            }
-            // If viewing a post, append comments on that specific post
-            else if (content.path && content.path.startsWith('posts/')) {
-                this.appendPostComments(content.path);
-            }
-        }
-
-        // Update status badge and edit button
-        this.updateBrowserEditState(content.editable);
-
-        // Exit edit mode if currently editing
-        if (this.browserState.isEditing) {
-            this.browserCancelEdit();
-        }
-    },
-
-    // Append blessed comments section to browser preview
-    async appendBlessedCommentsSection() {
-        try {
-            const data = await this.api('GET', '/api/blessed-comments');
-            if (!data.comments || data.comments.length === 0) {
-                return; // No blessed comments to show
-            }
-
-            // Flatten the nested structure: comments is array of {post, blessed[]}
-            const allComments = [];
-            data.comments.forEach(postEntry => {
-                if (postEntry.blessed && Array.isArray(postEntry.blessed)) {
-                    postEntry.blessed.forEach(bc => {
-                        allComments.push({
-                            comment_url: bc.url,
-                            timestamp: bc.blessed_at,
-                            post_url: postEntry.post
-                        });
-                    });
-                }
-            });
-
-            if (allComments.length === 0) {
-                return;
-            }
-
-            // Create the section HTML
-            const section = document.createElement('div');
-            section.className = 'blessed-comments-section';
-            section.innerHTML = '<h2>Comments On My Posts</h2>';
-
-            const list = document.createElement('div');
-            list.className = 'blessed-comments-list';
-
-            allComments.forEach(comment => {
-                const item = document.createElement('div');
-                item.className = 'blessed-comment-item';
-                item.dataset.url = comment.comment_url;
-
-                // Extract author domain from comment_url
-                let author = 'unknown';
-                try {
-                    const url = new URL(comment.comment_url);
-                    author = url.hostname;
-                } catch (e) {
-                    author = comment.comment_url.split('/')[2] || 'unknown';
-                }
-
-                // Format date
-                let dateStr = '';
-                if (comment.timestamp) {
-                    const date = new Date(comment.timestamp);
-                    dateStr = date.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
-                }
-
-                item.innerHTML = `
-                    <span class="comment-date-author">
-                        <span class="comment-date">${this.escapeHtml(dateStr)}</span>
-                        <span class="comment-author">on ${this.escapeHtml(author)}</span>
-                    </span>
-                    <span class="comment-preview">View comment...</span>
-                `;
-
-                // Add click handler to load remote content
-                item.addEventListener('click', () => {
-                    this.browserNavigateTo(comment.comment_url);
-                });
-
-                list.appendChild(item);
-            });
-
-            section.appendChild(list);
-
-            // Insert before footer if it exists, otherwise append
-            const footer = this.browserElements.previewContent.querySelector('footer, .site-footer');
-            if (footer) {
-                footer.parentNode.insertBefore(section, footer);
-            } else {
-                this.browserElements.previewContent.appendChild(section);
-            }
-
-        } catch (err) {
-            console.log('Could not load blessed comments:', err.message);
-        }
-    },
-
-    // Append comments on a specific post
-    async appendPostComments(postPath) {
-        try {
-            const data = await this.api('GET', '/api/blessed-comments');
-            if (!data.comments || data.comments.length === 0) {
-                console.log('appendPostComments: No blessed comments in data');
-                return;
-            }
-
-            // Build the full URL for this post to match against the "post" field
-            const siteBaseUrl = this.siteInfo?.base_url || '';
-            // Convert .html path to .md for matching (blessed comments use .md URLs)
-            const mdPath = postPath.replace(/\.html$/, '.md');
-            const postUrl = siteBaseUrl ? `${siteBaseUrl}/${mdPath}` : mdPath;
-
-            console.log('appendPostComments: Looking for post', { postPath, mdPath, postUrl, siteBaseUrl });
-            console.log('appendPostComments: Available posts', data.comments.map(e => e.post));
-
-            // Find the post entry that matches this post
-            // data.comments is array of {post: "url", blessed: [{url, version, blessed_at}]}
-            const postEntry = data.comments.find(entry => {
-                const entryPost = entry.post || '';
-                return entryPost === postUrl ||
-                       entryPost.endsWith('/' + mdPath);
-            });
-
-            if (!postEntry || !postEntry.blessed || postEntry.blessed.length === 0) {
-                return; // No comments on this post
-            }
-
-            // Create the section HTML
-            const section = document.createElement('div');
-            section.className = 'blessed-comments-section post-comments';
-            section.innerHTML = `<h2>Comments (${postEntry.blessed.length})</h2>`;
-
-            const list = document.createElement('div');
-            list.className = 'blessed-comments-list';
-
-            postEntry.blessed.forEach(bc => {
-                const item = document.createElement('div');
-                item.className = 'blessed-comment-item';
-                item.dataset.url = bc.url;
-
-                // Extract author domain from comment url
-                let author = 'unknown';
-                try {
-                    const url = new URL(bc.url);
-                    author = url.hostname;
-                } catch (e) {
-                    author = bc.url.split('/')[2] || 'unknown';
-                }
-
-                // Format date
-                let dateStr = '';
-                if (bc.blessed_at) {
-                    const date = new Date(bc.blessed_at);
-                    dateStr = date.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
-                }
-
-                item.innerHTML = `
-                    <span class="comment-date-author">
-                        <span class="comment-date">${this.escapeHtml(dateStr)}</span>
-                        <span class="comment-author">on ${this.escapeHtml(author)}</span>
-                    </span>
-                    <span class="comment-preview">View comment...</span>
-                `;
-
-                // Add click handler to load remote content
-                item.addEventListener('click', () => {
-                    this.browserNavigateTo(bc.url);
-                });
-
-                list.appendChild(item);
-            });
-
-            section.appendChild(list);
-            this.browserElements.previewContent.appendChild(section);
-
-        } catch (err) {
-            console.log('Could not load post comments:', err.message);
-        }
-    },
-
-    // Attach click handlers to links in browser preview
-    attachBrowserLinkHandlers(container) {
-        const siteBaseUrl = this.siteInfo?.base_url || '';
-
-        container.querySelectorAll('a').forEach(link => {
-            const href = link.getAttribute('href');
-            const localPath = this.translateUrlToLocalPath(href);
-
-            if (localPath) {
-                // Internal link - navigate within browser mode
-                link.addEventListener('click', (e) => {
-                    e.preventDefault();
-                    this.browserNavigateTo(localPath);
-                });
-                link.style.cursor = 'pointer';
-            } else if (href && this.isPolisUrl(href)) {
-                // External polis link - load remote markdown
-                link.addEventListener('click', (e) => {
-                    e.preventDefault();
-                    this.browserNavigateTo(href);
-                });
-                link.style.cursor = 'pointer';
-            } else if (href && !href.startsWith('#') && !href.startsWith('mailto:')) {
-                // External link - ensure opens in new tab
-                link.setAttribute('target', '_blank');
-                link.setAttribute('rel', 'noopener noreferrer');
-            }
-        });
-    },
-
-    // Translate URL to local path
-    translateUrlToLocalPath(href) {
-        if (!href) return null;
-
-        const siteBaseUrl = this.siteInfo?.base_url || '';
-
-        // Case 1: Full URL matching site base URL
-        if (siteBaseUrl && href.startsWith(siteBaseUrl)) {
-            let path = href.slice(siteBaseUrl.length).replace(/^\//, '');
-            return this.normalizePath(path);
-        }
-
-        // Case 2: Absolute path starting with /
-        if (href.startsWith('/') && !href.startsWith('//')) {
-            return this.normalizePath(href.slice(1));
-        }
-
-        // Case 3: Relative path (no protocol)
-        if (!href.includes('://') && !href.startsWith('#') && !href.startsWith('mailto:')) {
-            // Resolve relative to current path
-            return this.resolveRelativePath(href, this.browserState.currentUrl);
-        }
-
-        // Case 4: External URL or anchor - return null
-        return null;
-    },
-
-    // Normalize path for browser mode navigation
-    normalizePath(path) {
-        if (!path) return null;
-        // Keep .html files as-is for browser mode (we load rendered HTML)
-        if (path.endsWith('.html')) {
-            return path;
-        }
-        // Convert .md to .html for navigation (browser mode shows rendered content)
-        if (path.endsWith('.md')) {
-            return path.slice(0, -3) + '.html';
-        }
-        return path;
-    },
-
-    // Resolve relative path
-    resolveRelativePath(relativePath, currentUrl) {
-        if (!currentUrl) return relativePath;
-
-        // Get directory of current URL
-        const parts = currentUrl.split('/');
-        parts.pop(); // Remove filename
-        const currentDir = parts.join('/');
-
-        if (relativePath.startsWith('./')) {
-            relativePath = relativePath.slice(2);
-        }
-
-        // Handle ../ navigation
-        while (relativePath.startsWith('../')) {
-            relativePath = relativePath.slice(3);
-            if (parts.length > 0) {
-                parts.pop();
-            }
-        }
-
-        const resolved = parts.length > 0 ? parts.join('/') + '/' + relativePath : relativePath;
-        return this.normalizePath(resolved);
-    },
-
-    // Browser back navigation
-    browserBack() {
-        if (this.browserState.historyIndex > 0) {
-            this.browserState.historyIndex--;
-            const path = this.browserState.history[this.browserState.historyIndex];
-            this.browserLoadPath(path);
-        }
-    },
-
-    // Browser forward navigation
-    browserForward() {
-        if (this.browserState.historyIndex < this.browserState.history.length - 1) {
-            this.browserState.historyIndex++;
-            const path = this.browserState.history[this.browserState.historyIndex];
-            this.browserLoadPath(path);
-        }
-    },
-
-    // Load path without adding to history
-    async browserLoadPath(path) {
-        // Check if this is a remote URL
-        if (path && path.includes('://')) {
-            await this.browserLoadRemoteContentNoHistory(path);
-            return;
-        }
-
-        try {
-            const content = await this.fetchBrowserContent(path);
-            this.browserState.currentUrl = path;
-            this.browserState.currentContent = content;
-            this.renderBrowserContent(content);
-            this.updateBrowserNavButtons();
-        } catch (err) {
-            this.showToast('Failed to load: ' + err.message, 'error');
-        }
-    },
-
-    // Load remote content without modifying history (for back/forward)
-    async browserLoadRemoteContentNoHistory(url) {
-        if (this.browserElements.urlInput) {
-            this.browserElements.urlInput.value = url;
-        }
-
-        // Update live links
-        this.updateBrowserLiveLinks(url, true);
-
-        try {
-            const response = await fetch(url);
-            if (!response.ok) {
-                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-            }
-            const markdown = await response.text();
-
-            // Render the markdown (strip frontmatter for preview)
-            const markdownForPreview = this.stripFrontmatter(markdown);
-            let renderedHtml = '';
-            try {
-                const result = await this.api('POST', '/api/render', { markdown: markdownForPreview });
-                renderedHtml = result.html || '';
-            } catch (renderErr) {
-                renderedHtml = `<pre style="white-space: pre-wrap;">${this.escapeHtml(markdownForPreview)}</pre>`;
-            }
-
-            this.browserState.currentUrl = url;
-            this.browserState.currentContent = {
-                path: url,
-                markdown: markdown,
-                html: renderedHtml,
-                editable: false,
-                type: 'remote',
-                remote: true
-            };
-
-            // Display markdown (respects frontmatter setting)
-            this.displayMarkdownContent(markdown);
-            if (this.browserElements.previewContent) {
-                this.browserElements.previewContent.innerHTML = renderedHtml;
-            }
-
-            this.updateBrowserEditState(false);
-            this.updateBrowserNavButtons();
-        } catch (err) {
-            console.error('Failed to fetch remote content:', err);
-            this.hideBrowserLiveLinks();
-        }
-    },
-
-    // Update browser nav button states
-    updateBrowserNavButtons() {
-        if (this.browserElements.backBtn) {
-            this.browserElements.backBtn.disabled = this.browserState.historyIndex <= 0;
-        }
-        if (this.browserElements.forwardBtn) {
-            this.browserElements.forwardBtn.disabled = this.browserState.historyIndex >= this.browserState.history.length - 1;
-        }
-    },
-
-    // Update live links in pane headers with URLs to the live site
-    updateBrowserLiveLinks(path, isRemote = false) {
-        const linkHtml = this.browserElements.linkHtml;
-        const linkMd = this.browserElements.linkMd;
-
-        // Helper to hide both links
-        const hideLinks = () => {
-            if (linkHtml) linkHtml.classList.add('hidden');
-            if (linkMd) linkMd.classList.add('hidden');
-        };
-
-        // For remote URLs, extract base and show links
-        if (isRemote && path) {
-            try {
-                const url = new URL(path);
-                const basePath = url.pathname.replace(/\.(md|html)$/, '');
-                const baseUrl = `${url.protocol}//${url.host}${basePath}`;
-                const htmlUrl = baseUrl + '.html';
-                const mdUrl = baseUrl + '.md';
-
-                if (linkHtml) {
-                    linkHtml.href = htmlUrl;
-                    linkHtml.textContent = htmlUrl;
-                    linkHtml.classList.remove('hidden');
-                }
-                if (linkMd) {
-                    linkMd.href = mdUrl;
-                    linkMd.textContent = mdUrl;
-                    linkMd.classList.remove('hidden');
-                }
-            } catch (e) {
-                hideLinks();
-            }
-            return;
-        }
-
-        // For local content, use the site base URL
-        if (!this.siteBaseUrl || !path) {
-            hideLinks();
-            return;
-        }
-
-        // Build the live URLs
-        const basePath = path.replace(/\.(md|html)$/, '');
-        const baseUrl = this.siteBaseUrl.replace(/\/$/, '');
-        const htmlUrl = `${baseUrl}/${basePath}.html`;
-        const mdUrl = `${baseUrl}/${basePath}.md`;
-
-        if (linkHtml) {
-            linkHtml.href = htmlUrl;
-            linkHtml.textContent = htmlUrl;
-            linkHtml.classList.remove('hidden');
-        }
-        if (linkMd) {
-            linkMd.href = mdUrl;
-            linkMd.textContent = mdUrl;
-            linkMd.classList.remove('hidden');
-        }
-    },
-
-    // Hide live links in pane headers
-    hideBrowserLiveLinks() {
-        if (this.browserElements.linkHtml) {
-            this.browserElements.linkHtml.classList.add('hidden');
-        }
-        if (this.browserElements.linkMd) {
-            this.browserElements.linkMd.classList.add('hidden');
-        }
-    },
-
-    // Update frontmatter toggle button appearance
-    updateFrontmatterToggle() {
-        const toggle = this.browserElements.frontmatterToggle;
-        if (toggle) {
-            toggle.classList.toggle('active', this.showFrontmatter);
-            toggle.textContent = this.showFrontmatter ? 'Hide FM' : 'Show FM';
-            toggle.title = this.showFrontmatter ? 'Hide frontmatter' : 'Show frontmatter';
-        }
-    },
-
-    // Toggle frontmatter visibility and save to config
-    async toggleFrontmatter() {
-        this.showFrontmatter = !this.showFrontmatter;
-        this.updateFrontmatterToggle();
-
-        // Re-display current content with new setting
-        if (this.browserState.currentContent) {
-            this.displayMarkdownContent(this.browserState.currentContent.markdown);
-        }
-
-        // Save to server
-        try {
-            await this.api('POST', '/api/settings/show-frontmatter', {
-                show_frontmatter: this.showFrontmatter
-            });
-        } catch (err) {
-            console.error('Failed to save frontmatter setting:', err);
-        }
-    },
-
-    // Update editor FM toggle button and display pane visibility
-    updateEditorFmToggle() {
-        const toggle = document.getElementById('editor-fm-toggle');
-        const fmDisplay = document.getElementById('editor-fm-display');
-        const fmContent = document.getElementById('editor-fm-content');
-        const hasFm = !!this.currentFrontmatter;
-
-        if (toggle) {
-            // Only show the toggle button when there is frontmatter to display
-            toggle.classList.toggle('hidden', !hasFm);
-            toggle.classList.toggle('active', this.showFrontmatter);
-            toggle.textContent = this.showFrontmatter ? 'Hide FM' : 'Show FM';
-            toggle.title = this.showFrontmatter ? 'Hide frontmatter' : 'Show frontmatter';
-        }
-
-        if (fmDisplay && fmContent) {
-            const visible = hasFm && this.showFrontmatter;
-            fmDisplay.classList.toggle('hidden', !visible);
-            if (visible) {
-                fmContent.textContent = this.currentFrontmatter;
-            }
-        }
-    },
-
-    // Toggle frontmatter display pane and save setting
-    async toggleEditorFrontmatter() {
-        this.showFrontmatter = !this.showFrontmatter;
-        this.updateEditorFmToggle();
-        this.updateFrontmatterToggle();
-
-        // Save to server
-        try {
-            await this.api('POST', '/api/settings/show-frontmatter', {
-                show_frontmatter: this.showFrontmatter
-            });
-        } catch (err) {
-            console.error('Failed to save frontmatter setting:', err);
-        }
-    },
-
-    // Strip frontmatter from markdown content
-    stripFrontmatter(markdown) {
-        if (!markdown) return markdown;
-        // Match frontmatter between --- markers at the start
-        const match = markdown.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/);
-        if (match) {
-            return markdown.slice(match[0].length);
-        }
-        return markdown;
-    },
-
-    // Display markdown content in the browser pane (respects frontmatter setting)
-    displayMarkdownContent(markdown) {
-        if (this.browserElements.markdownDisplay) {
-            const content = this.showFrontmatter ? markdown : this.stripFrontmatter(markdown);
-            this.browserElements.markdownDisplay.textContent = content;
-        }
-    },
-
-    // Update edit state UI
-    updateBrowserEditState(editable) {
-        const editBtn = this.browserElements.editBtn;
-
-        if (editBtn) {
-            const textSpan = editBtn.querySelector('span');
-            if (this.browserState.isEditing) {
-                // Show cancel state
-                editBtn.classList.remove('hidden');
-                editBtn.classList.add('editing');
-                if (textSpan) textSpan.textContent = 'CANCEL';
-                editBtn.title = 'Cancel editing';
-            } else if (editable) {
-                // Show edit state
-                editBtn.classList.remove('hidden', 'editing');
-                if (textSpan) textSpan.textContent = 'EDIT';
-                editBtn.title = 'Edit';
-            } else {
-                // Hide button for read-only content
-                editBtn.classList.add('hidden');
-                editBtn.classList.remove('editing');
-            }
-        }
-    },
-
-    // Show home page in browser mode (loads index.html)
-    async browserShowHome() {
-        // Clear history when going home
-        this.browserState.history = [];
-        this.browserState.historyIndex = -1;
-
-        try {
-            // Try to load index.html as the home page
-            const content = await this.fetchBrowserContent('index.html');
-
-            // Success - update state and render
-            this.browserState.currentUrl = 'index.html';
-            this.browserState.currentContent = content;
-            this.browserState.history.push('index.html');
-            this.browserState.historyIndex = 0;
-
-            this.renderBrowserContent(content);
-            this.updateBrowserNavButtons();
-        } catch (err) {
-            // index.html doesn't exist - site needs to be rendered
-            console.log('No index.html found, prompting to render site');
-            this.showRenderSitePrompt();
-        }
-    },
-
-    // Show prompt to render the site
-    showRenderSitePrompt() {
-        if (this.browserElements.urlInput) {
-            this.browserElements.urlInput.value = '';
-        }
-        // Hide live links when no content
-        this.hideBrowserLiveLinks();
-        if (this.browserElements.markdownDisplay) {
-            this.browserElements.markdownDisplay.textContent = '# Site Not Rendered\n\nRun `polis render` to generate your site.';
-        }
-        if (this.browserElements.previewContent) {
-            this.browserElements.previewContent.innerHTML = `
-                <div class="browser-home-page">
-                    <h2>Site Not Rendered</h2>
-                    <p>Browser mode displays your rendered site, but it looks like your site hasn't been generated yet.</p>
-                    <p>To generate your site, run:</p>
-                    <pre class="browser-code-block">polis render</pre>
-                    <p>This command:</p>
-                    <ul>
-                        <li>Converts your markdown posts to HTML</li>
-                        <li>Generates index.html and other pages</li>
-                        <li>Only modifies files in your local site directory</li>
-                        <li>Does not upload or publish anything</li>
-                    </ul>
-                    <p>After rendering, refresh this page to browse your site.</p>
-                </div>
-            `;
-        }
-
-        this.browserState.currentUrl = null;
-        this.browserState.currentContent = null;
-        this.updateBrowserEditState(false);
-        this.updateBrowserNavButtons();
-    },
-
-    // Toggle edit mode in browser
-    browserToggleEdit() {
-        const content = this.browserState.currentContent;
-        if (!content || !content.editable) return;
-
-        if (this.browserState.isEditing) {
-            // Exit edit mode without saving
-            this.browserCancelEdit();
-        } else {
-            // Enter edit mode
-            this.browserState.isEditing = true;
-            this.browserState.originalMarkdown = content.markdown;
-
-            // Show edit textarea, hide display
-            if (this.browserElements.markdownDisplay) {
-                this.browserElements.markdownDisplay.classList.add('hidden');
-            }
-            if (this.browserElements.markdownEdit) {
-                this.browserElements.markdownEdit.classList.remove('hidden');
-                this.browserElements.markdownEdit.value = content.markdown;
-                this.browserElements.markdownEdit.focus();
-            }
-
-            // Show actions footer
-            if (this.browserElements.actionsFooter) {
-                this.browserElements.actionsFooter.classList.remove('hidden');
-            }
-
-            this.updateBrowserEditState(true);
-        }
-    },
-
-    // Cancel edit mode
-    browserCancelEdit() {
-        this.browserState.isEditing = false;
-
-        // Hide edit textarea, show display
-        if (this.browserElements.markdownEdit) {
-            this.browserElements.markdownEdit.classList.add('hidden');
-        }
-        if (this.browserElements.markdownDisplay) {
-            this.browserElements.markdownDisplay.classList.remove('hidden');
-        }
-
-        // Hide actions footer
-        if (this.browserElements.actionsFooter) {
-            this.browserElements.actionsFooter.classList.add('hidden');
-        }
-
-        // Restore original content in preview
-        if (this.browserState.currentContent) {
-            this.updateBrowserEditState(this.browserState.currentContent.editable);
-        }
-    },
-
-    // Update preview while editing (debounced)
-    browserUpdatePreview: (function() {
-        let timeout = null;
-        return async function() {
-            if (timeout) clearTimeout(timeout);
-            timeout = setTimeout(async () => {
-                if (!this.browserState.isEditing) return;
-
-                const markdown = this.browserElements.markdownEdit?.value || '';
-                if (!markdown.trim()) return;
-
-                try {
-                    const result = await this.api('POST', '/api/render', { markdown });
-                    if (this.browserElements.previewContent && this.browserState.isEditing) {
-                        this.browserElements.previewContent.innerHTML = result.html;
-                        this.attachBrowserLinkHandlers(this.browserElements.previewContent);
-                    }
-                } catch (err) {
-                    console.error('Preview update failed:', err);
-                }
-            }, 300);
-        };
-    })(),
-
-    // Publish changes from browser mode
-    async browserPublish() {
-        const content = this.browserState.currentContent;
-        if (!content || !this.browserState.isEditing) return;
-
-        const markdown = this.browserElements.markdownEdit?.value || '';
-        if (!markdown.trim()) {
-            this.showToast('Nothing to publish', 'warning');
-            return;
-        }
-
-        const confirmed = await this.showConfirmModal(
-            'Publish Changes',
-            'This will re-sign and publish the updated content.',
-            'Publish'
-        );
-        if (!confirmed) return;
-
-        const publishBtn = this.browserElements.publishBtn;
-        if (publishBtn) {
-            publishBtn.classList.add('btn-loading');
-            publishBtn.disabled = true;
-        }
-
-        try {
-            await this.api('POST', '/api/republish', {
-                path: content.path,
-                markdown: markdown
-            });
-
-            this.showToast('Published successfully!', 'success');
-
-            // Reload content
-            await this.browserLoadPath(content.path);
-            this.browserCancelEdit();
-        } catch (err) {
-            this.showToast('Failed to publish: ' + err.message, 'error');
-        } finally {
-            if (publishBtn) {
-                publishBtn.classList.remove('btn-loading');
-                publishBtn.disabled = false;
-            }
-        }
-    },
-
-    // Save draft from browser mode
-    async browserSaveDraft() {
-        const content = this.browserState.currentContent;
-        if (!content || !this.browserState.isEditing) return;
-
-        const markdown = this.browserElements.markdownEdit?.value || '';
-        if (!markdown.trim()) {
-            this.showToast('Nothing to save', 'warning');
-            return;
-        }
-
-        const saveDraftBtn = this.browserElements.saveDraftBtn;
-        if (saveDraftBtn) {
-            saveDraftBtn.classList.add('btn-loading');
-            saveDraftBtn.disabled = true;
-        }
-
-        try {
-            // Extract title for draft ID
-            const title = this.extractTitleFromMarkdown(markdown) || 'untitled';
-            const id = this.slugify(title);
-
-            await this.api('POST', '/api/drafts', { id, markdown });
-            this.showToast('Draft saved', 'success');
-        } catch (err) {
-            this.showToast('Failed to save draft: ' + err.message, 'error');
-        } finally {
-            if (saveDraftBtn) {
-                saveDraftBtn.classList.remove('btn-loading');
-                saveDraftBtn.disabled = false;
-            }
-        }
-    },
-
-    // Bind browser mode events
-    bindBrowserEvents() {
-        const be = this.browserElements;
-
-        // Mode toggle buttons
-        if (be.listModeBtn) {
-            be.listModeBtn.addEventListener('click', () => this.setViewMode('list'));
-        }
-        if (be.browserModeBtn) {
-            be.browserModeBtn.addEventListener('click', () => this.setViewMode('browser'));
-        }
-
-        // Browser nav buttons
-        if (be.backBtn) {
-            be.backBtn.addEventListener('click', () => this.browserBack());
-        }
-        if (be.forwardBtn) {
-            be.forwardBtn.addEventListener('click', () => this.browserForward());
-        }
-        if (be.homeBtn) {
-            be.homeBtn.addEventListener('click', () => this.browserShowHome());
-        }
-        if (be.editBtn) {
-            be.editBtn.addEventListener('click', () => this.browserToggleEdit());
-        }
-        if (be.settingsBtn) {
-            be.settingsBtn.addEventListener('click', () => {
-                // Switch to list mode and show settings
-                this.setViewMode('list');
-                this.setActiveView('settings');
-            });
-        }
-        if (be.frontmatterToggle) {
-            be.frontmatterToggle.addEventListener('click', () => this.toggleFrontmatter());
-        }
-
-        // Snippet edit toggle
-        if (be.snippetEditToggle) {
-            be.snippetEditToggle.addEventListener('click', () => this.toggleSnippetEditMode());
-        }
-
-        // Includes toggle (for viewing nested snippet includes)
-        if (be.includesToggle) {
-            be.includesToggle.addEventListener('click', () => this.toggleIncludesMode());
-        }
-
-        // Edit action buttons
-        if (be.cancelBtn) {
-            be.cancelBtn.addEventListener('click', () => this.browserCancelEdit());
-        }
-        if (be.saveDraftBtn) {
-            be.saveDraftBtn.addEventListener('click', () => this.browserSaveDraft());
-        }
-        if (be.publishBtn) {
-            be.publishBtn.addEventListener('click', () => this.browserPublish());
-        }
-
-        // Live preview while editing
-        if (be.markdownEdit) {
-            be.markdownEdit.addEventListener('input', () => this.browserUpdatePreview());
-        }
-    },
-
-    // ========================================
-    // Snippet Edit Mode Functions
-    // ========================================
-
-    // Toggle snippet edit mode on/off
-    toggleSnippetEditMode() {
-        this.browserState.snippetEditMode = !this.browserState.snippetEditMode;
-        const toggle = this.browserElements.snippetEditToggle;
-
-        if (this.browserState.snippetEditMode) {
-            toggle.classList.add('active');
-            this.enableSnippetEditMode();
-        } else {
-            toggle.classList.remove('active');
-            this.disableSnippetEditMode();
-        }
-    },
-
-    // Enable snippet edit mode - scan for markers and add click handlers
-    enableSnippetEditMode() {
-        const previewContent = this.browserElements.previewContent;
-        if (!previewContent) return;
-
-        // Find all snippet boundary markers
-        const boundaries = previewContent.querySelectorAll('.polis-snippet-boundary');
-        if (boundaries.length === 0) {
-            this.showToast('No editable snippets found. Re-render the page to enable snippet editing.', 'info');
-            return;
-        }
-
-        // For each boundary, wrap the snippet content in an editable container
-        boundaries.forEach((boundary, index) => {
-            const snippetId = boundary.dataset.snippet;
-            const snippetPath = boundary.dataset.path;
-            const snippetSource = boundary.dataset.source;
-
-            // Find the end marker using the comment text
-            const endComment = this.findSnippetEndComment(boundary, snippetId);
-            if (!endComment) {
-                console.warn('Could not find end marker for snippet:', snippetId);
-                return;
-            }
-
-            // Get all nodes between start and end
-            const wrapper = document.createElement('div');
-            wrapper.className = 'snippet-editable';
-            wrapper.dataset.snippetId = snippetId;
-            wrapper.dataset.snippetPath = snippetPath;
-            wrapper.dataset.snippetSource = snippetSource;
-            wrapper.dataset.snippetLabel = snippetPath.split('/').pop(); // Just filename for label
-
-            // Collect nodes between boundary and end comment
-            let currentNode = boundary.nextSibling;
-            const nodesToWrap = [];
-            while (currentNode && currentNode !== endComment) {
-                nodesToWrap.push(currentNode);
-                currentNode = currentNode.nextSibling;
-            }
-
-            // Only wrap if we found content
-            if (nodesToWrap.length > 0) {
-                // Insert wrapper before first content node
-                boundary.parentNode.insertBefore(wrapper, nodesToWrap[0]);
-                // Move content nodes into wrapper
-                nodesToWrap.forEach(node => wrapper.appendChild(node));
-            }
-
-            // Add click handler
-            wrapper.addEventListener('click', (e) => {
-                // Stop propagation to prevent parent snippets from firing
-                e.stopPropagation();
-                this.openSnippetForEditing(snippetId, snippetPath, snippetSource);
-            });
-        });
-    },
-
-    // Find the end comment for a snippet (HTML comment)
-    findSnippetEndComment(boundary, snippetId) {
-        const parent = boundary.parentNode;
-        if (!parent) return null;
-
-        // Walk through siblings looking for the end comment
-        let current = boundary.nextSibling;
-        while (current) {
-            if (current.nodeType === Node.COMMENT_NODE) {
-                const commentText = current.textContent.trim();
-                if (commentText.includes('POLIS-SNIPPET-END:') && commentText.includes(snippetId)) {
-                    return current;
-                }
-            }
-            current = current.nextSibling;
-        }
-        return null;
-    },
-
-    // Disable snippet edit mode - remove click handlers and styling
-    disableSnippetEditMode() {
-        const previewContent = this.browserElements.previewContent;
-        if (!previewContent) return;
-
-        // If editing a snippet, cancel and return to markdown view
-        if (this.browserState.editingSnippet) {
-            this.cancelSnippetEdit();
-        }
-
-        // Find all editable wrappers and unwrap them
-        const wrappers = previewContent.querySelectorAll('.snippet-editable');
-        wrappers.forEach(wrapper => {
-            // Move children back to parent
-            const parent = wrapper.parentNode;
-            while (wrapper.firstChild) {
-                parent.insertBefore(wrapper.firstChild, wrapper);
-            }
-            parent.removeChild(wrapper);
-        });
-    },
-
-    // Open a snippet for editing
-    async openSnippetForEditing(snippetId, snippetPath, snippetSource) {
-        try {
-            // Fetch snippet content (include source to find correct file)
-            const result = await this.api('GET', `/api/snippets/${encodeURIComponent(snippetPath)}?source=${snippetSource}`);
-
-            // If we're already editing a snippet, push it to the nav stack for back navigation
-            if (this.browserState.editingSnippet) {
-                this.browserState.snippetNavStack.push({
-                    path: this.browserState.editingSnippet.path,
-                    source: this.browserState.editingSnippet.source,
-                    content: this.browserState.editingSnippet.content,
-                });
-            }
-
-            // Store editing state
-            this.browserState.editingSnippet = {
-                id: snippetId,
-                path: snippetPath,
-                source: snippetSource,
-                content: result.content || '',
-            };
-
-            // Reset showIncludes when opening a new snippet
-            this.browserState.showIncludes = false;
-            if (this.browserElements.includesToggle) {
-                this.browserElements.includesToggle.classList.remove('active');
-            }
-
-            // Update pane header to show snippet name
-            const filename = snippetPath.split('/').pop();
-            if (this.browserElements.codePaneLabel) {
-                this.browserElements.codePaneLabel.textContent = `Snippet: ${filename}`;
-            }
-
-            // Show INCLUDES toggle when editing a snippet
-            if (this.browserElements.includesToggle) {
-                this.browserElements.includesToggle.classList.remove('hidden');
-            }
-
-            // Show parent link if we have a navigation stack
-            this.updateSnippetParentLink();
-
-            // Show the snippet content in the edit area (default: edit mode)
-            this.browserElements.markdownDisplay.classList.add('hidden');
-            this.browserElements.markdownEdit.classList.remove('hidden');
-            this.browserElements.markdownEdit.value = result.content || '';
-
-            // Show the actions footer for save/cancel
-            if (this.browserElements.actionsFooter) {
-                this.browserElements.actionsFooter.classList.remove('hidden');
-            }
-
-            // Update button text for snippet editing
-            if (this.browserElements.saveDraftBtn) {
-                this.browserElements.saveDraftBtn.textContent = 'Cancel';
-                this.browserElements.saveDraftBtn.onclick = () => this.cancelSnippetEdit();
-            }
-            if (this.browserElements.publishBtn) {
-                this.browserElements.publishBtn.textContent = 'Save Snippet';
-                this.browserElements.publishBtn.onclick = () => this.saveSnippetEdit();
-            }
-            if (this.browserElements.cancelBtn) {
-                this.browserElements.cancelBtn.classList.add('hidden');
-            }
-
-            // Update edit button to show editing state
-            if (this.browserElements.editBtn) {
-                this.browserElements.editBtn.classList.add('editing');
-                this.browserElements.editBtn.innerHTML = '✎ <span>EDITING</span>';
-            }
-
-            // Focus the textarea
-            this.browserElements.markdownEdit.focus();
-
-        } catch (err) {
-            this.showToast('Failed to load snippet: ' + err.message, 'error');
-        }
-    },
-
-    // Update the parent link for snippet navigation
-    updateSnippetParentLink() {
-        const parentLink = this.browserElements.snippetParentLink;
-        if (!parentLink) return;
-
-        if (this.browserState.snippetNavStack.length > 0) {
-            const parent = this.browserState.snippetNavStack[this.browserState.snippetNavStack.length - 1];
-            const parentFilename = parent.path.split('/').pop();
-            parentLink.innerHTML = `<a href="#" onclick="App.navigateToParentSnippet(); return false;">← ${this.escapeHtml(parentFilename)}</a>`;
-            parentLink.classList.remove('hidden');
-        } else {
-            parentLink.classList.add('hidden');
-        }
-    },
-
-    // Navigate back to parent snippet
-    async navigateToParentSnippet() {
-        if (this.browserState.snippetNavStack.length === 0) return;
-
-        const parent = this.browserState.snippetNavStack.pop();
-
-        // Restore parent snippet directly without fetching
-        this.browserState.editingSnippet = {
-            id: parent.path,
-            path: parent.path,
-            source: parent.source,
-            content: parent.content,
-        };
-
-        // Reset showIncludes
-        this.browserState.showIncludes = false;
-        if (this.browserElements.includesToggle) {
-            this.browserElements.includesToggle.classList.remove('active');
-        }
-
-        // Update pane header
-        const filename = parent.path.split('/').pop();
-        if (this.browserElements.codePaneLabel) {
-            this.browserElements.codePaneLabel.textContent = `Snippet: ${filename}`;
-        }
-
-        // Update parent link
-        this.updateSnippetParentLink();
-
-        // Show content in edit area
-        this.browserElements.markdownEdit.value = parent.content;
-        this.browserElements.markdownDisplay.classList.add('hidden');
-        this.browserElements.markdownEdit.classList.remove('hidden');
-    },
-
-    // Toggle INCLUDES mode (show snippet content as display with clickable includes)
-    toggleIncludesMode() {
-        if (!this.browserState.editingSnippet) return;
-
-        // If switching from edit mode, save the textarea content first
-        if (!this.browserState.showIncludes) {
-            this.browserState.editingSnippet.content = this.browserElements.markdownEdit.value;
-        }
-
-        this.browserState.showIncludes = !this.browserState.showIncludes;
-        const toggle = this.browserElements.includesToggle;
-
-        if (this.browserState.showIncludes) {
-            toggle.classList.add('active');
-            this.renderSnippetWithIncludes();
-        } else {
-            toggle.classList.remove('active');
-            this.renderSnippetForEditing();
-        }
-    },
-
-    // Render snippet in display mode with clickable includes
-    renderSnippetWithIncludes() {
-        const content = this.browserState.editingSnippet?.content || '';
-
-        // Parse {{> path }} patterns and make them clickable
-        const html = this.parseIncludesToHtml(content);
-
-        // Show in display area
-        this.browserElements.markdownEdit.classList.add('hidden');
-        this.browserElements.markdownDisplay.classList.remove('hidden');
-        this.browserElements.markdownDisplay.innerHTML = html;
-    },
-
-    // Parse include patterns and convert to clickable HTML
-    parseIncludesToHtml(content) {
-        // Escape HTML first
-        let html = this.escapeHtml(content);
-
-        // Pattern for mustache partials: {{> path }} or {{>path}}
-        // The path can be: global:name, theme:name, or just name
-        const includePattern = /\{\{&gt;\s*([^\s}]+)\s*\}\}/g;
-
-        html = html.replace(includePattern, (match, path) => {
-            // Determine source from prefix
-            let source = 'theme'; // default
-            let snippetPath = path;
-
-            if (path.startsWith('global:')) {
-                source = 'global';
-                snippetPath = path.substring(7);
-            } else if (path.startsWith('theme:')) {
-                source = 'theme';
-                snippetPath = path.substring(6);
-            }
-
-            return `<span class="snippet-include-link" data-path="${this.escapeHtml(snippetPath)}" data-source="${source}" onclick="App.navigateToIncludedSnippet('${this.escapeHtml(snippetPath)}', '${source}')">{{&gt; ${this.escapeHtml(path)} }}</span>`;
-        });
-
-        return html;
-    },
-
-    // Navigate to an included snippet (when clicking a {{> path }} link)
-    async navigateToIncludedSnippet(snippetPath, source) {
-        // Open the included snippet for editing
-        await this.openSnippetForEditing(snippetPath, snippetPath, source);
-    },
-
-    // Render snippet in edit mode (textarea)
-    renderSnippetForEditing() {
-        const content = this.browserState.editingSnippet?.content || '';
-
-        // Show in edit area
-        this.browserElements.markdownDisplay.classList.add('hidden');
-        this.browserElements.markdownEdit.classList.remove('hidden');
-        this.browserElements.markdownEdit.value = content;
-    },
-
-    // Cancel snippet editing
-    cancelSnippetEdit() {
-        this.browserState.editingSnippet = null;
-        this.browserState.snippetNavStack = [];
-        this.browserState.showIncludes = false;
-
-        // Restore pane header
-        if (this.browserElements.codePaneLabel) {
-            this.browserElements.codePaneLabel.textContent = 'Markdown';
-        }
-
-        // Hide parent link
-        if (this.browserElements.snippetParentLink) {
-            this.browserElements.snippetParentLink.classList.add('hidden');
-        }
-
-        // Hide INCLUDES toggle
-        if (this.browserElements.includesToggle) {
-            this.browserElements.includesToggle.classList.add('hidden');
-            this.browserElements.includesToggle.classList.remove('active');
-        }
-
-        // Restore markdown display
-        this.browserElements.markdownEdit.classList.add('hidden');
-        this.browserElements.markdownDisplay.classList.remove('hidden');
-
-        // Hide actions footer
-        if (this.browserElements.actionsFooter) {
-            this.browserElements.actionsFooter.classList.add('hidden');
-        }
-
-        // Restore button handlers
-        if (this.browserElements.saveDraftBtn) {
-            this.browserElements.saveDraftBtn.textContent = 'Save Draft';
-            this.browserElements.saveDraftBtn.onclick = () => this.browserSaveDraft();
-        }
-        if (this.browserElements.publishBtn) {
-            this.browserElements.publishBtn.textContent = 'Publish';
-            this.browserElements.publishBtn.onclick = () => this.browserPublish();
-        }
-        if (this.browserElements.cancelBtn) {
-            this.browserElements.cancelBtn.classList.remove('hidden');
-        }
-
-        // Remove editing state from edit button
-        if (this.browserElements.editBtn) {
-            this.browserElements.editBtn.classList.remove('editing');
-            this.browserElements.editBtn.innerHTML = '✎ <span>EDIT</span>';
-        }
-    },
-
-    // Save snippet edit and re-render
-    async saveSnippetEdit() {
-        const editingSnippet = this.browserState.editingSnippet;
-        if (!editingSnippet) return;
-
-        // Get content: if in includes mode, use stored content; otherwise use textarea
-        const newContent = this.browserState.showIncludes
-            ? editingSnippet.content
-            : this.browserElements.markdownEdit.value;
-
-        try {
-            // Save the snippet (preserve the source tier from the original include)
-            await this.api('PUT', `/api/snippets/${encodeURIComponent(editingSnippet.path)}`, {
-                content: newContent,
-                source: editingSnippet.source,
-            });
-
-            this.showToast('Snippet saved', 'success');
-
-            // Cancel edit mode UI
-            this.cancelSnippetEdit();
-
-            // Re-render the page to show updated snippet
-            await this.reRenderCurrentPage();
-
-        } catch (err) {
-            this.showToast('Failed to save snippet: ' + err.message, 'error');
-        }
-    },
-
-    // Re-render the current page (calls CLI render)
-    async reRenderCurrentPage() {
-        const currentUrl = this.browserState.currentUrl;
-        if (!currentUrl) return;
-
-        try {
-            // Call the render-page endpoint
-            await this.api('POST', '/api/render-page', {
-                path: currentUrl,
-            });
-
-            // Reload the current page content
-            await this.browserNavigateTo(currentUrl);
-
-            // Re-enable snippet edit mode if it was on
-            if (this.browserState.snippetEditMode) {
-                // Small delay to ensure content is loaded
-                setTimeout(() => this.enableSnippetEditMode(), 100);
-            }
-        } catch (err) {
-            this.showToast('Failed to re-render page: ' + err.message, 'error');
-        }
-    },
-
-    // ========================================
-    // End Browser Mode Functions
-    // ========================================
-
     // Truncate URL for display
     truncateUrl(url) {
         if (!url) return '';
@@ -4443,6 +3216,9 @@ echo "File: $POLIS_PATH"</code>
         document.querySelectorAll('.sidebar-mode-toggle .mode-tab').forEach(tab => {
             tab.classList.toggle('active', tab.dataset.sidebarMode === mode);
         });
+
+        // Re-evaluate welcome panel visibility for the new tab
+        this.updateWelcomePanel();
     },
 
     async renderFeedList(container) {
@@ -4482,7 +3258,7 @@ echo "File: $POLIS_PATH"</code>
 
             if (displayItems.length === 0) {
                 const emptyMsg = this.counts.feed === 0 && this.counts.following === 0
-                    ? `<h3>No authors followed</h3><p>Follow some authors to see their posts here.</p><button class="primary" onclick="App.setSidebarMode('social'); App.setActiveView('following');">Browse Following</button>`
+                    ? `<h3>Your feed is empty</h3><p>Follow someone to see their posts here. Visit a polis site and click Follow, or add an author below. <a href="https://polis.pub/docs/following" target="_blank" rel="noopener">Learn more</a></p><button class="primary" onclick="App.openFollowPanel()">Follow an author</button>`
                     : this._hideRead
                     ? `<h3>All caught up</h3><p>No unread items. Toggle "Hide Read" off to see all items.</p>`
                     : `<h3>No items</h3><p>${this._feedTypeFilter ? 'No ' + this._feedTypeFilter + 's in the feed.' : 'No items in the feed yet. Click Refresh to check for new content.'}</p>`;
@@ -4845,6 +3621,21 @@ echo "File: $POLIS_PATH"</code>
         }
     },
 
+    // Quick follow from suggestion toast (no panel, no confirmation)
+    async quickFollow(domain) {
+        try {
+            const result = await this.api('POST', '/api/following', { url: 'https://' + domain + '/' });
+            if (result.data && result.data.already_followed) {
+                this.showToast('Already following ' + domain, 'info');
+            } else {
+                this.showToast('Now following ' + domain, 'success');
+            }
+            this.loadAllCounts();
+        } catch (err) {
+            this.showToast('Failed to follow: ' + err.message, 'error');
+        }
+    },
+
     async followDiscover() {
         try {
             this.showToast('Following discover.polis.pub...', 'info', 2000);
@@ -4881,6 +3672,104 @@ echo "File: $POLIS_PATH"</code>
             await this.loadViewContent();
         } catch (err) {
             this.showToast('Failed to unfollow: ' + err.message, 'error');
+        }
+    },
+
+    async renderSuggestedAuthors(container) {
+        container.innerHTML = '<div class="content-list"><div class="empty-state"><p>Looking for suggestions...</p></div></div>';
+
+        try {
+            // Get who we follow
+            const followingData = await this.api('GET', '/api/following');
+            const ourFollows = followingData.following || [];
+
+            if (ourFollows.length === 0) {
+                container.innerHTML = `<div class="content-list"><div class="empty-state">
+                    <h3>Follow someone first</h3>
+                    <p>Suggested authors are based on who your follows are following. <a href="https://polis.pub/docs/following" target="_blank" rel="noopener">Learn more</a></p>
+                    <button class="primary" onclick="App.openFollowPanel()">Follow an author</button>
+                </div></div>`;
+                return;
+            }
+
+            const ourDomains = new Set(ourFollows.map(f => {
+                try { return new URL(f.url).hostname; } catch(e) { return f.url; }
+            }));
+            // Also exclude our own domain
+            if (this.siteBaseUrl) {
+                try { ourDomains.add(new URL(this.siteBaseUrl).hostname); } catch(e) {}
+            }
+
+            // Fetch each followed author's following.json (friends-of-friends)
+            const suggestions = new Map(); // domain -> { url, recommendedBy: Set }
+            const fetches = ourFollows.slice(0, 10).map(async (follow) => {
+                try {
+                    const followUrl = follow.url.replace(/\/$/, '');
+                    const resp = await fetch(followUrl + '/metadata/following.json', { signal: AbortSignal.timeout(5000) });
+                    if (!resp.ok) return;
+                    const data = await resp.json();
+                    const entries = data.following || [];
+                    const recommenderDomain = new URL(followUrl).hostname;
+
+                    for (const entry of entries) {
+                        let domain;
+                        try { domain = new URL(entry.url || entry.URL || '').hostname; } catch(e) { continue; }
+                        if (ourDomains.has(domain)) continue;
+
+                        if (suggestions.has(domain)) {
+                            suggestions.get(domain).recommendedBy.add(recommenderDomain);
+                        } else {
+                            suggestions.set(domain, {
+                                url: entry.url || entry.URL,
+                                domain: domain,
+                                authorName: entry.author_name || entry.AuthorName || '',
+                                siteTitle: entry.site_title || entry.SiteTitle || '',
+                                recommendedBy: new Set([recommenderDomain]),
+                            });
+                        }
+                    }
+                } catch(e) { /* non-fatal */ }
+            });
+
+            await Promise.all(fetches);
+
+            if (suggestions.size === 0) {
+                container.innerHTML = `<div class="content-list"><div class="empty-state">
+                    <h3>No suggestions yet</h3>
+                    <p>The authors you follow don't follow anyone new. Try following more authors to expand your network.</p>
+                </div></div>`;
+                return;
+            }
+
+            // Sort by number of recommenders (most recommended first)
+            const sorted = [...suggestions.values()].sort((a, b) => b.recommendedBy.size - a.recommendedBy.size);
+
+            container.innerHTML = `
+                <div class="content-list">
+                    ${sorted.map(s => {
+                        const displayName = s.authorName || s.domain;
+                        const recommenders = [...s.recommendedBy].slice(0, 3).join(', ');
+                        const moreCount = s.recommendedBy.size > 3 ? ` +${s.recommendedBy.size - 3} more` : '';
+                        return `
+                            <div class="content-item suggested-author-item">
+                                <div class="item-info">
+                                    <div class="item-title"><a href="${this.escapeHtml(s.url)}" target="_blank" rel="noopener">${this.escapeHtml(displayName)}</a></div>
+                                    <div class="item-path">${this.escapeHtml(s.domain)}${s.siteTitle ? ' — ' + this.escapeHtml(s.siteTitle) : ''}</div>
+                                    <div class="suggested-by">Followed by ${this.escapeHtml(recommenders)}${moreCount}</div>
+                                </div>
+                                <div class="suggested-actions">
+                                    <button class="primary small" onclick="App.quickFollow('${this.escapeHtml(s.domain)}'); this.textContent='Following!'; this.disabled=true;">Follow</button>
+                                </div>
+                            </div>
+                        `;
+                    }).join('')}
+                </div>
+            `;
+        } catch (err) {
+            container.innerHTML = `<div class="content-list"><div class="empty-state">
+                <h3>Failed to load suggestions</h3>
+                <p>${this.escapeHtml(err.message)}</p>
+            </div></div>`;
         }
     },
 
@@ -5057,7 +3946,7 @@ echo "File: $POLIS_PATH"</code>
             if (followers.length === 0) {
                 container.innerHTML = `<div class="content-list"><div class="empty-state">
                     <h3>No followers yet</h3>
-                    <p>When other polis authors follow you, they'll appear here.</p>
+                    <p>When other polis authors follow you, they'll appear here. <a href="https://polis.pub/docs/following" target="_blank" rel="noopener">How following works</a></p>
                 </div></div>`;
                 return;
             }
@@ -5136,7 +4025,8 @@ echo "File: $POLIS_PATH"</code>
         const el = document.getElementById('domain-display');
         if (!el) return;
         if (!baseUrl) { el.textContent = ''; return; }
-        el.textContent = baseUrl.replace(/^https?:\/\//, '');
+        const display = baseUrl.replace(/^https?:\/\//, '');
+        el.innerHTML = `<a href="${this.escapeHtml(baseUrl)}" target="_blank" rel="noopener">${this.escapeHtml(display)}</a>`;
     },
 
     initNotifications() {
@@ -5454,6 +4344,8 @@ git push</pre>
     },
 
     async checkSetupBanner() {
+        // In hosted mode, setup is handled by the hosting service
+        if (this.isHosted) return;
         // Check if wizard dismissed and site registered
         try {
             const settings = await this.api('GET', '/api/settings');
@@ -5501,6 +4393,194 @@ git push</pre>
         if (diffDay < 2) return 'yesterday';
         if (diffDay < 7) return `${diffDay} days ago`;
         return this.formatDate(isoString);
+    },
+
+    // ── Widget Token Auto-Issuance ──────────────────────────────────
+
+    // Ensure a widget token exists for this user (hosted mode only).
+    // Called on dashboard init so the token is ready for the connect flow.
+    async ensureWidgetToken() {
+        try {
+            await fetch('/api/widget/token', { credentials: 'same-origin' });
+        } catch (_) {
+            // Non-fatal: token will be created on-demand during connect
+        }
+    },
+
+    // ── Intent Params ────────────────────────────────────────────────
+
+    // Parse URL query params into an intent object, then clean the URL.
+    parseIntentParams() {
+        const params = new URLSearchParams(window.location.search);
+
+        // widget_connect takes priority — redirect immediately
+        if (params.get('widget_connect') === 'true') {
+            this.cleanIntentURL();
+            return { type: 'widget_connect', returnUrl: params.get('return') || '' };
+        }
+
+        const intent = params.get('intent');
+        if (!intent) return null;
+
+        this.cleanIntentURL();
+
+        switch (intent) {
+            case 'comment':
+                return {
+                    type: 'comment',
+                    target: params.get('target') || '',
+                    text: params.get('text') || '',
+                };
+            case 'follow':
+                return {
+                    type: 'follow',
+                    target: params.get('target') || '',
+                };
+            default:
+                return null;
+        }
+    },
+
+    // Remove intent params from the URL without a page reload.
+    cleanIntentURL() {
+        const url = new URL(window.location);
+        url.search = '';
+        window.history.replaceState({}, '', url.pathname);
+    },
+
+    // Handle widget_connect: redirect to API endpoint that issues token
+    // and redirects back to the return URL.
+    handleWidgetConnect(returnUrl) {
+        const connectURL = '/api/widget/connect' +
+            (returnUrl ? '?return=' + encodeURIComponent(returnUrl) : '');
+        window.location.href = connectURL;
+    },
+
+    // Process a parsed intent after the dashboard is fully loaded.
+    async processIntent(intent) {
+        switch (intent.type) {
+            case 'comment':
+                await this.processCommentIntent(intent);
+                break;
+            case 'follow':
+                await this.processFollowIntent(intent);
+                break;
+        }
+    },
+
+    // intent=comment: open the comment composer pre-filled.
+    async processCommentIntent(intent) {
+        if (!intent.target) return;
+
+        this.currentCommentDraftId = null;
+        document.getElementById('reply-to-url').value = intent.target;
+        document.getElementById('comment-input').value = intent.text || '';
+        this._intentComment = intent;  // stash for post-action CTAs
+        this.showScreen('comment');
+    },
+
+    // intent=follow: auto-follow the author and show result.
+    async processFollowIntent(intent) {
+        if (!intent.target) return;
+
+        // Normalize: ensure https:// prefix
+        let authorURL = intent.target;
+        if (!authorURL.startsWith('https://')) {
+            authorURL = 'https://' + authorURL;
+        }
+
+        try {
+            const result = await this.api('POST', '/api/following', { url: authorURL });
+            const domain = authorURL.replace('https://', '').replace(/\/$/, '');
+            const alreadyFollowed = result.data && result.data.already_followed;
+
+            this.showIntentResult({
+                icon: '&#10003;',
+                title: alreadyFollowed ? 'Already following ' + domain : 'Following ' + domain,
+                subtitle: alreadyFollowed
+                    ? 'You were already following this author.'
+                    : 'Their posts will appear in your feed.',
+                actions: [
+                    { label: 'See your feed', primary: true, action: () => { this.dismissIntentResult(); this.setSidebarMode('social'); this.setActiveView('feed'); } },
+                    { label: 'Visit ' + domain, action: () => window.open(authorURL, '_blank') },
+                    { label: 'Write your first post', action: () => { this.dismissIntentResult(); this.newPost(); } },
+                ],
+            });
+
+            await this.loadAllCounts();
+        } catch (err) {
+            this.showToast('Failed to follow: ' + err.message, 'error');
+        }
+    },
+
+    // Show a full-screen intent result overlay with CTAs.
+    showIntentResult(opts) {
+        // Remove any existing result overlay
+        this.dismissIntentResult();
+
+        const overlay = document.createElement('div');
+        overlay.id = 'intent-result-overlay';
+        overlay.className = 'intent-result-overlay';
+
+        const actionsHTML = (opts.actions || []).map((a, i) => {
+            const cls = a.primary ? 'primary' : 'secondary';
+            return `<button class="${cls}" data-intent-action="${i}">${a.label}</button>`;
+        }).join('');
+
+        overlay.innerHTML = `
+            <div class="intent-result-card">
+                <div class="intent-result-icon">${opts.icon || '&#10003;'}</div>
+                <h2 class="intent-result-title">${this.escapeHtml(opts.title)}</h2>
+                <p class="intent-result-subtitle">${this.escapeHtml(opts.subtitle || '')}</p>
+                <div class="intent-result-actions">${actionsHTML}</div>
+            </div>
+        `;
+
+        // Bind action buttons
+        overlay.querySelectorAll('[data-intent-action]').forEach(btn => {
+            const idx = parseInt(btn.dataset.intentAction);
+            const action = opts.actions[idx];
+            if (action && action.action) {
+                btn.addEventListener('click', action.action);
+            }
+        });
+
+        document.getElementById('app').appendChild(overlay);
+    },
+
+    dismissIntentResult() {
+        const existing = document.getElementById('intent-result-overlay');
+        if (existing) existing.remove();
+    },
+
+    // Show intent-aware CTAs after comment submission (when triggered by intent).
+    showCommentIntentResult(commentUrl, target) {
+        const targetDomain = target
+            .replace('https://', '')
+            .replace('http://', '')
+            .replace(/\/.*$/, '');
+
+        this.showIntentResult({
+            icon: '&#10003;',
+            title: 'Comment submitted to ' + targetDomain,
+            subtitle: 'The post author will decide whether to bless it.',
+            actions: [
+                { label: 'Follow ' + targetDomain, primary: true, action: () => {
+                    this.dismissIntentResult();
+                    const authorURL = 'https://' + targetDomain;
+                    this.api('POST', '/api/following', { url: authorURL })
+                        .then(() => {
+                            this.showToast('Now following ' + targetDomain, 'success');
+                            this.loadAllCounts();
+                        })
+                        .catch(err => this.showToast('Failed to follow: ' + err.message, 'error'));
+                    this.setSidebarMode('social');
+                    this.setActiveView('following');
+                }},
+                { label: 'Back to post', action: () => { window.open(target.replace(/\.md$/, '.html'), '_blank'); this.dismissIntentResult(); } },
+                { label: 'Write your first post', action: () => { this.dismissIntentResult(); this.newPost(); } },
+            ],
+        });
     },
 };
 

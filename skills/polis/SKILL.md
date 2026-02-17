@@ -9,7 +9,7 @@ description: |
 allowed-tools:
   - Read
   - Write
-  - Bash(./cli-bash/polis:*)
+  - Bash(polis:*)
   - Bash(curl:*)
   - Bash(jq:*)
   - Bash(git:*)
@@ -29,11 +29,11 @@ AI-powered workflows for decentralized social networking using the polis CLI.
 
 ## CLI Location
 
-The polis CLI is located at: `./cli-bash/polis`
+The polis CLI binary is `polis` (Go CLI). Ensure it is on your PATH or use the full path to the binary.
 
 All commands should use the `--json` flag for machine-readable output:
 ```bash
-./cli-bash/polis --json <command> [options]
+polis --json <command> [options]
 ```
 
 ## Environment Requirements
@@ -65,13 +65,13 @@ The following environment variables should be configured:
 4. **Execute the command**:
    ```bash
    # For new posts
-   ./cli-bash/polis --json post <file>
+   polis --json post <file>
 
    # For updates to existing posts
-   ./cli-bash/polis --json republish <file>
+   polis --json republish <file>
 
    # For inline content (stdin)
-   echo "<content>" | ./cli-bash/polis --json post - --filename <name.md> --title "<title>"
+   echo "<content>" | polis --json post - --filename <name.md> --title "<title>"
    ```
 
 5. **Parse and report results**:
@@ -104,7 +104,7 @@ The following environment variables should be configured:
 
 2. **Fetch local index** (your own content):
    ```bash
-   ./cli-bash/polis --json index
+   polis --json index
    ```
 
 3. **Fetch followed authors' indexes**:
@@ -143,7 +143,7 @@ The following environment variables should be configured:
 
 1. **Preview the target post/comment**:
    ```bash
-   ./cli-bash/polis --json preview <url>
+   polis --json preview <url>
    ```
 
 2. **Present content to user**:
@@ -162,7 +162,7 @@ The following environment variables should be configured:
 
 5. **Create the comment**:
    ```bash
-   echo "<approved-content>" | ./cli-bash/polis --json comment - <url> --filename <reply-name.md>
+   echo "<approved-content>" | polis --json comment - <url> --filename <reply-name.md>
    ```
 
 6. **Report beseech status**:
@@ -184,8 +184,8 @@ The following environment variables should be configured:
 
 1. **Sync and fetch requests**:
    ```bash
-   ./cli-bash/polis --json blessing sync
-   ./cli-bash/polis --json blessing requests
+   polis --json blessing sync
+   polis --json blessing requests
    ```
 
 2. **Report auto-blessed comments** (FYI):
@@ -198,7 +198,7 @@ The following environment variables should be configured:
 
    a. **Preview the comment**:
       ```bash
-      ./cli-bash/polis --json preview <comment_url>
+      polis --json preview <comment_url>
       ```
 
    b. **Assess quality** using these signals (weighted):
@@ -222,9 +222,9 @@ The following environment variables should be configured:
 
    d. **Execute user's decision**:
       ```bash
-      ./cli-bash/polis --json blessing grant <hash>
+      polis --json blessing grant <hash>
       # or
-      ./cli-bash/polis --json blessing deny <hash>
+      polis --json blessing deny <hash>
       ```
 
    e. **Move to next request**
@@ -242,10 +242,10 @@ The following environment variables should be configured:
 1. **Gather data**:
    ```bash
    # Your published content
-   ./cli-bash/polis --json index
+   polis --json index
 
    # Pending blessing requests (others wanting your blessing)
-   ./cli-bash/polis --json blessing requests
+   polis --json blessing requests
 
    # Git status for uncommitted changes
    git status --porcelain 2>/dev/null || true
@@ -294,13 +294,13 @@ The following environment variables should be configured:
 1. **Fetch notifications**:
    ```bash
    # List unread notifications
-   ./cli-bash/polis --json notifications
+   polis --json notifications
 
    # List all notifications (including read)
-   ./cli-bash/polis --json notifications list --all
+   polis --json notifications list --all
 
    # Filter by type
-   ./cli-bash/polis --json notifications list --type version_available,new_follower
+   polis --json notifications list --type version_available,new_follower
    ```
 
 2. **Present categorized notifications**:
@@ -329,13 +329,13 @@ The following environment variables should be configured:
 4. **Mark notifications as handled**:
    ```bash
    # Mark specific notification as read
-   ./cli-bash/polis --json notifications read <id>
+   polis --json notifications read <id>
 
    # Mark all as read
-   ./cli-bash/polis --json notifications read --all
+   polis --json notifications read --all
 
    # Dismiss old notifications
-   ./cli-bash/polis --json notifications dismiss --older-than 30d
+   polis --json notifications dismiss --older-than 30d
    ```
 
 ### Notification Types
@@ -352,28 +352,28 @@ The following environment variables should be configured:
 
 ```bash
 # Fetch new notifications from discovery service
-./cli-bash/polis --json notifications sync
+polis --json notifications sync
 
 # Reset and do full re-sync
-./cli-bash/polis --json notifications sync --reset
+polis --json notifications sync --reset
 ```
 
 ### Configuring Preferences
 
 ```bash
 # Show current config
-./cli-bash/polis --json notifications config
+polis --json notifications config
 
 # Set poll interval
-./cli-bash/polis notifications config --poll-interval 30m
+polis notifications config --poll-interval 30m
 
 # Enable/disable notification types
-./cli-bash/polis notifications config --enable new_post
-./cli-bash/polis notifications config --disable version_available
+polis notifications config --enable new_post
+polis notifications config --disable version_available
 
 # Mute specific domains
-./cli-bash/polis notifications config --mute spam.com
-./cli-bash/polis notifications config --unmute spam.com
+polis notifications config --mute spam.com
+polis notifications config --unmute spam.com
 ```
 
 ### Local Storage
@@ -392,7 +392,7 @@ Notifications are stored locally:
 
 1. **Register with discovery service**:
    ```bash
-   ./cli-bash/polis --json register
+   polis --json register
    ```
 
 2. **Report registration status**:
@@ -402,7 +402,7 @@ Notifications are stored locally:
 
 3. **Unregister if requested** (destructive - confirm first):
    ```bash
-   ./cli-bash/polis --json unregister --force
+   polis --json unregister --force
    ```
 
 ### Notes
@@ -421,16 +421,16 @@ Notifications are stored locally:
 1. **Clone a remote polis site**:
    ```bash
    # Clone to auto-named directory
-   ./cli-bash/polis --json clone https://alice.com
+   polis --json clone https://alice.com
 
    # Clone to specific directory
-   ./cli-bash/polis --json clone https://alice.com ./alice-site
+   polis --json clone https://alice.com ./alice-site
 
    # Force full re-download
-   ./cli-bash/polis --json clone https://alice.com --full
+   polis --json clone https://alice.com --full
 
    # Only fetch changes (incremental)
-   ./cli-bash/polis --json clone https://alice.com --diff
+   polis --json clone https://alice.com --diff
    ```
 
 2. **Report what was downloaded**:
@@ -453,7 +453,7 @@ Notifications are stored locally:
 
 1. **Get comprehensive site info**:
    ```bash
-   ./cli-bash/polis --json about
+   polis --json about
    ```
 
 2. **Present dashboard**:

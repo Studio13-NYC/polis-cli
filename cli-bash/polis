@@ -28,7 +28,7 @@ set -e
 #   4. Hardcoded defaults
 
 # Fixed constants (never configurable - required for discovery)
-VERSION="0.53.0"
+VERSION="0.54.0"
 WELL_KNOWN_DIR=".well-known"
 WELL_KNOWN_FILE="polis"
 
@@ -348,7 +348,6 @@ cmd_init() {
     wellknown_json=$(jq -n \
         --arg version "polis-cli/$VERSION" \
         --arg author "$(git config user.name || echo 'Unknown')" \
-        --arg email "$(git config user.email || echo 'unknown@example.com')" \
         --arg public_key "$PUBKEY" \
         --arg created "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
         --arg keys_dir "$keys_dir" \
@@ -363,7 +362,6 @@ cmd_init() {
         '{
             version: $version,
             author: $author,
-            email: $email,
             public_key: $public_key,
             created: $created,
             config: {
@@ -1074,16 +1072,28 @@ _reconstruct_version_forward() {
 # BLESSING HELPER FUNCTIONS
 # ============================================================================
 
-# Extract author email from .well-known/polis
+# Extract author identity (domain) from .well-known/polis
+# Prefers: domain field > domain from POLIS_BASE_URL > email (legacy)
 extract_author_from_wellknown() {
     if [ ! -f "$WELL_KNOWN_DIR/polis" ]; then
         error "Polis not initialized. Run 'polis init' first."
     fi
 
-    local author=$(jq -r '.email // empty' "$WELL_KNOWN_DIR/polis" 2>/dev/null)
+    # Prefer domain field
+    local author=$(jq -r '.domain // empty' "$WELL_KNOWN_DIR/polis" 2>/dev/null)
+
+    # Fall back to extracting domain from POLIS_BASE_URL
+    if [ -z "$author" ] && [ -n "$POLIS_BASE_URL" ]; then
+        author=$(extract_domain_from_url "$POLIS_BASE_URL")
+    fi
+
+    # Legacy fallback to email
+    if [ -z "$author" ]; then
+        author=$(jq -r '.email // empty' "$WELL_KNOWN_DIR/polis" 2>/dev/null)
+    fi
 
     if [ -z "$author" ]; then
-        error "Could not extract author email from .well-known/polis"
+        error "Could not extract author identity from .well-known/polis"
     fi
 
     echo "$author"
@@ -1633,11 +1643,12 @@ remove_from_blessed_comments_json() {
     mv "$temp_file" "$blessed_file"
 }
 
-# Fetch author email from author's .well-known/polis
+# Fetch author identity (domain) from author's .well-known/polis
 # Args: $1 = author_url (e.g., "https://alice.com")
-# Returns: email address (echoed to stdout)
+# Returns: domain identity (echoed to stdout)
+# Prefers: domain field > extracted domain from URL > email (legacy)
 # Exits: with error if fetch fails
-fetch_author_email_from_wellknown() {
+fetch_author_identity_from_wellknown() {
     local author_url="$1"
 
     # Normalize URL (remove trailing slash)
@@ -1654,22 +1665,37 @@ fetch_author_email_from_wellknown() {
 Check that the URL is accessible and the author has Polis initialized."
     fi
 
-    # Parse JSON to extract email
-    local email=$(echo "$response" | jq -r '.email // empty' 2>/dev/null)
+    # Prefer domain field
+    local identity=$(echo "$response" | jq -r '.domain // empty' 2>/dev/null)
 
-    if [ -z "$email" ]; then
-        error "No email found in $wellknown_url
+    # Fall back to extracting domain from the author URL
+    if [ -z "$identity" ]; then
+        identity=$(extract_domain_from_url "$author_url")
+    fi
+
+    # Legacy fallback to email
+    if [ -z "$identity" ]; then
+        identity=$(echo "$response" | jq -r '.email // empty' 2>/dev/null)
+    fi
+
+    if [ -z "$identity" ]; then
+        error "No identity found in $wellknown_url
 Author may not have Polis properly configured."
     fi
 
-    echo "$email"
+    echo "$identity"
+}
+
+# Backward compat alias
+fetch_author_email_from_wellknown() {
+    fetch_author_identity_from_wellknown "$@"
 }
 
 # Fetch all blessing relationships for a specific author on current user's posts
-# Args: $1 = author_email, $2 = status_filter (optional: "pending", "granted", "denied", or empty for all)
+# Args: $1 = author_identity (domain or email), $2 = status_filter (optional: "pending", "granted", "denied", or empty for all)
 # Returns: JSON array of relationship records (echoed to stdout)
 fetch_comments_by_author() {
-    local author_email="$1"
+    local author_identity="$1"
     local status_filter="$2"  # optional: "pending", "granted", "denied"
 
     # Extract current user's domain
@@ -1698,8 +1724,8 @@ fetch_comments_by_author() {
         error "Failed to connect to relationship query endpoint"
     fi
 
-    # Filter by author email from relationship metadata
-    local filtered_result=$(echo "$response" | jq --arg author "$author_email" '
+    # Filter by author identity from relationship metadata
+    local filtered_result=$(echo "$response" | jq --arg author "$author_identity" '
         [.records[] | select(.metadata.comment_author == $author)]
     ' 2>/dev/null)
 
@@ -1773,13 +1799,13 @@ extract_body_from_content() {
 }
 
 # Verify signature of remote content
-# Args: $1=content, $2=public_key, $3=author_email
+# Args: $1=content, $2=public_key, $3=author_identity (domain or email)
 # Returns: 0 if valid, 1 if invalid
 # Canonicalizes content before verification for consistent results
 verify_remote_signature() {
     local content="$1"
     local public_key="$2"
-    local author_email="$3"
+    local author_identity="$3"
 
     # Extract signature from frontmatter (signature: only appears in frontmatter)
     local signature=$(echo "$content" | grep '^signature:' | sed 's/^signature: *//')
@@ -1793,9 +1819,9 @@ verify_remote_signature() {
     local temp_sig=$(mktemp)
     local temp_allowed=$(mktemp)
 
-    # Write public key to allowed_signers file format: email key-type key-data [comment]
+    # Write public key to allowed_signers file format: identity key-type key-data [comment]
     # The namespace "file" is specified via -n flag to ssh-keygen, not in allowed_signers
-    echo "$author_email $public_key" > "$temp_allowed"
+    echo "$author_identity $public_key" > "$temp_allowed"
 
     # Write signature to temp file (restore PEM format)
     echo "-----BEGIN SSH SIGNATURE-----" > "$temp_sig"
@@ -1811,7 +1837,7 @@ verify_remote_signature() {
     canonicalize_content "$base_content" > "$temp_content"
 
     local result=1
-    if ssh-keygen -Y verify -f "$temp_allowed" -I "$author_email" -n file -s "$temp_sig" < "$temp_content" >/dev/null 2>&1; then
+    if ssh-keygen -Y verify -f "$temp_allowed" -I "$author_identity" -n file -s "$temp_sig" < "$temp_content" >/dev/null 2>&1; then
         result=0
     fi
 
@@ -3801,7 +3827,7 @@ cmd_preview() {
     info_human "Fetching author info from ${base_url}/.well-known/polis..."
 
     local public_key=$(fetch_remote_public_key "$base_url")
-    local author_email=$(fetch_author_email_from_wellknown "$base_url" 2>/dev/null || echo "")
+    local author_identity=$(fetch_author_identity_from_wellknown "$base_url" 2>/dev/null || echo "")
 
     # Signature verification
     local signature_status="unknown"
@@ -3815,7 +3841,7 @@ cmd_preview() {
         signature_message="Content has no signature"
     else
         # Verify signature
-        if verify_remote_signature "$content" "$public_key" "$author_email"; then
+        if verify_remote_signature "$content" "$public_key" "$author_identity"; then
             signature_status="valid"
             signature_message="Signature verified against author's public key"
         else
@@ -3872,7 +3898,7 @@ cmd_preview() {
             --arg version "$current_version" \
             --arg generator "$generator" \
             --arg reply_to "$in_reply_to" \
-            --arg author "$author_email" \
+            --arg author "$author_identity" \
             --arg sig_status "$signature_status" \
             --arg sig_msg "$signature_message" \
             --arg hash_status "$hash_status" \
@@ -5429,20 +5455,20 @@ cmd_follow() {
     # Extract blessed_by (current user's email)
     local blessed_by=$(extract_author_from_wellknown)
 
-    # Fetch author email from their .well-known/polis
+    # Fetch author identity (domain) from their .well-known/polis
     info_human "Fetching author information from $author_url..."
-    local author_email=$(fetch_author_email_from_wellknown "$author_url")
+    local author_identity=$(fetch_author_identity_from_wellknown "$author_url")
 
-    if [ -z "$author_email" ]; then
-        json_error "follow" "API_ERROR" "Failed to fetch author email from $author_url"
+    if [ -z "$author_identity" ]; then
+        json_error "follow" "API_ERROR" "Failed to fetch author identity from $author_url"
     fi
 
-    info_human "Author email: $author_email"
+    info_human "Author: $author_identity"
 
     # Fetch unblessed comments from this author
-    info_human "Fetching comments from $author_email..."
-    local pending_comments=$(fetch_comments_by_author "$author_email" "pending")
-    local denied_comments=$(fetch_comments_by_author "$author_email" "denied")
+    info_human "Fetching comments from $author_identity..."
+    local pending_comments=$(fetch_comments_by_author "$author_identity" "pending")
+    local denied_comments=$(fetch_comments_by_author "$author_identity" "denied")
 
     # Combine pending and denied into one array
     local unblessed_comments=$(jq -s 'add' <(echo "$pending_comments") <(echo "$denied_comments"))
@@ -5451,7 +5477,7 @@ cmd_follow() {
     # Display summary in human mode
     if [ "$JSON_MODE" = false ]; then
         echo ""
-        info "Following: $author_url ($author_email)"
+        info "Following: $author_url ($author_identity)"
 
         if [ "$comment_count" -gt 0 ]; then
             echo "Found $comment_count unblessed comment(s) from this author on your posts:"
@@ -5554,12 +5580,12 @@ cmd_follow() {
     if [ "$JSON_MODE" = true ]; then
         local result=$(jq -n \
             --arg url "$author_url" \
-            --arg email "$author_email" \
+            --arg identity "$author_identity" \
             --argjson found "$comment_count" \
             --argjson blessed "$blessed_count" \
             '{
                 author_url: $url,
-                author_email: $email,
+                author_identity: $identity,
                 comments_found: $found,
                 comments_blessed: $blessed,
                 added_to_following: true
@@ -5609,12 +5635,12 @@ cmd_unfollow() {
     local local_urls_list=$(echo "$local_blessed_urls" | jq -r '.[]' 2>/dev/null || echo "")
 
     # 2. Also fetch from server (catches unsynced auto-blessed comments)
-    local author_email=""
+    local author_identity=""
     local server_urls_list=""
-    author_email=$(fetch_author_email_from_wellknown "$author_url" 2>/dev/null) || true
+    author_identity=$(fetch_author_identity_from_wellknown "$author_url" 2>/dev/null) || true
 
-    if [ -n "$author_email" ]; then
-        local server_blessed=$(fetch_comments_by_author "$author_email" "granted" 2>/dev/null) || true
+    if [ -n "$author_identity" ]; then
+        local server_blessed=$(fetch_comments_by_author "$author_identity" "granted" 2>/dev/null) || true
         if [ -n "$server_blessed" ] && [ "$server_blessed" != "[]" ] && [ "$server_blessed" != "null" ]; then
             server_urls_list=$(echo "$server_blessed" | jq -r '.[].source_url' 2>/dev/null || echo "")
         fi
@@ -6626,19 +6652,16 @@ cmd_register() {
     rm -f "$temp_file" "$temp_file.sig"
 
     # Get optional metadata from .well-known/polis
-    local email=$(jq -r '.email // empty' "$WELL_KNOWN_DIR/polis" 2>/dev/null || true)
     local author_name=$(jq -r '.author // empty' "$WELL_KNOWN_DIR/polis" 2>/dev/null || true)
 
-    # Create final payload with signature and optional fields
+    # Create final payload with signature and optional fields (no email - privacy by default)
     local final_payload=$(jq -n \
         --argjson ver 1 \
         --arg act "register" \
         --arg dom "$domain" \
         --arg sig "$signature" \
-        --arg email "$email" \
         --arg author "$author_name" \
         '{version: $ver, action: $act, domain: $dom, signature: $sig} +
-         (if $email != "" then {email: $email} else {} end) +
          (if $author != "" then {author_name: $author} else {} end)')
 
     # Call sites-register endpoint

@@ -435,6 +435,88 @@ func TestInit_CreatesWebappConfig(t *testing.T) {
 	}
 }
 
+// ============================================================================
+// Email Privacy Tests (Phase 0)
+// ============================================================================
+
+func TestInit_NoEmailByDefault(t *testing.T) {
+	dir := t.TempDir()
+
+	result, err := Init(dir, InitOptions{})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	if !result.Success {
+		t.Fatal("Init should succeed")
+	}
+
+	wk, err := LoadWellKnown(dir)
+	if err != nil {
+		t.Fatalf("Failed to load .well-known/polis: %v", err)
+	}
+
+	// Email should NOT be set by default
+	if wk.Email != "" {
+		t.Errorf("Email should be empty by default, got %q", wk.Email)
+	}
+
+	// Verify raw JSON doesn't contain email field
+	data, _ := os.ReadFile(filepath.Join(dir, ".well-known", "polis"))
+	if strings.Contains(string(data), `"email"`) {
+		t.Error("Raw JSON should not contain email field when not explicitly set")
+	}
+}
+
+func TestInit_ExplicitEmailIsWritten(t *testing.T) {
+	dir := t.TempDir()
+
+	result, err := Init(dir, InitOptions{
+		Email: "alice@example.com",
+	})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	if !result.Success {
+		t.Fatal("Init should succeed")
+	}
+
+	wk, err := LoadWellKnown(dir)
+	if err != nil {
+		t.Fatalf("Failed to load .well-known/polis: %v", err)
+	}
+
+	if wk.Email != "alice@example.com" {
+		t.Errorf("Email = %q, want %q", wk.Email, "alice@example.com")
+	}
+}
+
+func TestInit_DomainIsWritten(t *testing.T) {
+	dir := t.TempDir()
+
+	result, err := Init(dir, InitOptions{
+		Author: "alice",
+		Domain: "alice.polis.pub",
+	})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	if !result.Success {
+		t.Fatal("Init should succeed")
+	}
+
+	wk, err := LoadWellKnown(dir)
+	if err != nil {
+		t.Fatalf("Failed to load .well-known/polis: %v", err)
+	}
+
+	if wk.Domain != "alice.polis.pub" {
+		t.Errorf("Domain = %q, want %q", wk.Domain, "alice.polis.pub")
+	}
+	if wk.AuthorDomain() != "alice.polis.pub" {
+		t.Errorf("AuthorDomain() = %q, want %q", wk.AuthorDomain(), "alice.polis.pub")
+	}
+}
+
 func TestInit_MetadataDirDerived(t *testing.T) {
 	dir := t.TempDir()
 

@@ -225,7 +225,9 @@ func escapeYAMLString(s string) string {
 }
 
 // PublishPost publishes a markdown post and returns the result.
-func PublishPost(dataDir, markdown, filename string, privateKey []byte) (*PublishResult, error) {
+// If dsCfg is non-nil, it overrides package-level discovery globals for
+// multi-tenant safety. Pass nil to use globals (single-tenant / CLI mode).
+func PublishPost(dataDir, markdown, filename string, privateKey []byte, dsCfg ...*DiscoveryConfig) (*PublishResult, error) {
 	// Extract title
 	title := ExtractTitle(markdown)
 
@@ -340,7 +342,11 @@ version-history:
 	}
 
 	// Register with discovery service (non-fatal)
-	if err := RegisterPost(dataDir, result, privateKey); err != nil {
+	var cfg *DiscoveryConfig
+	if len(dsCfg) > 0 {
+		cfg = dsCfg[0]
+	}
+	if err := RegisterPost(dataDir, result, privateKey, cfg); err != nil {
 		fmt.Printf("[!] Discovery registration skipped: %v\n", err)
 		fmt.Println("[i] If your site is newly deployed, run: polis register")
 	}
@@ -677,7 +683,7 @@ func ExtractVersionHistory(content string) []string {
 }
 
 // RepublishPost updates an existing published post.
-func RepublishPost(dataDir, postPath, markdown string, privateKey []byte) (*PublishResult, error) {
+func RepublishPost(dataDir, postPath, markdown string, privateKey []byte, dsCfg ...*DiscoveryConfig) (*PublishResult, error) {
 	// Read existing post to get original metadata
 	fullPath := filepath.Join(dataDir, postPath)
 	existingContent, err := os.ReadFile(fullPath)
@@ -810,7 +816,11 @@ signature: %s
 	}
 
 	// Register with discovery service (non-fatal)
-	if err := RegisterPost(dataDir, result, privateKey); err != nil {
+	var cfg *DiscoveryConfig
+	if len(dsCfg) > 0 {
+		cfg = dsCfg[0]
+	}
+	if err := RegisterPost(dataDir, result, privateKey, cfg); err != nil {
 		fmt.Printf("[!] Discovery registration skipped: %v\n", err)
 		fmt.Println("[i] If your site is newly deployed, run: polis register")
 	}

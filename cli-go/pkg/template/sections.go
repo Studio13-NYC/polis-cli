@@ -16,6 +16,7 @@ var sectionOpenPattern = regexp.MustCompile(`\{\{#(\w+)\}\}`)
 // - {{#blessed_comments}}...{{/blessed_comments}} - Loop over blessed comments on a post
 // - {{#recent_posts}}...{{/recent_posts}} - Loop over 10 most recent posts
 // - {{#recent_comments}}...{{/recent_comments}} - Loop over 10 most recent comments
+// - {{#following}}...{{/following}} - Loop over followed authors
 func (e *Engine) processSections(template string, ctx *RenderContext, depth int) (string, error) {
 	// Process sections iteratively since Go regex doesn't support backreferences
 	result := template
@@ -59,6 +60,8 @@ func (e *Engine) processSections(template string, ctx *RenderContext, depth int)
 			output, err = e.renderRecentPostsSection(sectionContent, ctx, depth)
 		case "recent_comments":
 			output, err = e.renderRecentCommentsSection(sectionContent, ctx, depth)
+		case "following":
+			output, err = e.renderFollowingSection(sectionContent, ctx, depth)
 		default:
 			// Unknown section - leave as-is and continue
 			break
@@ -73,7 +76,7 @@ func (e *Engine) processSections(template string, ctx *RenderContext, depth int)
 		result = result[:match[0]] + output + result[closeTagStart+len(closeTag):]
 
 		// Avoid checking unsupported section names again
-		if sectionName != "posts" && sectionName != "comments" && sectionName != "blessed_comments" && sectionName != "recent_posts" && sectionName != "recent_comments" {
+		if sectionName != "posts" && sectionName != "comments" && sectionName != "blessed_comments" && sectionName != "recent_posts" && sectionName != "recent_comments" && sectionName != "following" {
 			// Skip to after this section to avoid infinite loop on unknown sections
 			result = result[:match[0]] + openTag + sectionContent + closeTag + result[match[0]:]
 			break
@@ -298,6 +301,43 @@ func (e *Engine) renderRecentCommentsSection(content string, ctx *RenderContext,
 			"published":       comment.Published,
 			"published_human": comment.PublishedHuman,
 			"preview":         comment.Preview,
+		})
+
+		builder.WriteString(rendered)
+	}
+
+	return builder.String(), nil
+}
+
+// renderFollowingSection renders the {{#following}} section for each followed author.
+func (e *Engine) renderFollowingSection(content string, ctx *RenderContext, depth int) (string, error) {
+	var builder strings.Builder
+
+	for _, f := range ctx.Following {
+		iterCtx := &RenderContext{
+			URL:        f.URL,
+			AuthorName: f.AuthorName,
+			SiteTitle:  f.SiteTitle,
+
+			SiteURL: ctx.SiteURL,
+			Year:    ctx.Year,
+		}
+
+		processed, err := e.processPartials(content, iterCtx, depth+1)
+		if err != nil {
+			return "", err
+		}
+
+		displayName := f.AuthorName
+		if displayName == "" {
+			displayName = f.Domain
+		}
+
+		rendered := e.substituteLoopVariables(processed, map[string]string{
+			"url":         f.URL,
+			"domain":      f.Domain,
+			"author_name": displayName,
+			"site_title":  f.SiteTitle,
 		})
 
 		builder.WriteString(rendered)

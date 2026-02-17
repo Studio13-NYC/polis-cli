@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/vdibart/polis-cli/cli-go/pkg/signing"
 )
 
 func TestGetGenerator_UsesVersion(t *testing.T) {
@@ -131,6 +133,84 @@ This is a test comment.`
 	if commentCount != 1 {
 		t.Errorf("manifest comment_count = %d, want 1", commentCount)
 	}
+}
+
+// ============================================================================
+// SignComment Domain Identity Tests (Phase 0)
+// ============================================================================
+
+func TestSignComment_DomainInFrontmatter(t *testing.T) {
+	dataDir := t.TempDir()
+
+	// Create required directories
+	os.MkdirAll(filepath.Join(dataDir, ".polis", "comments", "drafts"), 0755)
+	os.MkdirAll(filepath.Join(dataDir, ".polis", "comments", "pending"), 0755)
+	os.MkdirAll(filepath.Join(dataDir, ".polis", "comments", "denied"), 0755)
+	os.MkdirAll(filepath.Join(dataDir, "comments"), 0755)
+
+	// Generate a test key
+	privKey := generateTestKey(t)
+
+	draft := &CommentDraft{
+		InReplyTo: "https://alice.polis.pub/posts/20260101/hello.md",
+		Content:   "Great post!",
+	}
+
+	signed, err := SignComment(dataDir, draft, "bob.polis.pub", "https://bob.polis.pub", privKey)
+	if err != nil {
+		t.Fatalf("SignComment failed: %v", err)
+	}
+
+	// Verify meta uses domain, not email
+	if signed.Meta.Author != "bob.polis.pub" {
+		t.Errorf("Meta.Author = %q, want %q", signed.Meta.Author, "bob.polis.pub")
+	}
+
+	// Verify the written file has domain in frontmatter
+	pendingDir := filepath.Join(dataDir, ".polis", "comments", "pending")
+	entries, _ := os.ReadDir(pendingDir)
+	if len(entries) == 0 {
+		t.Fatal("Expected a pending comment file")
+	}
+	data, _ := os.ReadFile(filepath.Join(pendingDir, entries[0].Name()))
+	fm := ParseFrontmatter(string(data))
+	if fm["author"] != "bob.polis.pub" {
+		t.Errorf("Frontmatter author = %q, want %q", fm["author"], "bob.polis.pub")
+	}
+}
+
+func TestSignComment_BackwardCompatWithEmail(t *testing.T) {
+	dataDir := t.TempDir()
+	os.MkdirAll(filepath.Join(dataDir, ".polis", "comments", "drafts"), 0755)
+	os.MkdirAll(filepath.Join(dataDir, ".polis", "comments", "pending"), 0755)
+	os.MkdirAll(filepath.Join(dataDir, ".polis", "comments", "denied"), 0755)
+	os.MkdirAll(filepath.Join(dataDir, "comments"), 0755)
+
+	privKey := generateTestKey(t)
+
+	draft := &CommentDraft{
+		InReplyTo: "https://alice.polis.pub/posts/20260101/hello.md",
+		Content:   "Legacy comment",
+	}
+
+	// Passing email as author identity should still work (backward compat)
+	signed, err := SignComment(dataDir, draft, "bob@example.com", "https://bob.example.com", privKey)
+	if err != nil {
+		t.Fatalf("SignComment with email should still work: %v", err)
+	}
+	if signed.Meta.Author != "bob@example.com" {
+		t.Errorf("Meta.Author = %q, want %q", signed.Meta.Author, "bob@example.com")
+	}
+}
+
+func generateTestKey(t *testing.T) []byte {
+	t.Helper()
+	// Use the signing package to generate a real key
+	privKey, _, err := signing.GenerateKeypair()
+	if err != nil {
+		t.Fatalf("Failed to generate keypair: %v", err)
+	}
+	return privKey
 }
 
 func TestMoveComment_UpdatesManifestCommentCount(t *testing.T) {

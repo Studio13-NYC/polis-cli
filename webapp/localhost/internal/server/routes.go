@@ -79,4 +79,9 @@ func SetupRoutes(mux *http.ServeMux, s *Server) {
 
 	// Render API routes (for snippet editing workflow)
 	mux.HandleFunc("/api/render-page", s.handleRenderPage)
+
+	// Widget API routes (cross-origin, widget token auth)
+	mux.HandleFunc("/api/widget/publish", s.handleWidgetPublish)
+	mux.HandleFunc("/api/widget/follow", s.handleWidgetFollow)
+	mux.HandleFunc("/api/widget/connect", s.handleWidgetConnect)
 }

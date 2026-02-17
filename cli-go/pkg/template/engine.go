@@ -57,6 +57,10 @@ type RenderContext struct {
 	// Conditional HTML fragments
 	ViewAllPostsLink string // Pre-rendered "View all N posts" link (empty if ≤10)
 
+	// Widget variables
+	AuthorDomain string // Site domain (e.g. "alice.polis.pub")
+	PageType     string // "post", "comment", or "index"
+
 	// Comment-specific
 	InReplyToURL string
 	RootPostURL  string
@@ -69,6 +73,15 @@ type RenderContext struct {
 	BlessedComments []BlessedCommentData
 	RecentPosts     []PostData
 	RecentComments  []CommentData
+	Following       []FollowingData
+}
+
+// FollowingData represents a followed author in a loop.
+type FollowingData struct {
+	URL        string // Full URL (e.g. "https://alice.polis.pub")
+	Domain     string // Domain only (e.g. "alice.polis.pub")
+	AuthorName string // Optional display name
+	SiteTitle  string // Optional site title
 }
 
 // PostData represents a post in a loop.
@@ -179,6 +192,10 @@ func (e *Engine) substituteVariables(template string, ctx *RenderContext) string
 
 		// Conditional fragments
 		"view_all_posts": ctx.ViewAllPostsLink,
+
+		// Widget variables
+		"author_domain": ctx.AuthorDomain,
+		"page_type":     ctx.PageType,
 
 		// Comment-specific
 		"in_reply_to_url": ctx.InReplyToURL,

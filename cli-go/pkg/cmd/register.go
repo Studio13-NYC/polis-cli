@@ -54,23 +54,20 @@ func handleRegister(args []string) {
 }
 
 func handleSiteRegister(client *discovery.Client, dir, domain string, privKey []byte) {
-	// Get email and author from .well-known/polis
-	var email, authorName string
+	// Get author from .well-known/polis (email is private, not sent to DS)
+	var authorName string
 	wellKnownPath := filepath.Join(dir, ".well-known", "polis")
 	data, err := os.ReadFile(wellKnownPath)
 	if err == nil {
 		var wkp map[string]interface{}
 		if json.Unmarshal(data, &wkp) == nil {
-			if e, ok := wkp["email"].(string); ok {
-				email = e
-			}
 			if a, ok := wkp["author"].(string); ok {
 				authorName = a
 			}
 		}
 	}
 
-	result, err := client.RegisterSite(domain, privKey, email, authorName)
+	result, err := client.RegisterSite(domain, privKey, "", authorName)
 	if err != nil {
 		if strings.Contains(err.Error(), "WELLKNOWN_FETCH_FAILED") {
 			if jsonOutput {

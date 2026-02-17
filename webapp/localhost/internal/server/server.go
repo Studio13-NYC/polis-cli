@@ -29,6 +29,7 @@ import (
 	"github.com/vdibart/polis-cli/cli-go/pkg/render"
 	"github.com/vdibart/polis-cli/cli-go/pkg/site"
 	"github.com/vdibart/polis-cli/cli-go/pkg/stream"
+	polisurl "github.com/vdibart/polis-cli/cli-go/pkg/url"
 )
 
 // DefaultDiscoveryServiceURL is the default discovery service URL matching the CLI
@@ -387,13 +388,29 @@ func (s *Server) ApplyDiscoveryDefaults() {
 }
 
 // GetAuthorEmail returns the author email from .well-known/polis.
-// This is the single source of truth for the site owner's email address.
+// Deprecated: Use GetAuthorDomain instead. Email is private by default.
 func (s *Server) GetAuthorEmail() string {
 	wk, err := site.LoadWellKnown(s.DataDir)
 	if err != nil {
 		return ""
 	}
 	return wk.Email
+}
+
+// GetAuthorDomain returns the domain identity from .well-known/polis.
+// Prefers the explicit Domain field, falls back to extracting from POLIS_BASE_URL.
+func (s *Server) GetAuthorDomain() string {
+	wk, err := site.LoadWellKnown(s.DataDir)
+	if err == nil {
+		if d := wk.AuthorDomain(); d != "" {
+			return d
+		}
+	}
+	// Fall back to extracting from POLIS_BASE_URL
+	if baseURL := s.GetBaseURL(); baseURL != "" {
+		return polisurl.ExtractDomain(baseURL)
+	}
+	return ""
 }
 
 // GetSubdomain extracts subdomain from POLIS_BASE_URL env var
@@ -904,6 +921,15 @@ func (s *Server) syncFeed() {
 	if result.Cursor != "" {
 		_ = cm.SetCursor(result.Cursor)
 	}
+}
+
+// Handler returns an http.Handler for this Server's API routes.
+// Used by the hosted service to serve tenant requests without starting a
+// standalone HTTP listener.
+func (s *Server) Handler() http.Handler {
+	mux := http.NewServeMux()
+	SetupRoutes(mux, s)
+	return mux
 }
 
 // RunOptions contains optional configuration for the server.

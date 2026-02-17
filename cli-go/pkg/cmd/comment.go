@@ -114,13 +114,10 @@ func handleCommentSign(args []string) {
 		exitError("Failed to load private key: %v", err)
 	}
 
-	// Get author email from .well-known/polis
+	// Get author domain from .well-known/polis (domain is the public identity)
 	wk, err := site.LoadWellKnown(dir)
 	if err != nil {
 		exitError("Failed to load .well-known/polis: %v", err)
-	}
-	if wk.Email == "" {
-		exitError("Author email not set in .well-known/polis")
 	}
 
 	// Get site URL from env or .well-known/polis
@@ -132,8 +129,22 @@ func handleCommentSign(args []string) {
 		exitError("POLIS_BASE_URL not set")
 	}
 
+	// Resolve author identity: prefer domain, fall back to email for backward compat
+	authorIdentity := wk.AuthorDomain()
+	if authorIdentity == "" {
+		// Fall back: extract domain from POLIS_BASE_URL
+		authorIdentity = extractDomain(siteURL)
+	}
+	if authorIdentity == "" && wk.Email != "" {
+		// Legacy fallback: use email if no domain available
+		authorIdentity = wk.Email
+	}
+	if authorIdentity == "" {
+		exitError("Author identity not configured — set domain in .well-known/polis or POLIS_BASE_URL")
+	}
+
 	// Sign the comment
-	signed, err := comment.SignComment(dir, draft, wk.Email, siteURL, privKey)
+	signed, err := comment.SignComment(dir, draft, authorIdentity, siteURL, privKey)
 	if err != nil {
 		exitError("Failed to sign comment: %v", err)
 	}

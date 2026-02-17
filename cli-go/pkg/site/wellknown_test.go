@@ -1081,6 +1081,172 @@ func TestCheckUnrecognizedFields_MissingFile(t *testing.T) {
 // 11. JSON Indentation Test
 // ============================================================================
 
+// ============================================================================
+// 12. Email Privacy + Domain Identity Tests (Phase 0)
+// ============================================================================
+
+func TestEmailOmitempty_NotSerializedWhenEmpty(t *testing.T) {
+	dir := setupTestDir(t)
+	wk := &WellKnown{
+		Version:   "0.1.0",
+		Author:    "alice",
+		Domain:    "alice.polis.pub",
+		PublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKeyXXXXXXXXXXXXXXXXXXXXXXXX polis-local",
+		Created:   "2026-01-01T00:00:00Z",
+		// Email intentionally not set
+	}
+	writeTestWellKnown(t, dir, wk)
+
+	// Read raw JSON to verify email is not present
+	data, err := os.ReadFile(filepath.Join(dir, ".well-known", "polis"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), `"email"`) {
+		t.Error("Email field should not be present in JSON when empty (omitempty)")
+	}
+
+	// Verify round-trip
+	loaded, err := LoadWellKnown(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Email != "" {
+		t.Errorf("Email should be empty, got %q", loaded.Email)
+	}
+}
+
+func TestEmailOmitempty_SerializedWhenSet(t *testing.T) {
+	dir := setupTestDir(t)
+	wk := &WellKnown{
+		Version:   "0.1.0",
+		Author:    "alice",
+		Domain:    "alice.polis.pub",
+		Email:     "alice@example.com",
+		PublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKeyXXXXXXXXXXXXXXXXXXXXXXXX polis-local",
+		Created:   "2026-01-01T00:00:00Z",
+	}
+	writeTestWellKnown(t, dir, wk)
+
+	// Verify email is present when explicitly set
+	data, err := os.ReadFile(filepath.Join(dir, ".well-known", "polis"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"email"`) {
+		t.Error("Email field should be present when set")
+	}
+
+	loaded, err := LoadWellKnown(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Email != "alice@example.com" {
+		t.Errorf("Email = %q, want %q", loaded.Email, "alice@example.com")
+	}
+}
+
+func TestDomainField_RoundTrip(t *testing.T) {
+	dir := setupTestDir(t)
+	wk := &WellKnown{
+		Version:   "0.1.0",
+		Author:    "alice",
+		Domain:    "alice.polis.pub",
+		PublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKeyXXXXXXXXXXXXXXXXXXXXXXXX polis-local",
+		Created:   "2026-01-01T00:00:00Z",
+	}
+	writeTestWellKnown(t, dir, wk)
+
+	loaded, err := LoadWellKnown(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Domain != "alice.polis.pub" {
+		t.Errorf("Domain = %q, want %q", loaded.Domain, "alice.polis.pub")
+	}
+}
+
+func TestAuthorDomain_PrefersDomainField(t *testing.T) {
+	wk := &WellKnown{
+		Domain:  "alice.polis.pub",
+		BaseURL: "https://old.polis.pub",
+	}
+	if got := wk.AuthorDomain(); got != "alice.polis.pub" {
+		t.Errorf("AuthorDomain() = %q, want %q", got, "alice.polis.pub")
+	}
+}
+
+func TestAuthorDomain_FallsBackToBaseURL(t *testing.T) {
+	wk := &WellKnown{
+		BaseURL: "https://alice.polis.pub",
+	}
+	if got := wk.AuthorDomain(); got != "alice.polis.pub" {
+		t.Errorf("AuthorDomain() = %q, want %q", got, "alice.polis.pub")
+	}
+}
+
+func TestAuthorDomain_EmptyWhenNothing(t *testing.T) {
+	wk := &WellKnown{}
+	if got := wk.AuthorDomain(); got != "" {
+		t.Errorf("AuthorDomain() = %q, want empty", got)
+	}
+}
+
+func TestGetAuthorDomain_FromFile(t *testing.T) {
+	dir := setupTestDir(t)
+	wk := &WellKnown{
+		Version:   "0.1.0",
+		Domain:    "alice.polis.pub",
+		PublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKeyXXXXXXXXXXXXXXXXXXXXXXXX polis-local",
+	}
+	writeTestWellKnown(t, dir, wk)
+
+	got := GetAuthorDomain(dir)
+	if got != "alice.polis.pub" {
+		t.Errorf("GetAuthorDomain() = %q, want %q", got, "alice.polis.pub")
+	}
+}
+
+func TestGetAuthorDomain_MissingFile(t *testing.T) {
+	dir := setupTestDir(t)
+	got := GetAuthorDomain(dir)
+	if got != "" {
+		t.Errorf("GetAuthorDomain() = %q, want empty for missing file", got)
+	}
+}
+
+func TestBackwardCompat_ExistingFileWithEmail(t *testing.T) {
+	// Test that old .well-known/polis files with email still load correctly
+	dir := setupTestDir(t)
+	wellKnownDir := filepath.Join(dir, ".well-known")
+	os.MkdirAll(wellKnownDir, 0755)
+
+	// Old-format JSON with email, no domain
+	oldJSON := `{
+  "version": "0.45.0",
+  "author": "alice",
+  "email": "alice@example.com",
+  "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKey polis-local",
+  "created": "2026-01-01T00:00:00Z"
+}`
+	os.WriteFile(filepath.Join(wellKnownDir, "polis"), []byte(oldJSON), 0644)
+
+	wk, err := LoadWellKnown(dir)
+	if err != nil {
+		t.Fatalf("Should load old-format file: %v", err)
+	}
+	if wk.Email != "alice@example.com" {
+		t.Errorf("Email = %q, want %q", wk.Email, "alice@example.com")
+	}
+	if wk.Domain != "" {
+		t.Errorf("Domain should be empty for old-format file, got %q", wk.Domain)
+	}
+	// AuthorDomain falls back to empty (no base_url either)
+	if wk.AuthorDomain() != "" {
+		t.Errorf("AuthorDomain() = %q, want empty for old file without base_url", wk.AuthorDomain())
+	}
+}
+
 func TestSaveWellKnownIndentation(t *testing.T) {
 	dir := setupTestDir(t)
 

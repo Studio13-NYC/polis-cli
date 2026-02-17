@@ -144,9 +144,11 @@ A complete styling package containing HTML templates (`index.html`, `post.html`,
 
 ### TUI
 
-Terminal User Interface (`polis-tui`): a menu-driven, interactive dashboard for polis operations. Features vim-style navigation, `$EDITOR` integration for writing content, and git integration for commits. Alternative to memorizing CLI commands.
+*(Deprecated — use the [webapp](WEBAPP-USER-MANUAL.md) instead.)*
 
-**Related**: CLI
+Terminal User Interface (`polis-tui`): a menu-driven, interactive dashboard for polis operations. Was replaced by the webapp in v0.46.0.
+
+**Related**: CLI, webapp
 
 ---
 

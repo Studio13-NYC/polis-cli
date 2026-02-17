@@ -8,14 +8,14 @@ Quick reference for polis CLI commands with `--json` mode.
 Sign and publish a new post or comment.
 
 ```bash
-./cli-bash/polis --json post posts/my-draft.md
+polis --json post posts/my-draft.md
 ```
 
 ### `polis post -` (stdin)
 Publish content piped from stdin.
 
 ```bash
-echo "# My Post" | ./cli-bash/polis --json post - --filename my-post.md --title "My Post"
+echo "# My Post" | polis --json post - --filename my-post.md --title "My Post"
 ```
 
 Options:
@@ -26,7 +26,7 @@ Options:
 Update an already-published file (creates new version).
 
 ```bash
-./cli-bash/polis --json republish posts/20260106/my-post.md
+polis --json republish posts/20260106/my-post.md
 ```
 
 ## Comment Commands
@@ -36,10 +36,10 @@ Create a comment in reply to a post or another comment.
 
 ```bash
 # From file
-./cli-bash/polis --json comment my-reply.md https://alice.com/posts/hello.md
+polis --json comment my-reply.md https://alice.com/posts/hello.md
 
 # From stdin
-echo "Great post!" | ./cli-bash/polis --json comment - https://alice.com/posts/hello.md --filename reply.md
+echo "Great post!" | polis --json comment - https://alice.com/posts/hello.md --filename reply.md
 ```
 
 ## Preview Command
@@ -48,7 +48,7 @@ echo "Great post!" | ./cli-bash/polis --json comment - https://alice.com/posts/h
 Preview content at a URL with signature verification.
 
 ```bash
-./cli-bash/polis --json preview https://alice.com/posts/hello.md
+polis --json preview https://alice.com/posts/hello.md
 ```
 
 ## Blessing Commands
@@ -57,35 +57,35 @@ Preview content at a URL with signature verification.
 Sync auto-blessed comments from discovery service.
 
 ```bash
-./cli-bash/polis --json blessing sync
+polis --json blessing sync
 ```
 
 ### `polis blessing requests`
 List pending blessing requests for your posts.
 
 ```bash
-./cli-bash/polis --json blessing requests
+polis --json blessing requests
 ```
 
 ### `polis blessing grant <hash>`
 Approve a pending blessing request. Hash can be short form (e.g., `f4bac5-350fd2`) or full hash.
 
 ```bash
-./cli-bash/polis --json blessing grant f4bac5-350fd2
+polis --json blessing grant f4bac5-350fd2
 ```
 
 ### `polis blessing deny <hash>`
 Deny a pending blessing request. Hash can be short form or full hash.
 
 ```bash
-./cli-bash/polis --json blessing deny f4bac5-350fd2
+polis --json blessing deny f4bac5-350fd2
 ```
 
 ### `polis blessing beseech <id>`
 Re-request blessing for a comment (retry). Looks up request by database ID.
 
 ```bash
-./cli-bash/polis --json blessing beseech 42
+polis --json blessing beseech 42
 ```
 
 ## Social Commands
@@ -94,10 +94,10 @@ Re-request blessing for a comment (retry). Looks up request by database ID.
 Follow an author (auto-bless their future comments).
 
 ```bash
-./cli-bash/polis --json follow https://alice.com
+polis --json follow https://alice.com
 
 # Announce follow to discovery service (opt-in)
-./cli-bash/polis --json follow https://alice.com --announce
+polis --json follow https://alice.com --announce
 ```
 
 Options:
@@ -107,10 +107,10 @@ Options:
 Stop following an author and hide their comments.
 
 ```bash
-./cli-bash/polis --json unfollow https://alice.com
+polis --json unfollow https://alice.com
 
 # Announce unfollow to discovery service
-./cli-bash/polis --json unfollow https://alice.com --announce
+polis --json unfollow https://alice.com --announce
 ```
 
 Options:
@@ -121,13 +121,13 @@ Check followed authors for new content.
 
 ```bash
 # Check all followed authors
-./cli-bash/polis --json discover
+polis --json discover
 
 # Check a specific author
-./cli-bash/polis --json discover --author https://alice.com
+polis --json discover --author https://alice.com
 
 # Show items since a specific date
-./cli-bash/polis --json discover --since 2026-01-15
+polis --json discover --since 2026-01-15
 ```
 
 Options:
@@ -140,7 +140,7 @@ Options:
 View the content index.
 
 ```bash
-./cli-bash/polis --json index
+polis --json index
 ```
 
 ### `polis rebuild`
@@ -148,19 +148,19 @@ Rebuild local indexes and reset state. Automatically regenerates `manifest.json`
 
 ```bash
 # Rebuild posts index (public.jsonl)
-./cli-bash/polis --json rebuild --posts
+polis --json rebuild --posts
 
 # Full rebuild of blessed comments from discovery service
-./cli-bash/polis --json rebuild --comments
+polis --json rebuild --comments
 
 # Reset notification files
-./cli-bash/polis --json rebuild --notifications
+polis --json rebuild --notifications
 
 # Rebuild all indexes and reset notifications
-./cli-bash/polis --json rebuild --all
+polis --json rebuild --all
 
 # Flags are combinable
-./cli-bash/polis --json rebuild --posts --comments
+polis --json rebuild --posts --comments
 ```
 
 Options:
@@ -176,13 +176,13 @@ Render markdown posts and comments to HTML. Generates `.html` files alongside `.
 
 ```bash
 # Render all posts and comments, generate index.html
-./cli-bash/polis --json render
+polis --json render
 
 # Force re-render all files (ignore timestamps)
-./cli-bash/polis --json render --force
+polis --json render --force
 
 # Export default templates for customization
-./cli-bash/polis render --init-templates
+polis render --init-templates
 ```
 
 Options:
@@ -238,8 +238,8 @@ Modify these files to customize the HTML output.
 Initialize a new polis directory.
 
 ```bash
-./cli-bash/polis --json init
-./cli-bash/polis --json init --site-title "My Blog"
+polis --json init
+polis --json init --site-title "My Blog"
 ```
 
 **Options:**
@@ -251,14 +251,14 @@ Initialize a new polis directory.
 Print CLI version.
 
 ```bash
-./cli-bash/polis version
+polis version
 ```
 
 ### `polis rotate-key`
 Generate new keypair and re-sign all content.
 
 ```bash
-./cli-bash/polis --json rotate-key
+polis --json rotate-key
 ```
 
 Use when: key compromise, routine security hygiene, or before transferring device access.
@@ -272,7 +272,7 @@ Old keypair is archived at `.polis/keys/id_ed25519.old` unless `--delete-old-key
 Migrate all content to a new domain (re-signs files, updates database).
 
 ```bash
-./cli-bash/polis --json migrate newdomain.com
+polis --json migrate newdomain.com
 ```
 
 Auto-detects current domain from published files. Updates all URLs, re-signs content, and updates discovery service database (preserves blessing status).
@@ -282,13 +282,13 @@ View and manage notifications about activity on your site and from followed auth
 
 ```bash
 # List unread notifications (default)
-./cli-bash/polis --json notifications
+polis --json notifications
 
 # List all notifications
-./cli-bash/polis --json notifications list --all
+polis --json notifications list --all
 
 # Filter by type
-./cli-bash/polis --json notifications list --type version_available,new_follower
+polis --json notifications list --type version_available,new_follower
 ```
 
 **Notification types:**
@@ -302,20 +302,20 @@ View and manage notifications about activity on your site and from followed auth
 Mark a notification as read.
 
 ```bash
-./cli-bash/polis --json notifications read notif_1737388800_abc123
+polis --json notifications read notif_1737388800_abc123
 
 # Mark all as read
-./cli-bash/polis --json notifications read --all
+polis --json notifications read --all
 ```
 
 ### `polis notifications dismiss <id>`
 Dismiss a notification without marking as read.
 
 ```bash
-./cli-bash/polis --json notifications dismiss notif_1737388800_abc123
+polis --json notifications dismiss notif_1737388800_abc123
 
 # Dismiss old notifications
-./cli-bash/polis --json notifications dismiss --older-than 30d
+polis --json notifications dismiss --older-than 30d
 ```
 
 ### `polis notifications sync`
@@ -323,10 +323,10 @@ Sync notifications from the discovery service.
 
 ```bash
 # Fetch new notifications
-./cli-bash/polis --json notifications sync
+polis --json notifications sync
 
 # Reset watermark and do full re-sync
-./cli-bash/polis --json notifications sync --reset
+polis --json notifications sync --reset
 ```
 
 ### `polis notifications config`
@@ -334,18 +334,18 @@ Configure notification preferences.
 
 ```bash
 # Show current config
-./cli-bash/polis --json notifications config
+polis --json notifications config
 
 # Set poll interval
-./cli-bash/polis notifications config --poll-interval 30m
+polis notifications config --poll-interval 30m
 
 # Enable/disable notification types
-./cli-bash/polis notifications config --enable new_post
-./cli-bash/polis notifications config --disable version_available
+polis notifications config --enable new_post
+polis notifications config --disable version_available
 
 # Mute/unmute specific domains
-./cli-bash/polis notifications config --mute spam.com
-./cli-bash/polis notifications config --unmute spam.com
+polis notifications config --mute spam.com
+polis notifications config --unmute spam.com
 ```
 
 **Local storage:**
@@ -356,7 +356,7 @@ Configure notification preferences.
 Interactively apply discovered domain migrations to local files.
 
 ```bash
-./cli-bash/polis migrations apply
+polis migrations apply
 ```
 
 For each migration:
@@ -369,14 +369,14 @@ For each migration:
 Reconstruct a specific version from history.
 
 ```bash
-./cli-bash/polis extract posts/20260106/my-post.md sha256:abc123...
+polis extract posts/20260106/my-post.md sha256:abc123...
 ```
 
 ### `polis about`
 Show comprehensive site information: URL, versions, keys, discovery status.
 
 ```bash
-./cli-bash/polis --json about
+polis --json about
 ```
 
 Displays:
@@ -389,7 +389,7 @@ Displays:
 Register your site with the discovery service (makes content discoverable).
 
 ```bash
-./cli-bash/polis --json register
+polis --json register
 ```
 
 Required for:
@@ -402,10 +402,10 @@ Unregister your site from the discovery service (hard delete).
 
 ```bash
 # Requires confirmation
-./cli-bash/polis --json unregister
+polis --json unregister
 
 # Skip confirmation
-./cli-bash/polis --json unregister --force
+polis --json unregister --force
 ```
 
 Options:
@@ -416,16 +416,16 @@ Clone a remote polis site for local analysis or backup.
 
 ```bash
 # Clone to auto-named directory
-./cli-bash/polis --json clone https://alice.com
+polis --json clone https://alice.com
 
 # Clone to specific directory
-./cli-bash/polis --json clone https://alice.com ./alice-backup
+polis --json clone https://alice.com ./alice-backup
 
 # Force full re-download (ignore cached state)
-./cli-bash/polis --json clone https://alice.com --full
+polis --json clone https://alice.com --full
 
 # Only download new/changed content (incremental)
-./cli-bash/polis --json clone https://alice.com --diff
+polis --json clone https://alice.com --diff
 ```
 
 Options:

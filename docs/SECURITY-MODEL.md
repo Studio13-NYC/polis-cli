@@ -65,16 +65,17 @@ Hash format: `sha256:<hex-encoded-hash>`
 During `polis init`, a new Ed25519 keypair is generated:
 
 ```
-~/.polis/
-├── polis_key           # Private key (SSH format, never leaves device)
-└── polis_key.pub       # Public key (SSH format, published to web)
+.polis/
+└── keys/
+    ├── id_ed25519       # Private key (SSH format, never leaves device)
+    └── id_ed25519.pub   # Public key (SSH format, published to web)
 ```
 
 The private key is generated using cryptographically secure random number generation (CSPRNG) provided by the operating system.
 
 ### Private Key Storage
 
-**Location:** `~/.polis/polis_key`
+**Location:** `.polis/keys/id_ed25519`
 
 **Format:** OpenSSH private key format (PEM-encoded)
 
@@ -747,7 +748,7 @@ Lost private key = lost identity. No backup, no escrow, no recovery.
 
 **Rationale:** Self-sovereign means self-responsible. Recovery mechanisms introduce trust parties.
 
-**User guidance:** Back up `~/.polis/polis_key` securely.
+**User guidance:** Back up `.polis/keys/id_ed25519` securely.
 
 ---
 

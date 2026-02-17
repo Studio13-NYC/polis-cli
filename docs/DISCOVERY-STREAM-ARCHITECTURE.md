@@ -408,9 +408,7 @@ access.
 |----------|-------------|
 | [MANIFESTO.md](MANIFESTO.md) | The philosophical foundation—why content ownership isn't enough, why social needs to work differently |
 | [discovery-api-spec.md](discovery-api-spec.md) | The formal API contract for both the Service and Stream—endpoint definitions, request/response schemas, error codes |
-| [design-philosophy.md](design-philosophy.md) | The MVC architecture that makes the Stream possible—model (files), view (rendering), controller (CLI/webapp) |
 | [SECURITY-MODEL.md](SECURITY-MODEL.md) | The cryptographic foundations—Ed25519 key management, signature verification, trust model |
-| [polis-architecture.md](polis-architecture.md) | The broader system architecture—how the Stream fits into the seven experience levels |
 
 ---
 

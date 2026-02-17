@@ -231,7 +231,9 @@ func DeleteDraft(dataDir, id string) error {
 
 // SignComment signs a draft and moves it to pending status.
 // Uses CLI-compatible frontmatter format with nested in-reply-to structure.
-func SignComment(dataDir string, draft *CommentDraft, authorEmail, siteURL string, privateKey []byte) (*SignedComment, error) {
+// authorIdentity is the domain (e.g. "alice.polis.pub") written to the author frontmatter field.
+// For backward compatibility, email addresses are also accepted.
+func SignComment(dataDir string, draft *CommentDraft, authorIdentity, siteURL string, privateKey []byte) (*SignedComment, error) {
 	// Normalize URLs to .md format (defense-in-depth)
 	draft.InReplyTo = polisurl.NormalizeToMD(draft.InReplyTo)
 	draft.RootPost = polisurl.NormalizeToMD(draft.RootPost)
@@ -328,7 +330,7 @@ signature: %s
 ---`,
 		escapeYAMLTitle(title),
 		timestampStr,
-		authorEmail,
+		authorIdentity,
 		GetGenerator(),
 		draft.InReplyTo,
 		rootPost,
@@ -364,7 +366,7 @@ signature: %s
 		CommentVersion: "sha256:" + hash,
 		InReplyTo:      draft.InReplyTo,
 		RootPost:       rootPost,
-		Author:         authorEmail,
+		Author:         authorIdentity,
 		Timestamp:      timestampStr,
 		Status:         StatusPending,
 		VersionHistory: []string{fmt.Sprintf("sha256:%s (%s)", hash, timestampStr)},

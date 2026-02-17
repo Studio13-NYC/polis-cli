@@ -81,23 +81,34 @@ func handleAbout(args []string) {
 		themesDir = wk.Config.Directories.Themes
 	}
 
+	// Resolve domain identity
+	domain := wk.AuthorDomain()
+	if domain == "" && baseURL != "" {
+		domain = extractDomain(baseURL)
+	}
+
 	if jsonOutput {
+		siteData := map[string]interface{}{
+			"author":          wk.Author,
+			"domain":          domain,
+			"created":         wk.Created,
+			"public_key":      wk.PublicKey,
+			"site_title":      wk.SiteTitle,
+			"base_url":        baseURL,
+			"post_count":      postCount,
+			"comment_count":   commentCount,
+			"following_count": followingCount,
+		}
+		// Only include email in JSON output if explicitly set
+		if wk.Email != "" {
+			siteData["email"] = wk.Email
+		}
 		outputJSON(map[string]interface{}{
 			"status":  "success",
 			"command": "about",
 			"data": map[string]interface{}{
 				"cli_version": Version,
-				"site": map[string]interface{}{
-					"author":          wk.Author,
-					"email":           wk.Email,
-					"created":         wk.Created,
-					"public_key":      wk.PublicKey,
-					"site_title":      wk.SiteTitle,
-					"base_url":        baseURL,
-					"post_count":      postCount,
-					"comment_count":   commentCount,
-					"following_count": followingCount,
-				},
+				"site":        siteData,
 				"discovery": map[string]interface{}{
 					"url":                 discoveryURL,
 					"registration_status": registrationStatus,
@@ -119,7 +130,12 @@ func handleAbout(args []string) {
 
 		fmt.Println("=== Site Information ===")
 		fmt.Printf("  Author: %s\n", wk.Author)
-		fmt.Printf("  Email: %s\n", wk.Email)
+		if domain != "" {
+			fmt.Printf("  Domain: %s\n", domain)
+		}
+		if wk.Email != "" {
+			fmt.Printf("  Email: %s\n", wk.Email)
+		}
 		fmt.Printf("  Created: %s\n", wk.Created)
 		if wk.SiteTitle != "" {
 			fmt.Printf("  Site Title: %s\n", wk.SiteTitle)

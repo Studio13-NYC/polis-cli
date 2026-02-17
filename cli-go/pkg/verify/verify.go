@@ -99,14 +99,18 @@ func VerifyContent(contentURL string) (*VerificationResult, error) {
 	wk, err := client.FetchWellKnown(baseURL)
 
 	var publicKey string
-	var authorEmail string
+	var authorIdentity string
 	if err == nil {
 		publicKey = wk.PublicKey
-		authorEmail = wk.Email
+		// Prefer domain as public identity, fall back to email for backward compat
+		authorIdentity = wk.AuthorDomain()
+		if authorIdentity == "" && wk.Email != "" {
+			authorIdentity = wk.Email
+		}
 	}
 
 	// Verify signature
-	sigResult := verifySignature(content, publicKey, fm.Signature, authorEmail)
+	sigResult := verifySignature(content, publicKey, fm.Signature, authorIdentity)
 
 	// Verify hash
 	hashResult := verifyHash(body, fm.CurrentVersion)
@@ -137,7 +141,7 @@ func VerifyContent(contentURL string) (*VerificationResult, error) {
 		CurrentVersion:   fm.CurrentVersion,
 		Generator:        fm.Generator,
 		InReplyTo:        fm.InReplyTo,
-		Author:           authorEmail,
+		Author:           authorIdentity,
 		Signature:        sigResult,
 		Hash:             hashResult,
 		ValidationIssues: issues,
@@ -215,7 +219,7 @@ func parseFrontmatter(content string) (*Frontmatter, string, error) {
 }
 
 // verifySignature verifies the content signature against the public key.
-func verifySignature(content, publicKey, signature, authorEmail string) SignatureResult {
+func verifySignature(content, publicKey, signature, authorIdentity string) SignatureResult {
 	if publicKey == "" {
 		return SignatureResult{
 			Status:  "error",
@@ -231,7 +235,7 @@ func verifySignature(content, publicKey, signature, authorEmail string) Signatur
 	}
 
 	// Extract the content to verify (everything before signature line)
-	contentToVerify := extractContentToSign(content, authorEmail)
+	contentToVerify := extractContentToSign(content, authorIdentity)
 
 	// Verify signature
 	valid, err := signing.VerifySignature([]byte(contentToVerify), []byte(publicKey), signature)
@@ -250,7 +254,7 @@ func verifySignature(content, publicKey, signature, authorEmail string) Signatur
 
 // extractContentToSign extracts the content portion that should be signed.
 // This matches the bash CLI behavior: everything up to the signature line.
-func extractContentToSign(content, authorEmail string) string {
+func extractContentToSign(content, authorIdentity string) string {
 	lines := strings.Split(content, "\n")
 	var result []string
 

@@ -29,6 +29,7 @@ import (
 	"github.com/vdibart/polis-cli/cli-go/pkg/render"
 	"github.com/vdibart/polis-cli/cli-go/pkg/site"
 	"github.com/vdibart/polis-cli/cli-go/pkg/stream"
+	"github.com/vdibart/polis-cli/cli-go/pkg/theme"
 	polisurl "github.com/vdibart/polis-cli/cli-go/pkg/url"
 )
 
@@ -73,6 +74,12 @@ type Config struct {
 	HideRead bool `json:"hide_read,omitempty"`
 }
 
+// SSEEvent is a server-sent event pushed to connected clients.
+type SSEEvent struct {
+	Event string // event type (e.g., "counts")
+	Data  string // JSON payload
+}
+
 // Server holds the application state
 type Server struct {
 	DataDir      string
@@ -85,6 +92,14 @@ type Server struct {
 	BaseURL      string // From POLIS_BASE_URL env var (runtime config, not stored in .well-known/polis)
 	DiscoveryURL string // From .env / env var DISCOVERY_SERVICE_URL (not stored in webapp-config.json)
 	DiscoveryKey string // From .env / env var DISCOVERY_SERVICE_KEY (not stored in webapp-config.json)
+
+	// Unified sync infrastructure
+	syncHandlers []stream.SyncHandler
+	syncTrigger  chan struct{} // non-blocking channel to trigger on-demand sync
+
+	// SSE client registry
+	sseClients map[chan SSEEvent]struct{}
+	sseMu      sync.Mutex
 }
 
 // Logger handles logging to files organized by date
@@ -213,6 +228,21 @@ func (s *Server) LogDebug(format string, args ...interface{}) {
 func (s *Server) GetBaseURL() string {
 	// Return cached value from LoadEnv()
 	return s.BaseURL
+}
+
+// DiscoveryConfig returns a per-instance discovery config for use with
+// publish.PublishPost/RepublishPost. This avoids relying on package-level
+// globals which are unsafe in multi-tenant (hosted) mode where each tenant
+// has a different BaseURL.
+func (s *Server) DiscoveryConfig() *publish.DiscoveryConfig {
+	if s.DiscoveryURL == "" || s.DiscoveryKey == "" || s.BaseURL == "" {
+		return nil
+	}
+	return &publish.DiscoveryConfig{
+		DiscoveryURL: s.DiscoveryURL,
+		DiscoveryKey: s.DiscoveryKey,
+		BaseURL:      s.BaseURL,
+	}
 }
 
 // RenderSite renders all pages after publish/republish operations.
@@ -557,6 +587,8 @@ func (s *Server) Initialize() {
 		following.Version = s.CLIVersion
 		feed.Version = s.CLIVersion
 		site.Version = s.CLIVersion
+		notification.Version = s.CLIVersion
+		theme.Version = s.CLIVersion
 	}
 
 	// Migrate .polis/drafts -> .polis/posts/drafts if needed
@@ -639,19 +671,300 @@ func (s *Server) Close() {
 	}
 }
 
-// StartBackgroundSync starts background goroutines that periodically
-// sync notifications and feed from the discovery service.
+// RegisterSyncHandler adds a handler to the unified sync loop.
+func (s *Server) RegisterSyncHandler(h stream.SyncHandler) {
+	s.syncHandlers = append(s.syncHandlers, h)
+}
+
+// TriggerSync requests an immediate sync cycle (non-blocking).
+// Used after user-initiated mutations (publish, bless, follow) to push
+// updated counts to SSE clients within milliseconds.
+func (s *Server) TriggerSync() {
+	select {
+	case s.syncTrigger <- struct{}{}:
+	default:
+		// Already triggered, skip
+	}
+}
+
+// StartBackgroundSync registers built-in handlers and starts the unified
+// sync loop that processes ALL event types in a single coordinated cycle.
 func (s *Server) StartBackgroundSync() {
+	// Initialize infrastructure
+	s.syncTrigger = make(chan struct{}, 1)
+	s.sseClients = make(map[chan SSEEvent]struct{})
+
+	// Register handlers
+	s.syncHandlers = nil
+	s.RegisterSyncHandler(&notificationSyncHandler{server: s})
+	s.RegisterSyncHandler(&feedSyncHandler{server: s})
+	s.RegisterSyncHandler(&followSyncHandler{server: s})
+	s.RegisterSyncHandler(&commentStatusSyncHandler{server: s})
+	s.RegisterSyncHandler(&blessingSyncHandler{server: s})
+
 	go func() {
-		s.syncNotifications()
-		s.syncFeed()
-		ticker := time.NewTicker(60 * time.Second)
+		// Initial catch-up: run legacy comment sync for pre-existing pending comments
+		s.syncCommentStatuses()
+
+		// Initial unified sync
+		s.runUnifiedSync()
+
+		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
-		for range ticker.C {
-			s.syncNotifications()
-			s.syncFeed()
+
+		for {
+			select {
+			case <-ticker.C:
+				s.runUnifiedSync()
+			case <-s.syncTrigger:
+				s.runUnifiedSync()
+			}
 		}
 	}()
+}
+
+// addSSEClient registers a client channel for SSE events.
+func (s *Server) addSSEClient(ch chan SSEEvent) {
+	s.sseMu.Lock()
+	defer s.sseMu.Unlock()
+	s.sseClients[ch] = struct{}{}
+}
+
+// removeSSEClient unregisters a client channel.
+func (s *Server) removeSSEClient(ch chan SSEEvent) {
+	s.sseMu.Lock()
+	defer s.sseMu.Unlock()
+	delete(s.sseClients, ch)
+	close(ch)
+}
+
+// broadcastSSE sends an event to all connected SSE clients.
+func (s *Server) broadcastSSE(evt SSEEvent) {
+	s.sseMu.Lock()
+	defer s.sseMu.Unlock()
+	for ch := range s.sseClients {
+		select {
+		case ch <- evt:
+		default:
+			// Client channel full, skip (they'll get the next one)
+		}
+	}
+}
+
+// broadcastCounts computes all badge counts and pushes them to SSE clients.
+func (s *Server) broadcastCounts(syncResult SyncResult) {
+	if s.sseClients == nil {
+		return
+	}
+	s.sseMu.Lock()
+	clientCount := len(s.sseClients)
+	s.sseMu.Unlock()
+	if clientCount == 0 {
+		return
+	}
+
+	counts := s.computeAllCounts()
+	data, err := json.Marshal(counts)
+	if err != nil {
+		return
+	}
+	s.broadcastSSE(SSEEvent{Event: "counts", Data: string(data)})
+}
+
+// CountsPayload contains all badge counts for the frontend.
+type CountsPayload struct {
+	Posts            int `json:"posts"`
+	Drafts           int `json:"drafts"`
+	MyPending        int `json:"my_pending"`
+	MyBlessed        int `json:"my_blessed"`
+	MyDenied         int `json:"my_denied"`
+	MyCommentDrafts  int `json:"my_comment_drafts"`
+	IncomingPending  int `json:"incoming_pending"`
+	IncomingBlessed  int `json:"incoming_blessed"`
+	Feed             int `json:"feed"`
+	FeedUnread       int `json:"feed_unread"`
+	Following        int `json:"following"`
+	Followers        int `json:"followers"`
+	NotificationsUnread int `json:"notifications_unread"`
+	BlessingRequests int `json:"blessing_requests"`
+}
+
+// computeAllCounts reads all badge counts from local state/filesystem.
+// No DS queries — everything comes from cached state.
+func (s *Server) computeAllCounts() CountsPayload {
+	counts := CountsPayload{}
+
+	// Posts — read from public.jsonl index (handles date-based subdirectories)
+	indexPath := filepath.Join(s.DataDir, "metadata", "public.jsonl")
+	if data, err := os.ReadFile(indexPath); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			// Skip comment entries in public.jsonl
+			if !strings.Contains(line, `"comments/`) {
+				counts.Posts++
+			}
+		}
+	}
+
+	// Drafts
+	draftsDir := filepath.Join(s.DataDir, ".polis", "posts", "drafts")
+	if entries, err := os.ReadDir(draftsDir); err == nil {
+		for _, e := range entries {
+			if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
+				counts.Drafts++
+			}
+		}
+	}
+
+	// My comments by status (pending/denied are flat in .polis/comments/<status>/)
+	for _, status := range []struct {
+		dir  string
+		dest *int
+	}{
+		{"pending", &counts.MyPending},
+		{"denied", &counts.MyDenied},
+	} {
+		dir := filepath.Join(s.DataDir, ".polis", "comments", status.dir)
+		if entries, err := os.ReadDir(dir); err == nil {
+			for _, e := range entries {
+				if !e.IsDir() && strings.HasSuffix(e.Name(), ".md") {
+					*status.dest++
+				}
+			}
+		}
+	}
+
+	// My blessed comments live in public comments/YYYYMMDD/ (date-based subdirs)
+	blessedDir := filepath.Join(s.DataDir, "comments")
+	if dateDirs, err := os.ReadDir(blessedDir); err == nil {
+		for _, dd := range dateDirs {
+			if !dd.IsDir() {
+				continue
+			}
+			subDir := filepath.Join(blessedDir, dd.Name())
+			if files, err := os.ReadDir(subDir); err == nil {
+				for _, f := range files {
+					if !f.IsDir() && strings.HasSuffix(f.Name(), ".md") {
+						counts.MyBlessed++
+					}
+				}
+			}
+		}
+	}
+
+	// Comment drafts
+	commentDraftsDir := filepath.Join(s.DataDir, ".polis", "comments", "drafts")
+	if entries, err := os.ReadDir(commentDraftsDir); err == nil {
+		for _, e := range entries {
+			if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
+				counts.MyCommentDrafts++
+			}
+		}
+	}
+
+	// Incoming blessed comments (on our posts)
+	blessedIndex := filepath.Join(s.DataDir, "metadata", "blessed-comments.json")
+	if data, err := os.ReadFile(blessedIndex); err == nil {
+		var idx map[string]interface{}
+		if json.Unmarshal(data, &idx) == nil {
+			if posts, ok := idx["posts"].(map[string]interface{}); ok {
+				for _, v := range posts {
+					if comments, ok := v.([]interface{}); ok {
+						counts.IncomingBlessed += len(comments)
+					}
+				}
+			}
+		}
+	}
+
+	// Following
+	followingPath := following.DefaultPath(s.DataDir)
+	if f, err := following.Load(followingPath); err == nil {
+		counts.Following = f.Count()
+	}
+
+	// Feed counts
+	discoveryDomain := s.GetDiscoveryDomain()
+	cm := feed.NewCacheManager(s.DataDir, discoveryDomain)
+	if items, err := cm.List(); err == nil {
+		counts.Feed = len(items)
+		for _, item := range items {
+			if item.ReadAt == "" {
+				counts.FeedUnread++
+			}
+		}
+	}
+
+	// Followers (from cached state)
+	store := stream.NewStore(s.DataDir, discoveryDomain)
+	var followerState stream.FollowerState
+	if store.LoadState("polis.follow", &followerState) == nil {
+		counts.Followers = followerState.Count
+	}
+
+	// Notification unread count
+	mgr := notification.NewManager(s.DataDir, discoveryDomain)
+	if unread, err := mgr.CountUnread(); err == nil {
+		counts.NotificationsUnread = unread
+	}
+
+	// Incoming pending blessing requests — read from DS-cached blessing state
+	var blessingState stream.BlessingState
+	if store.LoadState("polis.blessing", &blessingState) == nil {
+		for _, b := range blessingState.Blessings {
+			if b.Status == "pending" {
+				counts.BlessingRequests++
+				counts.IncomingPending++
+			}
+		}
+	}
+
+	return counts
+}
+
+// syncCommentStatuses checks pending comments against the discovery service
+// and moves any that have been blessed or denied. Re-renders the site if
+// any statuses changed so HTML and index.html stay current.
+func (s *Server) syncCommentStatuses() {
+	if s.DiscoveryURL == "" || s.DiscoveryKey == "" || s.PrivateKey == nil {
+		return
+	}
+	baseURL := s.GetBaseURL()
+	if baseURL == "" {
+		return
+	}
+
+	// Quick check: any pending comments at all?
+	pendingDir := filepath.Join(s.DataDir, ".polis", "comments", "pending")
+	entries, err := os.ReadDir(pendingDir)
+	if err != nil || len(entries) == 0 {
+		return
+	}
+
+	myDomain := discovery.ExtractDomainFromURL(baseURL)
+	client := discovery.NewAuthenticatedClient(s.DiscoveryURL, s.DiscoveryKey, myDomain, s.PrivateKey)
+
+	var hc *hooks.HookConfig
+	if s.Config != nil {
+		hc = s.Config.Hooks
+	}
+
+	result, err := comment.SyncPendingComments(s.DataDir, baseURL, client, hc)
+	if err != nil {
+		s.LogDebug("background comment sync failed: %v", err)
+		return
+	}
+
+	// Re-render if any statuses changed
+	if len(result.Blessed) > 0 || len(result.Denied) > 0 {
+		if err := s.RenderSite(); err != nil {
+			log.Printf("[warning] background comment sync render failed: %v", err)
+		}
+		s.LogInfo("background comment sync: %d blessed, %d denied", len(result.Blessed), len(result.Denied))
+	}
 }
 
 // syncNotifications runs the notification projection: queries the stream
@@ -849,15 +1162,18 @@ func cursorGreater(a, b string) bool {
 // from followed authors and merges them into the feed cache.
 func (s *Server) syncFeed() {
 	if s.DiscoveryURL == "" || s.DiscoveryKey == "" {
+		log.Printf("[feed-sync] skip: no discovery config (url=%q key=%d chars)", s.DiscoveryURL, len(s.DiscoveryKey))
 		return
 	}
 	baseURL := s.GetBaseURL()
 	if baseURL == "" {
+		log.Printf("[feed-sync] skip: empty BaseURL (dataDir=%s)", s.DataDir)
 		return
 	}
 
 	myDomain := extractDomainFromURL(baseURL)
 	if myDomain == "" {
+		log.Printf("[feed-sync] skip: could not extract domain from %s", baseURL)
 		return
 	}
 
@@ -866,7 +1182,12 @@ func (s *Server) syncFeed() {
 	// Load following list to get followed domains
 	followingPath := following.DefaultPath(s.DataDir)
 	f, err := following.Load(followingPath)
-	if err != nil || f.Count() == 0 {
+	if err != nil {
+		log.Printf("[feed-sync] skip: following load error: %v", err)
+		return
+	}
+	if f.Count() == 0 {
+		log.Printf("[feed-sync] skip: following list is empty (path=%s)", followingPath)
 		return
 	}
 
@@ -878,6 +1199,7 @@ func (s *Server) syncFeed() {
 		}
 	}
 	if len(domains) == 0 {
+		log.Printf("[feed-sync] skip: no valid domains extracted from %d following entries", f.Count())
 		return
 	}
 
@@ -890,11 +1212,15 @@ func (s *Server) syncFeed() {
 	typeFilter := "polis.post.published,polis.post.republished,polis.comment.published,polis.comment.republished"
 	actorFilter := discovery.JoinDomains(domains)
 
+	log.Printf("[feed-sync] querying stream: myDomain=%s actors=%s cursor=%q dsURL=%s", myDomain, actorFilter, cursor, s.DiscoveryURL)
+
 	result, err := client.StreamQuery(cursor, 1000, typeFilter, actorFilter, "")
 	if err != nil {
-		s.LogDebug("feed sync: stream query failed: %v", err)
+		log.Printf("[feed-sync] stream query failed: %v", err)
 		return
 	}
+
+	log.Printf("[feed-sync] stream returned %d events, cursor=%q, hasMore=%v", len(result.Events), result.Cursor, result.HasMore)
 
 	// Transform events to feed items
 	handler := &feed.FeedHandler{
@@ -906,14 +1232,15 @@ func (s *Server) syncFeed() {
 	}
 
 	items := handler.Process(result.Events)
+	log.Printf("[feed-sync] processed %d events -> %d feed items", len(result.Events), len(items))
 
 	// Merge into cache
 	if len(items) > 0 {
 		newCount, err := cm.MergeItems(items)
 		if err != nil {
-			s.LogError("feed sync: merge failed: %v", err)
-		} else if newCount > 0 {
-			s.LogInfo("feed sync: added %d new items", newCount)
+			log.Printf("[feed-sync] merge failed: %v", err)
+		} else {
+			log.Printf("[feed-sync] merged %d new items (total cached: check JSONL)", newCount)
 		}
 	}
 
@@ -982,8 +1309,8 @@ func Run(webFS fs.FS, dataDir string, opts ...RunOptions) {
 	mux := http.NewServeMux()
 	SetupRoutes(mux, server)
 
-	// Static files from embedded filesystem
-	mux.Handle("/", http.FileServer(http.FS(webFS)))
+	// Static files from embedded filesystem with SPA fallback
+	mux.Handle("/", spaHandler(webFS))
 
 	addr := fmt.Sprintf("localhost:%d", port)
 	url := fmt.Sprintf("http://%s", addr)
@@ -1001,6 +1328,27 @@ func Run(webFS fs.FS, dataDir string, opts ...RunOptions) {
 	if err := http.ListenAndServe(addr, mux); err != nil {
 		log.Fatal("Server error:", err)
 	}
+}
+
+// spaHandler serves static files from the embedded filesystem, falling back
+// to index.html for unknown paths (SPA deep-link support).
+func spaHandler(fsys fs.FS) http.Handler {
+	fileServer := http.FileServer(http.FS(fsys))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/")
+		if path == "" {
+			fileServer.ServeHTTP(w, r)
+			return
+		}
+		// If the file exists in the embedded FS, serve it directly
+		if _, err := fs.Stat(fsys, path); err == nil {
+			fileServer.ServeHTTP(w, r)
+			return
+		}
+		// SPA fallback: serve index.html for deep-link paths
+		r.URL.Path = "/"
+		fileServer.ServeHTTP(w, r)
+	})
 }
 
 // GetDiscoveryDomain returns the discovery service hostname for use as

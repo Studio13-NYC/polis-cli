@@ -1,6 +1,7 @@
 package stream
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/vdibart/polis-cli/cli-go/pkg/discovery"
@@ -41,7 +42,7 @@ func TestNotificationHandler_BlessingRequested(t *testing.T) {
 
 	events := []discovery.StreamEvent{
 		{
-			ID:    1,
+			ID:    json.Number("1"),
 			Type:  "polis.blessing.requested",
 			Actor: "alice.com",
 			Payload: map[string]interface{}{
@@ -77,7 +78,7 @@ func TestNotificationHandler_BlessingGranted_SourceDomain(t *testing.T) {
 
 	events := []discovery.StreamEvent{
 		{
-			ID:    1,
+			ID:    json.Number("1"),
 			Type:  "polis.blessing.granted",
 			Actor: "bob.com",
 			Payload: map[string]interface{}{
@@ -110,7 +111,7 @@ func TestNotificationHandler_BlessingDenied_SourceDomain(t *testing.T) {
 
 	events := []discovery.StreamEvent{
 		{
-			ID:    1,
+			ID:    json.Number("1"),
 			Type:  "polis.blessing.denied",
 			Actor: "bob.com",
 			Payload: map[string]interface{}{
@@ -140,7 +141,7 @@ func TestNotificationHandler_CommentPublished(t *testing.T) {
 
 	events := []discovery.StreamEvent{
 		{
-			ID:    1,
+			ID:    json.Number("1"),
 			Type:  "polis.comment.published",
 			Actor: "alice.com",
 			Payload: map[string]interface{}{
@@ -172,7 +173,7 @@ func TestNotificationHandler_SkipSelfEvents(t *testing.T) {
 
 	events := []discovery.StreamEvent{
 		{
-			ID:    1,
+			ID:    json.Number("1"),
 			Type:  "polis.comment.published",
 			Actor: "bob.com", // self-event
 			Payload: map[string]interface{}{
@@ -199,7 +200,7 @@ func TestNotificationHandler_SkipMutedDomains(t *testing.T) {
 
 	events := []discovery.StreamEvent{
 		{
-			ID:    1,
+			ID:    json.Number("1"),
 			Type:  "polis.follow.announced",
 			Actor: "spam.com",
 			Payload: map[string]interface{}{
@@ -224,7 +225,7 @@ func TestNotificationHandler_IgnoresOtherDomains(t *testing.T) {
 	events := []discovery.StreamEvent{
 		// Follow for someone else
 		{
-			ID:    1,
+			ID:    json.Number("1"),
 			Type:  "polis.follow.announced",
 			Actor: "alice.com",
 			Payload: map[string]interface{}{
@@ -234,7 +235,7 @@ func TestNotificationHandler_IgnoresOtherDomains(t *testing.T) {
 		},
 		// Blessing granted for someone else (source_domain != bob.com)
 		{
-			ID:    2,
+			ID:    json.Number("2"),
 			Type:  "polis.blessing.granted",
 			Actor: "charlie.com",
 			Payload: map[string]interface{}{
@@ -247,7 +248,7 @@ func TestNotificationHandler_IgnoresOtherDomains(t *testing.T) {
 		},
 		// Follow for us (should be the ONLY notification)
 		{
-			ID:    3,
+			ID:    json.Number("3"),
 			Type:  "polis.follow.announced",
 			Actor: "dave.com",
 			Payload: map[string]interface{}{
@@ -278,7 +279,7 @@ func TestNotificationHandler_DisabledRulesSkipped(t *testing.T) {
 
 	events := []discovery.StreamEvent{
 		{
-			ID:    1,
+			ID:    json.Number("1"),
 			Type:  "polis.comment.republished",
 			Actor: "alice.com",
 			Payload: map[string]interface{}{
@@ -326,5 +327,186 @@ func TestNotificationHandler_RulesByRelevance(t *testing.T) {
 	// followed_author has 1 (new-post is enabled, updated-post is disabled)
 	if len(groups["followed_author"]) != 1 {
 		t.Errorf("followed_author rules = %d, want 1", len(groups["followed_author"]))
+	}
+}
+
+func TestNotificationHandler_FollowedDomains_FiltersUnfollowed(t *testing.T) {
+	h := &NotificationHandler{
+		MyDomain: "bob.com",
+		Rules:    notification.DefaultRules(),
+		FollowedDomains: map[string]bool{
+			"alice.com": true,
+		},
+	}
+
+	events := []discovery.StreamEvent{
+		{
+			ID:    json.Number("1"),
+			Type:  "polis.post.published",
+			Actor: "alice.com", // followed — should produce notification
+			Payload: map[string]interface{}{
+				"url": "https://alice.com/posts/1.md",
+			},
+			Timestamp: "2026-02-10T10:00:00Z",
+		},
+		{
+			ID:    json.Number("2"),
+			Type:  "polis.post.published",
+			Actor: "stranger.com", // NOT followed — should be filtered out
+			Payload: map[string]interface{}{
+				"url": "https://stranger.com/posts/1.md",
+			},
+			Timestamp: "2026-02-10T10:01:00Z",
+		},
+	}
+
+	entries := h.Process(events)
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 notification (only followed), got %d", len(entries))
+	}
+	if entries[0].Actor != "alice.com" {
+		t.Errorf("actor = %q, want %q", entries[0].Actor, "alice.com")
+	}
+}
+
+func TestNotificationHandler_FollowedDomains_NilAcceptsAll(t *testing.T) {
+	// Legacy mode: FollowedDomains is nil, should accept any non-self actor
+	h := &NotificationHandler{
+		MyDomain:        "bob.com",
+		Rules:           notification.DefaultRules(),
+		FollowedDomains: nil, // legacy: no client-side filtering
+	}
+
+	events := []discovery.StreamEvent{
+		{
+			ID:    json.Number("1"),
+			Type:  "polis.post.published",
+			Actor: "stranger.com",
+			Payload: map[string]interface{}{
+				"url": "https://stranger.com/posts/1.md",
+			},
+			Timestamp: "2026-02-10T10:00:00Z",
+		},
+	}
+
+	entries := h.Process(events)
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 notification with nil FollowedDomains, got %d", len(entries))
+	}
+}
+
+func TestNotificationHandler_LinkResolution(t *testing.T) {
+	h := &NotificationHandler{
+		MyDomain: "bob.com",
+		Rules:    notification.DefaultRules(),
+	}
+
+	events := []discovery.StreamEvent{
+		// Follow event — link should be "/_/#followers"
+		{
+			ID:    json.Number("1"),
+			Type:  "polis.follow.announced",
+			Actor: "alice.com",
+			Payload: map[string]interface{}{
+				"target_domain": "bob.com",
+			},
+			Timestamp: "2026-02-10T10:00:00Z",
+		},
+		// Blessing granted — link should be "/_/#my-comments-blessed"
+		{
+			ID:    json.Number("2"),
+			Type:  "polis.blessing.granted",
+			Actor: "charlie.com",
+			Payload: map[string]interface{}{
+				"target_domain": "charlie.com",
+				"source_domain": "bob.com",
+				"source_url":    "https://bob.com/comments/1.md",
+				"target_url":    "https://charlie.com/posts/1.md",
+			},
+			Timestamp: "2026-02-10T10:01:00Z",
+		},
+		// Comment on our post — link should be "/_/#blessings"
+		{
+			ID:    json.Number("3"),
+			Type:  "polis.comment.published",
+			Actor: "dave.com",
+			Payload: map[string]interface{}{
+				"target_domain": "bob.com",
+				"source_url":    "https://dave.com/comments/1.md",
+				"target_url":    "https://bob.com/posts/welcome.md",
+			},
+			Timestamp: "2026-02-10T10:02:00Z",
+		},
+	}
+
+	entries := h.Process(events)
+	if len(entries) != 3 {
+		t.Fatalf("expected 3 notifications, got %d", len(entries))
+	}
+
+	// Check link fields
+	linkTests := []struct {
+		ruleID string
+		link   string
+	}{
+		{"new-follower", "/_/#followers"},
+		{"blessing-granted", "/_/#my-comments-blessed"},
+		{"new-comment", "/_/#blessings"},
+	}
+
+	for i, lt := range linkTests {
+		if entries[i].RuleID != lt.ruleID {
+			t.Errorf("entries[%d].RuleID = %q, want %q", i, entries[i].RuleID, lt.ruleID)
+		}
+		if entries[i].Link != lt.link {
+			t.Errorf("entries[%d].Link = %q, want %q", i, entries[i].Link, lt.link)
+		}
+	}
+}
+
+func TestNotificationHandler_BlessingRequested_RealDSPayload(t *testing.T) {
+	// Real DS payload uses comment_url/in_reply_to instead of source_url/target_url.
+	// Verify that post_name is derived from in_reply_to correctly.
+	h := &NotificationHandler{
+		MyDomain: "bob.com",
+		Rules:    notification.DefaultRules(),
+	}
+
+	events := []discovery.StreamEvent{
+		{
+			ID:    json.Number("1"),
+			Type:  "polis.blessing.requested",
+			Actor: "alice.com",
+			Payload: map[string]interface{}{
+				"comment_url":   "https://alice.com/comments/20260220/hello-bob.md",
+				"in_reply_to":   "https://bob.com/posts/welcome.md",
+				"root_post":     "https://bob.com/posts/welcome.md",
+				"target_domain": "bob.com",
+				"source_domain": "alice.com",
+			},
+			Timestamp: "2026-02-20T10:00:00Z",
+		},
+	}
+
+	entries := h.Process(events)
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 notification, got %d", len(entries))
+	}
+	if entries[0].RuleID != "blessing-requested" {
+		t.Errorf("rule_id = %q, want %q", entries[0].RuleID, "blessing-requested")
+	}
+	// post_name should be derived from in_reply_to (last path segment, no extension)
+	want := "alice.com requested a blessing on welcome"
+	if entries[0].Message != want {
+		t.Errorf("message = %q, want %q", entries[0].Message, want)
+	}
+}
+
+func TestNotificationHandler_AllDefaultRulesHaveLinks(t *testing.T) {
+	rules := notification.DefaultRules()
+	for _, r := range rules {
+		if r.Template.Link == "" {
+			t.Errorf("rule %q has empty Link template", r.ID)
+		}
 	}
 }

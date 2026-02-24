@@ -1,15 +1,19 @@
 package server
 
 import (
+	"archive/zip"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/vdibart/polis-cli/cli-go/pkg/blessing"
@@ -27,6 +31,7 @@ import (
 	"github.com/vdibart/polis-cli/cli-go/pkg/site"
 	"github.com/vdibart/polis-cli/cli-go/pkg/snippet"
 	"github.com/vdibart/polis-cli/cli-go/pkg/stream"
+	"github.com/vdibart/polis-cli/cli-go/pkg/theme"
 	polisurl "github.com/vdibart/polis-cli/cli-go/pkg/url"
 )
 
@@ -557,7 +562,7 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.LogDebug("Publishing post with filename: %s", req.Filename)
-	result, err := publish.PublishPost(s.DataDir, markdown, req.Filename, s.PrivateKey)
+	result, err := publish.PublishPost(s.DataDir, markdown, req.Filename, s.PrivateKey, s.DiscoveryConfig())
 	if err != nil {
 		s.LogError("Failed to publish: %v", err)
 		http.Error(w, "Failed to publish", http.StatusInternalServerError)
@@ -739,7 +744,7 @@ func (s *Server) handleRepublish(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.LogDebug("Republishing post: %s", req.Path)
-	result, err := publish.RepublishPost(s.DataDir, req.Path, markdown, s.PrivateKey)
+	result, err := publish.RepublishPost(s.DataDir, req.Path, markdown, s.PrivateKey, s.DiscoveryConfig())
 	if err != nil {
 		s.LogError("Failed to republish %s: %v", req.Path, err)
 		http.Error(w, "Failed to republish", http.StatusInternalServerError)
@@ -968,8 +973,20 @@ func (s *Server) handleCommentBeseech(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Business logic is in the comment package
-	result, err := comment.BeseechComment(s.DataDir, req.CommentID, s.PrivateKey)
+	// Business logic is in the comment package (pass per-tenant config for hosted safety)
+	result, err := comment.BeseechComment(s.DataDir, req.CommentID, s.PrivateKey, &comment.DiscoveryConfig{
+		DiscoveryURL: s.DiscoveryURL,
+		DiscoveryKey: s.DiscoveryKey,
+		BaseURL:      s.GetBaseURL(),
+	})
+
+	// Always re-render after beseech attempt — PublishComment() runs early inside
+	// BeseechComment, so the .md may already be on disk even if DS registration
+	// fails afterward. Without this, the comment HTML and index.html are never generated.
+	if renderErr := s.RenderSite(); renderErr != nil {
+		log.Printf("[warning] post-beseech render failed: %v", renderErr)
+	}
+
 	if err != nil {
 		s.LogError("beseech failed: %v", err)
 		// Config issues → 400, runtime errors → 500
@@ -982,12 +999,8 @@ func (s *Server) handleCommentBeseech(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Webapp-specific: re-render and run hooks if auto-blessed
+	// Run hooks if auto-blessed
 	if result.AutoBlessed {
-		if err := s.RenderSite(); err != nil {
-			log.Printf("[warning] post-beseech render failed: %v", err)
-		}
-
 		var hc *hooks.HookConfig
 		if s.Config != nil {
 			hc = s.Config.Hooks
@@ -1124,16 +1137,27 @@ func (s *Server) handleCommentsSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.PrivateKey == nil {
+		http.Error(w, "Private key not configured", http.StatusBadRequest)
+		return
+	}
+
 	// Create authenticated discovery client (needed for pending/denied queries)
 	myDomain := discovery.ExtractDomainFromURL(s.GetBaseURL())
 	client := discovery.NewAuthenticatedClient(s.DiscoveryURL, s.DiscoveryKey, myDomain, s.PrivateKey)
 
 	// Sync pending comments
-	result, err := comment.SyncPendingComments(s.DataDir, client, s.Config.Hooks)
+	result, err := comment.SyncPendingComments(s.DataDir, s.GetBaseURL(), client, s.Config.Hooks)
 	if err != nil {
+		log.Printf("handleCommentsSync: failed for %s: %v", myDomain, err)
 		s.LogError("failed to sync comments: %v", err)
-		http.Error(w, "Failed to sync comments", http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("Failed to sync comments: %v", err), http.StatusInternalServerError)
 		return
+	}
+
+	// Re-render site so HTML reflects updated comment statuses (blessed/denied)
+	if err := s.RenderSite(); err != nil {
+		log.Printf("[warning] post-comment-sync render failed: %v", err)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -1153,16 +1177,22 @@ func (s *Server) handleBlessingRequests(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	if s.PrivateKey == nil {
+		log.Printf("handleBlessingRequests: private key not configured for %s", s.GetBaseURL())
+		http.Error(w, "Private key not configured", http.StatusBadRequest)
+		return
+	}
+
 	// Create authenticated discovery client (needed for status=pending queries)
-	domain := s.GetSubdomain()
 	myDomain := discovery.ExtractDomainFromURL(s.GetBaseURL())
 	client := discovery.NewAuthenticatedClient(s.DiscoveryURL, s.DiscoveryKey, myDomain, s.PrivateKey)
 
-	// Fetch pending blessing requests
-	requests, err := blessing.FetchPendingRequests(client, domain)
+	// Fetch pending blessing requests (actor must be full domain, not subdomain)
+	requests, err := blessing.FetchPendingRequests(client, myDomain)
 	if err != nil {
+		log.Printf("handleBlessingRequests: failed to fetch for %s: %v", myDomain, err)
 		s.LogError("failed to fetch requests: %v", err)
-		http.Error(w, "Failed to fetch requests", http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("Failed to fetch requests: %v", err), http.StatusInternalServerError)
 		return
 	}
 
@@ -1198,13 +1228,20 @@ func (s *Server) handleBlessingGrant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.CommentVersion == "" {
-		http.Error(w, "comment_version is required", http.StatusBadRequest)
+	if req.CommentURL == "" {
+		http.Error(w, "comment_url is required", http.StatusBadRequest)
 		return
 	}
 
 	// Create discovery client
 	client := discovery.NewClient(s.DiscoveryURL, s.DiscoveryKey)
+
+	// If comment_version is missing (old DS records without metadata), look it up
+	if req.CommentVersion == "" {
+		if check, err := client.CheckContent("polis.comment", req.CommentURL); err == nil && check.Exists {
+			req.CommentVersion = check.Version
+		}
+	}
 
 	// Grant the blessing (with signed request)
 	// Normalize URLs to .md format for consistent storage
@@ -1220,10 +1257,27 @@ func (s *Server) handleBlessingGrant(w http.ResponseWriter, r *http.Request) {
 	)
 	if err != nil {
 		s.LogError("Failed to grant blessing: %v", err)
-		http.Error(w, "Failed to grant blessing", http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("Failed to grant blessing: %v", err), http.StatusInternalServerError)
 		return
 	}
 	s.LogInfo("Granted blessing for comment: %s", req.CommentURL)
+
+	// Fetch the remote comment markdown and save it locally so the renderer
+	// can display the comment body on the post page. The comment .md file
+	// lives on the commenter's site, not ours.
+	if commentRelPath := extractCommentRelPath(req.CommentURL); commentRelPath != "" {
+		localPath := filepath.Join(s.DataDir, commentRelPath)
+		if _, err := os.Stat(localPath); os.IsNotExist(err) {
+			rc := remote.NewClient()
+			if content, err := rc.FetchContent(polisurl.NormalizeToMD(req.CommentURL)); err == nil {
+				if err := os.MkdirAll(filepath.Dir(localPath), 0755); err == nil {
+					os.WriteFile(localPath, []byte(content), 0644)
+				}
+			} else {
+				log.Printf("[warning] could not fetch remote comment %s: %v", req.CommentURL, err)
+			}
+		}
+	}
 
 	// Render site to include the newly blessed comment
 	if err := s.RenderSite(); err != nil {
@@ -1402,6 +1456,10 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		setupWizardDismissed = s.Config.SetupWizardDismissed
 	}
 
+	// Load theme data
+	themes, _ := theme.ListThemesWithPalettes(s.DataDir, s.CLIThemesDir)
+	activeTheme, _ := theme.GetActiveTheme(s.DataDir)
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"site": map[string]interface{}{
@@ -1419,6 +1477,8 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		"existing_hooks":          existingHooks,
 		"setup_wizard_dismissed":  setupWizardDismissed,
 		"hide_read":               s.Config != nil && s.Config.HideRead,
+		"active_theme":            activeTheme,
+		"themes":                  themes,
 	})
 }
 
@@ -1774,6 +1834,68 @@ echo "Hook triggered: %s"
 	})
 }
 
+// handleThemeSwitch handles POST /api/settings/theme to switch the site theme.
+func (s *Server) handleThemeSwitch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Theme string `json:"theme"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.Theme == "" {
+		http.Error(w, "theme is required", http.StatusBadRequest)
+		return
+	}
+
+	// Validate that the theme exists
+	themes, err := theme.ListThemes(s.DataDir, s.CLIThemesDir)
+	if err != nil {
+		http.Error(w, "Failed to list themes", http.StatusInternalServerError)
+		return
+	}
+	found := false
+	for _, t := range themes {
+		if t == req.Theme {
+			found = true
+			break
+		}
+	}
+	if !found {
+		http.Error(w, "Unknown theme: "+req.Theme, http.StatusBadRequest)
+		return
+	}
+
+	// Update manifest and copy CSS
+	if err := theme.SetActiveTheme(s.DataDir, req.Theme); err != nil {
+		s.LogError("theme switch: set active theme failed: %v", err)
+		http.Error(w, "Failed to set theme: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := theme.CopyCSS(s.DataDir, s.CLIThemesDir, req.Theme); err != nil {
+		s.LogError("theme switch: copy CSS failed: %v", err)
+		http.Error(w, "Failed to copy theme CSS: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Re-render entire site with new theme
+	if err := s.RenderSite(); err != nil {
+		s.LogError("theme switch: render site failed: %v", err)
+		// Non-fatal — theme files are updated, render can be retried
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"theme":   req.Theme,
+	})
+}
+
 // handleViewMode handles POST /api/settings/view-mode to switch between list and browser modes
 func (s *Server) handleViewMode(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -1881,6 +2003,43 @@ func (s *Server) handleHideRead(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success":   true,
 		"hide_read": req.HideRead,
+	})
+}
+
+// handleUpdateSiteTitle handles POST /api/settings/site-title to update the site title.
+func (s *Server) handleUpdateSiteTitle(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		SiteTitle string `json:"site_title"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	wk, err := site.LoadWellKnown(s.DataDir)
+	if err != nil {
+		s.LogError("failed to load .well-known/polis: %v", err)
+		http.Error(w, "Failed to load site config", http.StatusInternalServerError)
+		return
+	}
+
+	wk.SiteTitle = strings.TrimSpace(req.SiteTitle)
+
+	if err := site.SaveWellKnown(s.DataDir, wk); err != nil {
+		s.LogError("failed to save .well-known/polis: %v", err)
+		http.Error(w, "Failed to save site config", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":    true,
+		"site_title": wk.SiteTitle,
 	})
 }
 
@@ -2183,6 +2342,12 @@ func (s *Server) handleSiteUnregister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Block deregistration for hosted polis.pub domains
+	if strings.HasSuffix(domain, ".polis.pub") {
+		http.Error(w, "Cannot unregister hosted polis.pub sites", http.StatusForbidden)
+		return
+	}
+
 	// Unregister from discovery service
 	client := discovery.NewClient(s.DiscoveryURL, s.DiscoveryKey)
 	result, err := client.UnregisterSite(domain, s.PrivateKey)
@@ -2274,6 +2439,71 @@ func (s *Server) handleSetupWizardDismiss(w http.ResponseWriter, r *http.Request
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,
 	})
+}
+
+// About page handler
+
+// defaultAboutContent is the fallback text for sites without snippets/about.md.
+const defaultAboutContent = "Welcome to my polis space. This site runs on *polis*\u2014signed markdown on your own domain. No platform, no middleman, just you and your words.\n"
+
+// handleAbout handles GET/POST /api/about for the about page editor.
+func (s *Server) handleAbout(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		aboutPath := filepath.Join(s.DataDir, "snippets", "about.md")
+		data, err := os.ReadFile(aboutPath)
+		if err != nil {
+			// File doesn't exist — return default content
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"content":    defaultAboutContent,
+				"has_custom": false,
+			})
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"content":    string(data),
+			"has_custom": true,
+		})
+
+	case http.MethodPost:
+		var req struct {
+			Content string `json:"content"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		// Ensure snippets directory exists
+		snippetsDir := filepath.Join(s.DataDir, "snippets")
+		if err := os.MkdirAll(snippetsDir, 0755); err != nil {
+			s.LogError("failed to create snippets dir: %v", err)
+			http.Error(w, "Failed to create snippets directory", http.StatusInternalServerError)
+			return
+		}
+
+		aboutPath := filepath.Join(snippetsDir, "about.md")
+		if err := os.WriteFile(aboutPath, []byte(req.Content), 0644); err != nil {
+			s.LogError("failed to write about.md: %v", err)
+			http.Error(w, "Failed to save about content", http.StatusInternalServerError)
+			return
+		}
+
+		// Re-render all pages so the about section updates
+		if err := s.RenderSite(); err != nil {
+			s.LogWarn("about: render failed: %v", err)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true,
+		})
+
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
 }
 
 // Snippets API handlers
@@ -2534,7 +2764,15 @@ func (s *Server) handleFollowing(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		followDomain := discovery.ExtractDomainFromURL(s.GetBaseURL())
+		// Prevent self-follow
+		ownDomain := discovery.ExtractDomainFromURL(s.GetBaseURL())
+		targetDomain := discovery.ExtractDomainFromURL(req.URL)
+		if ownDomain != "" && targetDomain != "" && ownDomain == targetDomain {
+			http.Error(w, "Cannot follow your own site", http.StatusBadRequest)
+			return
+		}
+
+		followDomain := ownDomain
 		discoveryClient := discovery.NewAuthenticatedClient(s.DiscoveryURL, s.DiscoveryKey, followDomain, s.PrivateKey)
 		remoteClient := remote.NewClient()
 
@@ -2770,6 +3008,149 @@ func (s *Server) handleFeedCounts(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleFeedGrouped returns feed items grouped by post URL.
+// Comments are grouped with their target post; posts without comments appear as solo groups.
+// GET /api/feed/grouped
+func (s *Server) handleFeedGrouped(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	discoveryDomain := s.GetDiscoveryDomain()
+	cm := feed.NewCacheManager(s.DataDir, discoveryDomain)
+
+	items, err := cm.List()
+	if err != nil {
+		s.LogError("feed grouped failed: %v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Build followed domains set
+	followingPath := following.DefaultPath(s.DataDir)
+	f, _ := following.Load(followingPath)
+	followedDomains := make(map[string]bool)
+	if f != nil {
+		for _, entry := range f.Following {
+			// Extract domain from URL (e.g. "https://alice.polis.pub" -> "alice.polis.pub")
+			domain := strings.TrimPrefix(entry.URL, "https://")
+			domain = strings.TrimPrefix(domain, "http://")
+			domain = strings.TrimSuffix(domain, "/")
+			followedDomains[domain] = true
+		}
+	}
+
+	// Group items by post URL
+	type feedGroup struct {
+		PostURL         string   `json:"post_url"`
+		PostTitle       string   `json:"post_title"`
+		PostDomain      string   `json:"post_domain"`
+		PostPublished   string   `json:"post_published"`
+		HasPost         bool     `json:"has_post"`
+		TotalComments   int      `json:"total_comments"`
+		NetworkComments int      `json:"network_comments"`
+		ExternalComments int     `json:"external_comments"`
+		UnreadComments  int      `json:"unread_comments"`
+		LastActivity    string   `json:"last_activity"`
+		PostUnread      bool     `json:"post_unread"`
+		ItemIDs         []string `json:"item_ids"`
+	}
+
+	groups := make(map[string]*feedGroup)
+	groupOrder := []string{} // track insertion order for stable iteration
+
+	totalUnread := 0
+	for _, item := range items {
+		if item.ReadAt == "" {
+			totalUnread++
+		}
+
+		if item.Type == "post" {
+			key := item.URL
+			g, exists := groups[key]
+			if !exists {
+				g = &feedGroup{
+					PostURL:       item.URL,
+					PostTitle:     item.Title,
+					PostDomain:    item.AuthorDomain,
+					PostPublished: item.Published,
+					LastActivity:  item.Published,
+					ItemIDs:       []string{},
+				}
+				groups[key] = g
+				groupOrder = append(groupOrder, key)
+			}
+			g.HasPost = true
+			g.PostUnread = item.ReadAt == ""
+			if item.Title != "" {
+				g.PostTitle = item.Title
+			}
+			if item.AuthorDomain != "" {
+				g.PostDomain = item.AuthorDomain
+			}
+			if item.Published != "" {
+				g.PostPublished = item.Published
+			}
+			g.ItemIDs = append(g.ItemIDs, item.ID)
+			if item.Published > g.LastActivity {
+				g.LastActivity = item.Published
+			}
+		} else if item.Type == "comment" {
+			key := item.TargetURL
+			if key == "" {
+				// Orphan comment (no target URL) — use its own URL as key
+				key = item.URL
+			}
+			g, exists := groups[key]
+			if !exists {
+				g = &feedGroup{
+					PostURL:      key,
+					PostDomain:   item.TargetDomain,
+					LastActivity: item.Published,
+					ItemIDs:      []string{},
+				}
+				groups[key] = g
+				groupOrder = append(groupOrder, key)
+			}
+			g.TotalComments++
+			if followedDomains[item.AuthorDomain] {
+				g.NetworkComments++
+			} else {
+				g.ExternalComments++
+			}
+			if item.ReadAt == "" {
+				g.UnreadComments++
+			}
+			g.ItemIDs = append(g.ItemIDs, item.ID)
+			if item.Published > g.LastActivity {
+				g.LastActivity = item.Published
+			}
+		}
+	}
+
+	// Build sorted slice
+	result := make([]*feedGroup, 0, len(groups))
+	for _, key := range groupOrder {
+		result = append(result, groups[key])
+	}
+
+	// Sort by last_activity descending
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].LastActivity > result[j].LastActivity
+	})
+
+	stale, _ := cm.IsStale()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"groups":       result,
+		"total_items":  len(items),
+		"unread_items": totalUnread,
+		"stale":        stale,
+	})
+}
+
 // handleRemotePost fetches a remote post and returns it as rendered HTML.
 // GET /api/remote/post?url=https://example.com/posts/hello.md
 func (s *Server) handleRemotePost(w http.ResponseWriter, r *http.Request) {
@@ -2864,6 +3245,16 @@ func looksLikeHTML(content string) bool {
 
 // extractHTMLBody extracts content between <body> and </body> tags,
 // or between <main> and </main> tags, falling back to the full content.
+// extractCommentRelPath extracts the relative path (e.g. "comments/20260222/id.md")
+// from a full comment URL. Returns empty string if the URL doesn't contain /comments/.
+func extractCommentRelPath(commentURL string) string {
+	idx := strings.Index(commentURL, "/comments/")
+	if idx < 0 {
+		return ""
+	}
+	return commentURL[idx+1:] // "comments/..."
+}
+
 func extractHTMLBody(content string) string {
 	lower := strings.ToLower(content)
 
@@ -2971,7 +3362,315 @@ func (s *Server) handleActivityStream(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(result)
 }
 
-// handleFollowerCount returns the current follower count by projecting follow events.
+// ConversationComment is a comment in a conversation thread.
+type ConversationComment struct {
+	Title     string `json:"title"`
+	URL       string `json:"url"`
+	Published string `json:"published"`
+	Unread    bool   `json:"unread"`
+}
+
+// CommentThread is a group of comments from a single author.
+type CommentThread struct {
+	AuthorDomain string                `json:"author_domain"`
+	Comments     []ConversationComment `json:"comments"`
+}
+
+// BlessingActivityEntry is a blessing event for the conversations view.
+type BlessingActivityEntry struct {
+	Domain    string `json:"domain"`
+	Status    string `json:"status"`
+	TargetURL string `json:"target_url"`
+	SourceURL string `json:"source_url"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+// ConversationsResponse is the JSON shape returned by GET /api/conversations.
+type ConversationsResponse struct {
+	CommentThreads []CommentThread `json:"comment_threads"`
+	OnYourPosts    struct {
+		PendingCount int                     `json:"pending_count"`
+		BlessedCount int                     `json:"blessed_count"`
+		Recent       []BlessingActivityEntry `json:"recent"`
+	} `json:"on_your_posts"`
+}
+
+// handleConversations returns comment threads and blessing activity from local cache.
+// GET /api/conversations
+func (s *Server) handleConversations(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var resp ConversationsResponse
+
+	// 1. Comment threads from feed cache (type=comment, last 30 days)
+	discoveryDomain := s.GetDiscoveryDomain()
+	cm := feed.NewCacheManager(s.DataDir, discoveryDomain)
+	items, err := cm.List()
+	if err != nil {
+		items = nil
+	}
+
+	cutoff30d := time.Now().AddDate(0, 0, -30)
+	threadMap := make(map[string][]ConversationComment)
+	for _, item := range items {
+		if item.Type != "comment" {
+			continue
+		}
+		pub, err := time.Parse(time.RFC3339, item.Published)
+		if err != nil || pub.Before(cutoff30d) {
+			continue
+		}
+		domain := item.AuthorDomain
+		if domain == "" {
+			continue
+		}
+		threadMap[domain] = append(threadMap[domain], ConversationComment{
+			Title:     item.Title,
+			URL:       item.URL,
+			Published: item.Published,
+			Unread:    item.ReadAt == "",
+		})
+	}
+
+	// Sort threads by most recent comment, cap at 10 threads / 5 comments each
+	type threadEntry struct {
+		domain    string
+		comments  []ConversationComment
+		mostRecent time.Time
+	}
+	var threads []threadEntry
+	for domain, comments := range threadMap {
+		var mostRecent time.Time
+		for _, c := range comments {
+			if t, err := time.Parse(time.RFC3339, c.Published); err == nil && t.After(mostRecent) {
+				mostRecent = t
+			}
+		}
+		// Sort comments newest first
+		sort.Slice(comments, func(i, j int) bool {
+			return comments[i].Published > comments[j].Published
+		})
+		if len(comments) > 5 {
+			comments = comments[:5]
+		}
+		threads = append(threads, threadEntry{domain, comments, mostRecent})
+	}
+	sort.Slice(threads, func(i, j int) bool {
+		return threads[i].mostRecent.After(threads[j].mostRecent)
+	})
+	if len(threads) > 10 {
+		threads = threads[:10]
+	}
+
+	resp.CommentThreads = make([]CommentThread, len(threads))
+	for i, t := range threads {
+		resp.CommentThreads[i] = CommentThread{
+			AuthorDomain: t.domain,
+			Comments:     t.comments,
+		}
+	}
+
+	// 2. Blessing activity from cached state
+	store := stream.NewStore(s.DataDir, discoveryDomain)
+	var blessingState stream.BlessingState
+	_ = store.LoadState("polis.blessing", &blessingState)
+
+	pendingCount := 0
+	blessedCount := 0
+	for _, b := range blessingState.Blessings {
+		switch b.Status {
+		case "pending":
+			pendingCount++
+		case "granted":
+			blessedCount++
+		}
+	}
+	resp.OnYourPosts.PendingCount = pendingCount
+	resp.OnYourPosts.BlessedCount = blessedCount
+
+	// Recent blessing entries (up to 10, sorted by updated_at desc)
+	blessings := make([]stream.BlessingEntry, len(blessingState.Blessings))
+	copy(blessings, blessingState.Blessings)
+	sort.Slice(blessings, func(i, j int) bool {
+		return blessings[i].UpdatedAt > blessings[j].UpdatedAt
+	})
+	if len(blessings) > 10 {
+		blessings = blessings[:10]
+	}
+
+	recentBlessings := make([]BlessingActivityEntry, len(blessings))
+	for i, b := range blessings {
+		recentBlessings[i] = BlessingActivityEntry{
+			Domain:    b.Actor,
+			Status:    b.Status,
+			TargetURL: b.TargetURL,
+			SourceURL: b.SourceURL,
+			UpdatedAt: b.UpdatedAt,
+		}
+	}
+	resp.OnYourPosts.Recent = recentBlessings
+	if resp.OnYourPosts.Recent == nil {
+		resp.OnYourPosts.Recent = []BlessingActivityEntry{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+// PulseHighlight is a recent feed item for the pulse dashboard.
+type PulseHighlight struct {
+	Type         string `json:"type"`
+	Title        string `json:"title"`
+	AuthorDomain string `json:"author_domain"`
+	Published    string `json:"published"`
+	Unread       bool   `json:"unread"`
+}
+
+// PulseAuthor is an author activity summary for the pulse dashboard.
+type PulseAuthor struct {
+	Domain       string `json:"domain"`
+	PostCount    int    `json:"post_count"`
+	CommentCount int    `json:"comment_count"`
+}
+
+// PulseResponse is the JSON shape returned by GET /api/pulse.
+type PulseResponse struct {
+	Network struct {
+		Following      int `json:"following"`
+		Followers      int `json:"followers"`
+		FeedUnread     int `json:"feed_unread"`
+		IncomingPending int `json:"incoming_pending"`
+	} `json:"network"`
+	Recent     []PulseHighlight `json:"recent"`
+	TopAuthors []PulseAuthor    `json:"top_authors"`
+	Site       struct {
+		Posts           int `json:"posts"`
+		IncomingBlessed int `json:"incoming_blessed"`
+		IncomingPending int `json:"incoming_pending"`
+	} `json:"site"`
+}
+
+// handlePulse returns an aggregated community pulse dashboard.
+// All data comes from local cached state — no DS queries.
+// GET /api/pulse
+func (s *Server) handlePulse(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	counts := s.computeAllCounts()
+
+	var resp PulseResponse
+	resp.Network.Following = counts.Following
+	resp.Network.Followers = counts.Followers
+	resp.Network.FeedUnread = counts.FeedUnread
+	resp.Network.IncomingPending = counts.IncomingPending
+	resp.Site.Posts = counts.Posts
+	resp.Site.IncomingBlessed = counts.IncomingBlessed
+	resp.Site.IncomingPending = counts.IncomingPending
+
+	// Recent highlights: top 5 feed items from last 7 days
+	discoveryDomain := s.GetDiscoveryDomain()
+	cm := feed.NewCacheManager(s.DataDir, discoveryDomain)
+	items, err := cm.List()
+	if err != nil {
+		items = nil
+	}
+
+	cutoff7d := time.Now().AddDate(0, 0, -7)
+	var recent []PulseHighlight
+	for _, item := range items {
+		if len(recent) >= 5 {
+			break
+		}
+		pub, err := time.Parse(time.RFC3339, item.Published)
+		if err != nil {
+			continue
+		}
+		if pub.Before(cutoff7d) {
+			continue
+		}
+		recent = append(recent, PulseHighlight{
+			Type:         item.Type,
+			Title:        item.Title,
+			AuthorDomain: item.AuthorDomain,
+			Published:    item.Published,
+			Unread:       item.ReadAt == "",
+		})
+	}
+	resp.Recent = recent
+	if resp.Recent == nil {
+		resp.Recent = []PulseHighlight{}
+	}
+
+	// Most active authors: top 5 by activity in last 30 days
+	cutoff30d := time.Now().AddDate(0, 0, -30)
+	type authorStats struct {
+		posts    int
+		comments int
+	}
+	authorMap := make(map[string]*authorStats)
+	for _, item := range items {
+		pub, err := time.Parse(time.RFC3339, item.Published)
+		if err != nil || pub.Before(cutoff30d) {
+			continue
+		}
+		domain := item.AuthorDomain
+		if domain == "" {
+			continue
+		}
+		stats, ok := authorMap[domain]
+		if !ok {
+			stats = &authorStats{}
+			authorMap[domain] = stats
+		}
+		if item.Type == "post" {
+			stats.posts++
+		} else if item.Type == "comment" {
+			stats.comments++
+		}
+	}
+
+	// Sort by total activity descending, take top 5
+	type authorEntry struct {
+		domain string
+		total  int
+		stats  *authorStats
+	}
+	var authorList []authorEntry
+	for domain, stats := range authorMap {
+		authorList = append(authorList, authorEntry{domain, stats.posts + stats.comments, stats})
+	}
+	sort.Slice(authorList, func(i, j int) bool {
+		return authorList[i].total > authorList[j].total
+	})
+	var topAuthors []PulseAuthor
+	for i, a := range authorList {
+		if i >= 5 {
+			break
+		}
+		topAuthors = append(topAuthors, PulseAuthor{
+			Domain:       a.domain,
+			PostCount:    a.stats.posts,
+			CommentCount: a.stats.comments,
+		})
+	}
+	resp.TopAuthors = topAuthors
+	if resp.TopAuthors == nil {
+		resp.TopAuthors = []PulseAuthor{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+// handleFollowerCount returns the current follower count from cached state.
+// The unified sync loop keeps polis.follow.json up to date, so this handler
+// only reads from disk (no DS queries).
 // GET /api/followers/count?refresh=false
 func (s *Server) handleFollowerCount(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -2979,111 +3678,25 @@ func (s *Server) handleFollowerCount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	discoveryURL := s.DiscoveryURL
-	apiKey := s.DiscoveryKey
-
-	baseURL := s.GetBaseURL()
-	if baseURL == "" {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"count":     0,
-			"followers": []string{},
-		})
-		return
+	// If refresh requested, trigger an immediate sync
+	if r.URL.Query().Get("refresh") == "true" {
+		s.TriggerSync()
 	}
 
-	myDomain := extractDomainFromURL(baseURL)
-	if myDomain == "" {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"count":     0,
-			"followers": []string{},
-		})
-		return
-	}
-
-	// Get discovery service domain for store namespace
-	discoveryDomain := extractDomainFromURL(discoveryURL)
-	if discoveryDomain == "" {
-		discoveryDomain = "default"
-	}
-
+	discoveryDomain := s.GetDiscoveryDomain()
 	store := stream.NewStore(s.DataDir, discoveryDomain)
 
-	// Set up follow handler
-	handler := &stream.FollowHandler{MyDomain: myDomain}
+	var state stream.FollowerState
+	_ = store.LoadState("polis.follow", &state)
 
-	// Check if full refresh requested
-	if r.URL.Query().Get("refresh") == "true" {
-		_ = store.SetCursor(handler.TypePrefix(), "0")
-	}
-
-	// Run projection loop
-	cursor, _ := store.GetCursor(handler.TypePrefix())
-
-	client := discovery.NewClient(discoveryURL, apiKey)
-	typeFilter := discovery.JoinDomains(handler.EventTypes())
-	result, err := client.StreamQuery(cursor, 1000, typeFilter, "", "")
-	if err != nil {
-		s.LogWarn("follower count stream query failed: %v", err)
-		// Try to return existing state
-		var state stream.FollowerState
-		if loadErr := store.LoadState(handler.TypePrefix(), &state); loadErr == nil {
-			followers := state.Followers
-			if followers == nil {
-				followers = []string{}
-			}
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"count":     state.Count,
-				"followers": followers,
-			})
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"count":     0,
-			"followers": []string{},
-		})
-		return
-	}
-
-	// Load existing state
-	state := handler.NewState()
-	_ = store.LoadState(handler.TypePrefix(), state)
-
-	// Process events
-	newState, err := handler.Process(result.Events, state)
-	if err != nil {
-		s.LogWarn("follower projection failed: %v", err)
-		// Return existing state
-		fs := state.(*stream.FollowerState)
-		followers := fs.Followers
-		if followers == nil {
-			followers = []string{}
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"count":     fs.Count,
-			"followers": followers,
-		})
-		return
-	}
-
-	// Save updated state and cursor
-	_ = store.SaveState(handler.TypePrefix(), newState)
-	if result.Cursor != "" {
-		_ = store.SetCursor(handler.TypePrefix(), result.Cursor)
-	}
-
-	fs := newState.(*stream.FollowerState)
-	followers := fs.Followers
+	followers := state.Followers
 	if followers == nil {
 		followers = []string{}
 	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"count":     fs.Count,
+		"count":     state.Count,
 		"followers": followers,
 	})
 }
@@ -3095,9 +3708,6 @@ func (s *Server) handleNotifications(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-
-	// Trigger async sync for next open; read cached data immediately for fast response
-	go s.syncNotifications()
 
 	mgr := notification.NewManager(s.DataDir, s.GetDiscoveryDomain())
 
@@ -3128,7 +3738,8 @@ func (s *Server) handleNotifications(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleNotificationCount returns the unread notification count.
+// handleNotificationCount returns the unread notification count from cached state.
+// The unified sync loop keeps polis.notification.jsonl up to date.
 // GET /api/notifications/count
 func (s *Server) handleNotificationCount(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -3218,6 +3829,31 @@ func (s *Server) handleWidgetPublish(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// POST /api/widget/comment — Direct comment endpoint for the widget.
+// Accepts {target, text} without requiring a type field.
+func (s *Server) handleWidgetComment(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if s.PrivateKey == nil {
+		http.Error(w, "Not configured", http.StatusBadRequest)
+		return
+	}
+
+	var req struct {
+		Target string `json:"target"`
+		Text   string `json:"text"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	s.handleWidgetPublishComment(w, r, req.Target, req.Text)
+}
+
 // handleWidgetPublishComment handles the comment type for widget publish.
 func (s *Server) handleWidgetPublishComment(w http.ResponseWriter, r *http.Request, target, text string) {
 	if target == "" || text == "" {
@@ -3249,18 +3885,26 @@ func (s *Server) handleWidgetPublishComment(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Attempt to send blessing request (beseech)
+	// Attempt to send blessing request (beseech) — pass per-tenant config for hosted safety
 	blessingStatus := "pending"
-	result, err := comment.BeseechComment(s.DataDir, signed.Meta.ID, s.PrivateKey)
+	result, err := comment.BeseechComment(s.DataDir, signed.Meta.ID, s.PrivateKey, &comment.DiscoveryConfig{
+		DiscoveryURL: s.DiscoveryURL,
+		DiscoveryKey: s.DiscoveryKey,
+		BaseURL:      s.GetBaseURL(),
+	})
 	if err != nil {
 		s.LogError("widget publish comment: beseech failed: %v", err)
 		blessingStatus = "error"
 	} else if result.AutoBlessed {
 		blessingStatus = "granted"
-		// Re-render if auto-blessed
-		if renderErr := s.RenderSite(); renderErr != nil {
-			s.LogError("widget publish comment: post-beseech render failed: %v", renderErr)
-		}
+	}
+
+	// Always re-render after beseech attempt — PublishComment() runs early inside
+	// BeseechComment, so the .md is on disk even if DS registration fails or the
+	// comment is not auto-blessed. Without this, the comment HTML and index.html
+	// are never generated.
+	if renderErr := s.RenderSite(); renderErr != nil {
+		s.LogError("widget publish comment: render failed: %v", renderErr)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -3273,8 +3917,9 @@ func (s *Server) handleWidgetPublishComment(w http.ResponseWriter, r *http.Reque
 }
 
 // POST /api/widget/follow — Add author to following.json via widget token.
+// DELETE /api/widget/follow — Remove author from following.json via widget token.
 func (s *Server) handleWidgetFollow(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
+	if r.Method != http.MethodPost && r.Method != http.MethodDelete {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -3308,18 +3953,38 @@ func (s *Server) handleWidgetFollow(w http.ResponseWriter, r *http.Request) {
 	discoveryClient := discovery.NewAuthenticatedClient(s.DiscoveryURL, s.DiscoveryKey, followDomain, s.PrivateKey)
 	remoteClient := remote.NewClient()
 
-	result, err := following.FollowWithBlessing(followingPath, authorURL, discoveryClient, remoteClient, s.PrivateKey)
-	if err != nil {
-		s.LogError("widget follow failed: %v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
+	switch r.Method {
+	case http.MethodPost:
+		result, err := following.FollowWithBlessing(followingPath, authorURL, discoveryClient, remoteClient, s.PrivateKey)
+		if err != nil {
+			s.LogError("widget follow failed: %v", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success": true,
-		"data":    result,
-	})
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true,
+			"data":    result,
+		})
+
+	case http.MethodDelete:
+		result, err := following.UnfollowWithDenial(followingPath, authorURL, discoveryClient, remoteClient, s.PrivateKey)
+		if err != nil {
+			s.LogError("widget unfollow failed: %v", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		s.LogInfo("Widget unfollowed %s (denied %d comments)", authorURL, result.CommentsDenied)
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true,
+			"data":    result,
+		})
+
+	}
 }
 
 // GET /api/widget/connect — Issue widget token from session and redirect.
@@ -3336,4 +4001,154 @@ func (s *Server) handleWidgetConnect(w http.ResponseWriter, r *http.Request) {
 	// The server-side handler is a no-op placeholder that the hosted
 	// layer intercepts before it reaches here.
 	http.Error(w, "Widget connect is handled by the hosted service", http.StatusNotImplemented)
+}
+
+// Download rate limiting: one download per 10 minutes per server instance.
+var (
+	downloadMu       sync.Mutex
+	lastDownloadTime time.Time
+)
+
+// handleDownloadSite handles GET /api/download-site — streams a zip archive of the site.
+func (s *Server) handleDownloadSite(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Rate limit
+	downloadMu.Lock()
+	if time.Since(lastDownloadTime) < 10*time.Minute {
+		downloadMu.Unlock()
+		http.Error(w, "Please wait before downloading again", http.StatusTooManyRequests)
+		return
+	}
+	lastDownloadTime = time.Now()
+	downloadMu.Unlock()
+
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", `attachment; filename="polis-site.zip"`)
+
+	zw := zip.NewWriter(w)
+	defer zw.Close()
+
+	dataDir := filepath.Clean(s.DataDir)
+
+	filepath.Walk(dataDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil // skip files we can't read
+		}
+
+		rel, err := filepath.Rel(dataDir, path)
+		if err != nil {
+			return nil
+		}
+
+		// Skip excluded directories
+		if info.IsDir() {
+			switch rel {
+			case "logs", filepath.Join(".polis", "keys"):
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		// Skip files inside excluded directories (safety check)
+		if strings.HasPrefix(rel, "logs"+string(filepath.Separator)) ||
+			strings.HasPrefix(rel, filepath.Join(".polis", "keys")+string(filepath.Separator)) {
+			return nil
+		}
+
+		header, err := zip.FileInfoHeader(info)
+		if err != nil {
+			return nil
+		}
+		header.Name = rel
+		header.Method = zip.Deflate
+
+		writer, err := zw.CreateHeader(header)
+		if err != nil {
+			return nil
+		}
+
+		f, err := os.Open(path)
+		if err != nil {
+			return nil
+		}
+		defer f.Close()
+
+		io.Copy(writer, f)
+		return nil
+	})
+}
+
+// ============================================================================
+// SSE AND COUNTS HANDLERS
+// ============================================================================
+
+// handleSSE provides a Server-Sent Events endpoint for real-time count updates.
+// GET /_/api/sse
+func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "Streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	// Register this client
+	ch := make(chan SSEEvent, 10)
+	s.addSSEClient(ch)
+	defer s.removeSSEClient(ch)
+
+	// Send initial counts immediately
+	counts := s.computeAllCounts()
+	if data, err := json.Marshal(counts); err == nil {
+		fmt.Fprintf(w, "event: counts\ndata: %s\n\n", data)
+		flusher.Flush()
+	}
+
+	// Stream events until client disconnects
+	ctx := r.Context()
+	keepalive := time.NewTicker(30 * time.Second)
+	defer keepalive.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case evt, ok := <-ch:
+			if !ok {
+				return
+			}
+			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", evt.Event, evt.Data)
+			flusher.Flush()
+		case <-keepalive.C:
+			fmt.Fprintf(w, ": keepalive\n\n")
+			flusher.Flush()
+		}
+	}
+}
+
+// handleCounts returns all badge counts in a single response.
+// Replaces the need for 13 parallel API calls from loadAllCounts().
+// GET /_/api/counts
+func (s *Server) handleCounts(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	counts := s.computeAllCounts()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(counts)
 }

@@ -17,6 +17,7 @@ var KnownFields = map[string]bool{
 	"email":                         true,
 	"public_key":                    true,
 	"site_title":                    true,
+	"domain":                        true,
 	"created":                       true,
 	"config":                        true,
 	"config.directories":            true,

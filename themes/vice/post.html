@@ -3,6 +3,7 @@
 
     Snippets loaded by this template:
     - theme:blessed-comment - Blessed comment block (theme: snippets/blessed-comment.html)
+    - theme:polis-widget    - Interactive comment/follow widget (theme: snippets/polis-widget.html)
 
     To override a theme snippet, create a global snippet with the same name
     and change the "theme:" prefix to use the global version instead.
@@ -22,7 +23,7 @@
 <body>
     <!-- Navigation -->
     <nav class="site-nav">
-        <a href="{{home_path}}" class="nav-home">&larr; Home</a>
+        <a href="{{home_path}}" class="nav-home">&larr; {{author_domain}}</a>
     </nav>
 
     <!-- Post Content -->
@@ -31,9 +32,6 @@
             <div class="post-header">
                 <div class="post-date">{{published_human}}</div>
                 <div class="post-meta">
-                    <span class="meta-label">Signed by</span>
-                    <span class="meta-value">{{author_name}}</span>
-                    <span class="meta-sep">|</span>
                     <span class="meta-label">Version</span>
                     <span class="meta-value">{{signature_short}}</span>
                 </div>
@@ -47,34 +45,13 @@
     <!-- Blessed Comments -->
     <section class="comments">
         <div class="container">
-            <div class="comments-header">
-                <h2 class="comments-title">Comments ({{blessed_count}})</h2>
-                <details class="cta-inline">
-                    <summary class="cta-link">Learn how&hellip;</summary>
-                    <div class="cta-content">
-                        <p class="cta-text">Polis comments are cryptographically signed and published from your own site. No account needed—just your words and your domain.</p>
-                        <div class="cta-code">
-                            <pre><code><span class="code-comment"># Clone the repo and set up your site</span>
-git clone https://github.com/vdibart/polis-cli
-mkdir ~/my-polis-site && cd ~/my-polis-site
-cp -r /path/to/polis/cli/* .
-./polis init
-
-<span class="code-comment"># Create a comment (creates a signed .md file)</span>
-./polis comment {{url}}
-
-<span class="code-comment"># Deploy to your domain</span>
-<span class="code-comment"># (copy rendered files to your web server)</span></code></pre>
-                        </div>
-                        <a href="https://github.com/vdibart/polis-cli" class="cta-link">Get started with Polis &rarr;</a>
-                    </div>
-                </details>
-            </div>
+            <h2 class="comments-title">Comments ({{blessed_count}})</h2>
             <div class="comments-list">
 {{#blessed_comments}}
                 {{> theme:blessed-comment}}
 {{/blessed_comments}}
             </div>
+            {{> theme:polis-widget}}
         </div>
     </section>
 

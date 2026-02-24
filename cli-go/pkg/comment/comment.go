@@ -508,6 +508,80 @@ func MoveComment(dataDir, commentID, fromStatus, toStatus string) error {
 	return nil
 }
 
+// PublishComment copies a pending comment to the public comments/ directory,
+// renders an HTML version, appends it to public.jsonl, and updates the manifest.
+// This makes the comment publicly accessible on the commenter's site regardless
+// of blessing status (matching bash CLI behavior).
+func PublishComment(dataDir, commentID string) error {
+	// Read the pending comment
+	pendingPath := filepath.Join(dataDir, ".polis", "comments", StatusPending, commentID+".md")
+	data, err := os.ReadFile(pendingPath)
+	if err != nil {
+		return fmt.Errorf("failed to read pending comment: %w", err)
+	}
+
+	content := string(data)
+	fm := ParseFrontmatter(content)
+
+	// Determine date directory from timestamp
+	timestamp := time.Now().UTC()
+	if ts := fm["published"]; ts != "" {
+		if parsed, err := time.Parse("2006-01-02T15:04:05Z", ts); err == nil {
+			timestamp = parsed
+		}
+	}
+	dateDir := timestamp.Format("20060102")
+
+	// Create target directory: comments/YYYYMMDD/
+	targetDir := filepath.Join(dataDir, "comments", dateDir)
+	if err := os.MkdirAll(targetDir, 0755); err != nil {
+		return fmt.Errorf("failed to create comments directory: %w", err)
+	}
+
+	// Copy markdown file to public location
+	mdPath := filepath.Join(targetDir, commentID+".md")
+	if err := os.WriteFile(mdPath, data, 0644); err != nil {
+		return fmt.Errorf("failed to write public comment: %w", err)
+	}
+
+	// Note: HTML rendering is handled by RenderSite() which is called after
+	// PublishComment(). Writing raw HTML here would produce untemplated output
+	// that gets overwritten anyway.
+
+	// Append to public.jsonl
+	relativePath := filepath.Join("comments", dateDir, commentID+".md")
+
+	// Parse nested in-reply-to for the index entry
+	inReplyToURL, _ := ParseNestedInReplyTo(content)
+	if inReplyToURL == "" {
+		inReplyToURL = fm["in_reply_to"]
+	}
+
+	version := fm["current-version"]
+	if version == "" {
+		version = fm["comment_version"]
+	}
+
+	if err := metadata.AppendCommentToIndex(
+		dataDir,
+		relativePath,
+		fm["title"],
+		fm["published"],
+		version,
+		inReplyToURL,
+	); err != nil {
+		// Log but don't fail - the comment file is already published
+		_ = err
+	}
+
+	// Update manifest comment count
+	if err := publish.UpdateManifest(dataDir); err != nil {
+		_ = err
+	}
+
+	return nil
+}
+
 // findBlessedComment searches for a blessed comment in the date-based directory structure.
 // Structure: comments/YYYYMMDD/comment-id.md
 func findBlessedComment(dataDir, commentID string) (bool, string) {
@@ -634,6 +708,12 @@ func listBlessedComments(dataDir string) ([]*CommentMeta, error) {
 
 		for _, file := range files {
 			if file.IsDir() || !strings.HasSuffix(file.Name(), ".md") {
+				continue
+			}
+
+			// Skip comments that still exist in pending (published-but-pending, not yet blessed)
+			pendingPath := filepath.Join(dataDir, ".polis", "comments", StatusPending, file.Name())
+			if _, err := os.Stat(pendingPath); err == nil {
 				continue
 			}
 

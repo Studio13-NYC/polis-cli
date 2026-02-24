@@ -1,6 +1,7 @@
 package feed
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/vdibart/polis-cli/cli-go/pkg/discovery"
@@ -16,7 +17,7 @@ func TestFeedHandler_PostEvent(t *testing.T) {
 
 	events := []discovery.StreamEvent{
 		{
-			ID:        1,
+			ID:        json.Number("1"),
 			Type:      "polis.post.published",
 			Timestamp: "2026-02-01T10:00:00Z",
 			Actor:     "alice.polis.pub",
@@ -71,7 +72,7 @@ func TestFeedHandler_CommentEvent(t *testing.T) {
 
 	events := []discovery.StreamEvent{
 		{
-			ID:        2,
+			ID:        json.Number("2"),
 			Type:      "polis.comment.published",
 			Timestamp: "2026-02-02T10:00:00Z",
 			Actor:     "bob.polis.pub",
@@ -110,6 +111,74 @@ func TestFeedHandler_CommentEvent(t *testing.T) {
 	if item.AuthorDomain != "bob.polis.pub" {
 		t.Errorf("expected author domain bob.polis.pub, got %s", item.AuthorDomain)
 	}
+	if item.TargetURL != "https://alice.polis.pub/posts/hello.md" {
+		t.Errorf("expected target URL https://alice.polis.pub/posts/hello.md, got %s", item.TargetURL)
+	}
+}
+
+func TestFeedHandler_CommentEvent_NoTargetURL(t *testing.T) {
+	h := &FeedHandler{
+		MyDomain: "me.polis.pub",
+	}
+
+	events := []discovery.StreamEvent{
+		{
+			ID:        json.Number("3"),
+			Type:      "polis.comment.published",
+			Timestamp: "2026-02-02T10:00:00Z",
+			Actor:     "bob.polis.pub",
+			Payload: map[string]interface{}{
+				"comment_url": "https://bob.polis.pub/comments/orphan.md",
+				"version":     "xyz789",
+				"metadata": map[string]interface{}{
+					"title": "Orphan comment",
+				},
+			},
+		},
+	}
+
+	items := h.Process(events)
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(items))
+	}
+	if items[0].TargetURL != "" {
+		t.Errorf("expected empty target URL for comment without in_reply_to, got %s", items[0].TargetURL)
+	}
+}
+
+func TestFeedHandler_CommentEvent_RootPostFallback(t *testing.T) {
+	h := &FeedHandler{
+		MyDomain: "me.polis.pub",
+	}
+
+	events := []discovery.StreamEvent{
+		{
+			ID:        json.Number("4"),
+			Type:      "polis.comment.published",
+			Timestamp: "2026-02-02T10:00:00Z",
+			Actor:     "bob.polis.pub",
+			Payload: map[string]interface{}{
+				"comment_url":   "https://bob.polis.pub/comments/reply2.md",
+				"root_post":     "https://alice.polis.pub/posts/hello.md",
+				"target_domain": "alice.polis.pub",
+				"version":       "v2",
+				"metadata": map[string]interface{}{
+					"title": "Reply via root_post",
+				},
+			},
+		},
+	}
+
+	items := h.Process(events)
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(items))
+	}
+	if items[0].TargetURL != "https://alice.polis.pub/posts/hello.md" {
+		t.Errorf("expected target URL from root_post, got %s", items[0].TargetURL)
+	}
+	if items[0].TargetDomain != "alice.polis.pub" {
+		t.Errorf("expected target domain alice.polis.pub, got %s", items[0].TargetDomain)
+	}
 }
 
 func TestFeedHandler_SkipsSelfEvents(t *testing.T) {
@@ -119,7 +188,7 @@ func TestFeedHandler_SkipsSelfEvents(t *testing.T) {
 
 	events := []discovery.StreamEvent{
 		{
-			ID:        1,
+			ID:        json.Number("1"),
 			Type:      "polis.post.published",
 			Timestamp: "2026-02-01T10:00:00Z",
 			Actor:     "me.polis.pub", // Self-authored
@@ -132,7 +201,7 @@ func TestFeedHandler_SkipsSelfEvents(t *testing.T) {
 			},
 		},
 		{
-			ID:        2,
+			ID:        json.Number("2"),
 			Type:      "polis.post.published",
 			Timestamp: "2026-02-01T11:00:00Z",
 			Actor:     "alice.polis.pub", // Not self
@@ -162,14 +231,14 @@ func TestFeedHandler_IgnoresUnknownTypes(t *testing.T) {
 
 	events := []discovery.StreamEvent{
 		{
-			ID:        1,
+			ID:        json.Number("1"),
 			Type:      "polis.blessing.granted",
 			Timestamp: "2026-02-01T10:00:00Z",
 			Actor:     "alice.polis.pub",
 			Payload:   map[string]interface{}{},
 		},
 		{
-			ID:        2,
+			ID:        json.Number("2"),
 			Type:      "polis.follow.announced",
 			Timestamp: "2026-02-01T10:00:00Z",
 			Actor:     "bob.polis.pub",
@@ -190,7 +259,7 @@ func TestFeedHandler_RepublishedEvents(t *testing.T) {
 
 	events := []discovery.StreamEvent{
 		{
-			ID:        1,
+			ID:        json.Number("1"),
 			Type:      "polis.post.republished",
 			Timestamp: "2026-02-01T10:00:00Z",
 			Actor:     "alice.polis.pub",
@@ -204,7 +273,7 @@ func TestFeedHandler_RepublishedEvents(t *testing.T) {
 			},
 		},
 		{
-			ID:        2,
+			ID:        json.Number("2"),
 			Type:      "polis.comment.republished",
 			Timestamp: "2026-02-02T10:00:00Z",
 			Actor:     "bob.polis.pub",
@@ -237,7 +306,7 @@ func TestFeedHandler_FallbackTimestamp(t *testing.T) {
 
 	events := []discovery.StreamEvent{
 		{
-			ID:        1,
+			ID:        json.Number("1"),
 			Type:      "polis.post.published",
 			Timestamp: "2026-02-01T10:00:00Z",
 			Actor:     "alice.polis.pub",

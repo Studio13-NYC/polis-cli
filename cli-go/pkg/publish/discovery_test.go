@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -30,7 +31,7 @@ func TestRegisterPost_NotConfigured(t *testing.T) {
 	}
 }
 
-func TestRegisterPost_NoEmail(t *testing.T) {
+func TestRegisterPost_NoEmailNoDomain(t *testing.T) {
 	oldURL, oldKey, oldBase := DiscoveryURL, DiscoveryKey, BaseURL
 	defer func() { DiscoveryURL, DiscoveryKey, BaseURL = oldURL, oldKey, oldBase }()
 
@@ -40,7 +41,7 @@ func TestRegisterPost_NoEmail(t *testing.T) {
 
 	dataDir := t.TempDir()
 
-	// Create .well-known/polis WITHOUT email
+	// Create .well-known/polis WITHOUT email or domain
 	os.MkdirAll(filepath.Join(dataDir, ".well-known"), 0755)
 	wk := map[string]interface{}{
 		"public_key": "ssh-ed25519 AAAA...",
@@ -57,7 +58,85 @@ func TestRegisterPost_NoEmail(t *testing.T) {
 
 	err := RegisterPost(dataDir, result, nil, nil)
 	if err == nil {
-		t.Error("expected error when email is missing")
+		t.Error("expected error when both email and domain are missing")
+	}
+	if err != nil && !strings.Contains(err.Error(), "no author identity") {
+		t.Errorf("expected 'no author identity' error, got: %v", err)
+	}
+}
+
+func TestRegisterPost_DomainFallback(t *testing.T) {
+	oldURL, oldKey, oldBase := DiscoveryURL, DiscoveryKey, BaseURL
+	defer func() { DiscoveryURL, DiscoveryKey, BaseURL = oldURL, oldKey, oldBase }()
+
+	DiscoveryURL = "https://discovery.example.com"
+	DiscoveryKey = "test-key"
+	BaseURL = "https://alice.polis.pub"
+
+	dataDir := t.TempDir()
+
+	// Create .well-known/polis with domain but NO email (hosted site pattern)
+	os.MkdirAll(filepath.Join(dataDir, ".well-known"), 0755)
+	wk := map[string]interface{}{
+		"public_key": "ssh-ed25519 AAAA...",
+		"domain":     "alice.polis.pub",
+	}
+	data, _ := json.MarshalIndent(wk, "", "  ")
+	os.WriteFile(filepath.Join(dataDir, ".well-known", "polis"), data, 0644)
+
+	result := &PublishResult{
+		Success: true,
+		Path:    "posts/20260201/test.md",
+		Title:   "Test Post",
+		Version: "sha256:abc123",
+	}
+
+	// Will fail at signing (nil key) but should NOT fail at author resolution
+	err := RegisterPost(dataDir, result, nil, nil)
+	if err == nil {
+		t.Error("expected error (nil private key), got nil")
+	}
+	// The error should be about signing, not about missing author
+	if strings.Contains(err.Error(), "no author identity") {
+		t.Errorf("should have used domain as author, but got: %v", err)
+	}
+}
+
+func TestRegisterPost_EmailPreferredOverDomain(t *testing.T) {
+	oldURL, oldKey, oldBase := DiscoveryURL, DiscoveryKey, BaseURL
+	defer func() { DiscoveryURL, DiscoveryKey, BaseURL = oldURL, oldKey, oldBase }()
+
+	DiscoveryURL = "https://discovery.example.com"
+	DiscoveryKey = "test-key"
+	BaseURL = "https://alice.polis.pub"
+
+	dataDir := t.TempDir()
+
+	// Create .well-known/polis with BOTH email and domain
+	os.MkdirAll(filepath.Join(dataDir, ".well-known"), 0755)
+	wk := map[string]interface{}{
+		"public_key": "ssh-ed25519 AAAA...",
+		"email":      "alice@example.com",
+		"domain":     "alice.polis.pub",
+	}
+	data, _ := json.MarshalIndent(wk, "", "  ")
+	os.WriteFile(filepath.Join(dataDir, ".well-known", "polis"), data, 0644)
+
+	result := &PublishResult{
+		Success: true,
+		Path:    "posts/20260201/test.md",
+		Title:   "Test Post",
+		Version: "sha256:abc123",
+	}
+
+	// Will fail at signing (nil key) but should NOT fail at author resolution
+	err := RegisterPost(dataDir, result, nil, nil)
+	if err == nil {
+		t.Error("expected error (nil private key), got nil")
+	}
+	// The error should be about signing, not about missing author
+	if strings.Contains(err.Error(), "no author identity") {
+		t.Errorf("should have used email as author, but got: %v", err)
 	}
 }
 

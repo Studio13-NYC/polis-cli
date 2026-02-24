@@ -31,6 +31,8 @@ type CachedFeedItem struct {
 	Hash         string `json:"hash,omitempty"`
 	AuthorURL    string `json:"author_url"`
 	AuthorDomain string `json:"author_domain"`
+	TargetURL    string `json:"target_url,omitempty"`
+	TargetDomain string `json:"target_domain,omitempty"`
 	CachedAt     string `json:"cached_at"`
 	ReadAt       string `json:"read_at,omitempty"`
 }
@@ -307,6 +309,8 @@ func (cm *CacheManager) MergeItems(items []FeedItem) (int, error) {
 			Hash:         item.Hash,
 			AuthorURL:    item.AuthorURL,
 			AuthorDomain: item.AuthorDomain,
+			TargetURL:    item.TargetURL,
+			TargetDomain: item.TargetDomain,
 			CachedAt:     now,
 		})
 		idMap[id] = struct{}{}

@@ -71,6 +71,13 @@ func BeseechComment(dataDir, commentID string, privateKey []byte, dsCfg ...*Disc
 		return nil, fmt.Errorf("comment not found in pending: %w", err)
 	}
 
+	// Publish the comment to the public comments/ directory before DS registration.
+	// This makes the comment accessible via HTTPS so the post owner can fetch it
+	// when reviewing the blessing request (matches bash CLI behavior).
+	if err := PublishComment(dataDir, commentID); err != nil {
+		return nil, fmt.Errorf("publish comment: %w", err)
+	}
+
 	// Compute comment URL from base URL + date directory + comment ID
 	ts, err := time.Parse("2006-01-02T15:04:05Z", signed.Meta.Timestamp)
 	if err != nil {

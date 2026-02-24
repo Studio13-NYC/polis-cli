@@ -130,6 +130,9 @@ func (r *PageRenderer) RenderFile(path string, fileType string, force bool) (str
 	ctx.CSSPath = theme.CalculateCSSPath(path)
 	ctx.HomePath = theme.CalculateHomePath(path)
 	ctx.AuthorName = r.getAuthorName()
+	if ctx.AuthorName == "" {
+		ctx.AuthorName = r.getAuthorDomain()
+	}
 	ctx.AuthorURL = r.config.BaseURL
 
 	// Widget variables
@@ -200,6 +203,9 @@ func (r *PageRenderer) RenderIndex() error {
 	ctx.CSSPath = "styles.css"
 	ctx.HomePath = "index.html"
 	ctx.AuthorName = r.getAuthorName()
+	if ctx.AuthorName == "" {
+		ctx.AuthorName = r.getAuthorDomain()
+	}
 	ctx.AuthorURL = r.config.BaseURL
 	ctx.PostCount = len(posts)
 	ctx.CommentCount = len(comments)
@@ -275,6 +281,9 @@ func (r *PageRenderer) RenderArchive() error {
 	ctx.CSSPath = "../styles.css"
 	ctx.HomePath = "../index.html"
 	ctx.AuthorName = r.getAuthorName()
+	if ctx.AuthorName == "" {
+		ctx.AuthorName = r.getAuthorDomain()
+	}
 	ctx.AuthorURL = r.config.BaseURL
 	ctx.PostCount = len(posts)
 	ctx.Posts = posts
@@ -398,6 +407,14 @@ func (r *PageRenderer) loadPublicIndex() ([]template.PostData, []template.Commen
 		return nil, nil, err
 	}
 
+	// Build a map of post path -> blessed comment count
+	commentCountMap := make(map[string]int)
+	if bc, err := metadata.LoadBlessedComments(r.config.DataDir); err == nil {
+		for _, pc := range bc.Comments {
+			commentCountMap[pc.Post] = len(pc.Blessed)
+		}
+	}
+
 	var posts []template.PostData
 	var comments []template.CommentData
 
@@ -405,12 +422,27 @@ func (r *PageRenderer) loadPublicIndex() ([]template.PostData, []template.Commen
 		if strings.HasPrefix(entry.Path, "posts/") || entry.Type == "post" {
 			// Convert .md to .html for URL
 			htmlPath := strings.TrimSuffix(entry.Path, ".md") + ".html"
+
+			// Look up blessed comment count (try multiple path forms)
+			count := commentCountMap[entry.Path]
+			if count == 0 {
+				// Try without extension
+				base := strings.TrimSuffix(strings.TrimSuffix(entry.Path, ".md"), ".html")
+				for k, v := range commentCountMap {
+					kb := strings.TrimSuffix(strings.TrimSuffix(k, ".md"), ".html")
+					if kb == base {
+						count = v
+						break
+					}
+				}
+			}
+
 			posts = append(posts, template.PostData{
 				URL:            htmlPath,
 				Title:          entry.Title,
 				Published:      entry.Published,
 				PublishedHuman: template.FormatHumanDate(entry.Published),
-				CommentCount:   0, // Comment count not stored in public.jsonl
+				CommentCount:   count,
 			})
 		} else if strings.HasPrefix(entry.Path, "comments/") || entry.Type == "comment" {
 			htmlPath := strings.TrimSuffix(entry.Path, ".md") + ".html"

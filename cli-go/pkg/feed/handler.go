@@ -52,14 +52,19 @@ func (h *FeedHandler) eventToItem(evt discovery.StreamEvent) (FeedItem, bool) {
 func (h *FeedHandler) postEventToItem(evt discovery.StreamEvent) FeedItem {
 	url, _ := evt.Payload["url"].(string)
 	version, _ := evt.Payload["version"].(string)
-	author, _ := evt.Payload["author"].(string)
-	_ = author // available but not stored in FeedItem
 
-	title := ""
-	published := ""
-	if md, ok := evt.Payload["metadata"].(map[string]interface{}); ok {
-		title, _ = md["title"].(string)
-		published, _ = md["published_at"].(string)
+	// Title may be top-level (DS emits flat) or nested under metadata (legacy)
+	title, _ := evt.Payload["title"].(string)
+	published, _ := evt.Payload["published_at"].(string)
+	if title == "" || published == "" {
+		if md, ok := evt.Payload["metadata"].(map[string]interface{}); ok {
+			if title == "" {
+				title, _ = md["title"].(string)
+			}
+			if published == "" {
+				published, _ = md["published_at"].(string)
+			}
+		}
 	}
 
 	if published == "" {
@@ -79,19 +84,37 @@ func (h *FeedHandler) postEventToItem(evt discovery.StreamEvent) FeedItem {
 
 // commentEventToItem extracts FeedItem fields from a comment event.
 func (h *FeedHandler) commentEventToItem(evt discovery.StreamEvent) FeedItem {
-	commentURL, _ := evt.Payload["comment_url"].(string)
+	// Comment URL may be "url" (DS emits flat) or "comment_url" (legacy)
+	commentURL, _ := evt.Payload["url"].(string)
+	if commentURL == "" {
+		commentURL, _ = evt.Payload["comment_url"].(string)
+	}
 	version, _ := evt.Payload["version"].(string)
 
-	title := ""
-	published := ""
-	if md, ok := evt.Payload["metadata"].(map[string]interface{}); ok {
-		title, _ = md["title"].(string)
-		published, _ = md["published_at"].(string)
+	// Title may be top-level (DS emits flat) or nested under metadata (legacy)
+	title, _ := evt.Payload["title"].(string)
+	published, _ := evt.Payload["published_at"].(string)
+	if title == "" || published == "" {
+		if md, ok := evt.Payload["metadata"].(map[string]interface{}); ok {
+			if title == "" {
+				title, _ = md["title"].(string)
+			}
+			if published == "" {
+				published, _ = md["published_at"].(string)
+			}
+		}
 	}
 
 	if published == "" {
 		published = evt.Timestamp
 	}
+
+	// Extract target post URL (what this comment is replying to)
+	targetURL, _ := evt.Payload["in_reply_to"].(string)
+	if targetURL == "" {
+		targetURL, _ = evt.Payload["root_post"].(string)
+	}
+	targetDomain, _ := evt.Payload["target_domain"].(string)
 
 	return FeedItem{
 		Type:         "comment",
@@ -101,5 +124,7 @@ func (h *FeedHandler) commentEventToItem(evt discovery.StreamEvent) FeedItem {
 		Hash:         version,
 		AuthorURL:    "https://" + evt.Actor,
 		AuthorDomain: evt.Actor,
+		TargetURL:    targetURL,
+		TargetDomain: targetDomain,
 	}
 }

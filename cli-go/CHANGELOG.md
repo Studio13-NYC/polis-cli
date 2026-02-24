@@ -5,6 +5,58 @@ All notable changes to the Go CLI will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.55.0] - 2026-02-24
+
+This release adds an About page editor to the webapp, introduces theme switching from the Settings panel, ships new `also-reading` and `polis-widget` snippets for all six built-in themes, and delivers a range of webapp usability improvements.
+
+### Added
+
+- **`theme.ExtractPalette()` and `theme.ListThemesWithPalettes()`**: New functions parse CSS `--color-*` variables from theme stylesheets to produce color swatches for UI previews.
+- **`also-reading.html` and `polis-widget.html` snippets for all 6 themes**: New theme snippets shipped for especial, especial-light, sols, turbo, vice, and zane.
+- **[Webapp] Theme switcher in Settings**: Users can switch their site theme from the Settings panel. A grid of themes with color palette swatches allows one-click theme changes that immediately re-render the site.
+- **[Webapp] About page editor**: New full-screen editor for the global `about.html` snippet, accessible from the Snippets sidebar in all lifecycle stages.
+- **[Webapp] `POST /api/settings/theme` endpoint**: Switches the active theme with validation, CSS copy, and full site re-render.
+- **[Webapp] `POST /api/settings/sync` and widget DELETE endpoint**: New sync and widget management API endpoints.
+
+### Changed
+
+- **[Webapp] Consolidated Conversations tab**: Social sidebar merges Activity and Posts & Comments into a single Conversations view with consistent green badge colors.
+- **[Webapp] My Comments tab order**: Reordered to All, Drafts, Blessed, Pending, Denied.
+- **[Webapp] Deep-link intent paths**: Follow intents redirect to `/_/social/following?intent=follow&target=X`; comment intents route to `/_/comments/new`. Legacy `/_/?intent=...` paths remain supported.
+- **[Webapp] Snippets sidebar**: Now visible in all lifecycle stages including `first_post`.
+- **"Space" terminology**: Post-init welcome message updated from "site" to "space".
+
+### Fixed
+
+- **[Webapp] Widget follow/unfollow toggle**: Public site widget now includes a Follow/Unfollow toggle.
+- **[Webapp] CORS headers**: Metadata files and the widget DELETE endpoint include correct CORS headers.
+- **[Webapp] `blessing.granted` stream event actor**: Fixed to correctly identify the granter.
+- **[Webapp] Version in metadata files**: Fixed webapp writing `"dev"` instead of the actual version string.
+- **[Webapp] Feed item display**: Fixed grouped feed item title fallback, URL display, and link underlines.
+- **[Webapp] About editor and sidebar placement**: Fixed textarea styling and sidebar-section-snippets placement.
+
+## [0.54.0] - 2026-02-17
+
+This release shifts author identity from email to domain, simplifies the webapp with a streamlined sidebar and improved onboarding, and adds documentation for contributing, webapp usage, and security policy.
+
+### Changed
+
+- **Domain-based author identity**: Author identity now uses the domain from `.well-known/polis` instead of email. Affects comment frontmatter, discovery service registration, and blessing operations.
+- **Init flow simplified**: `site.Init()` accepts explicit Author and Email fields for headless provisioning.
+- **Package state refactored**: `publish`, `comment`, and `stream` packages accept discovery config as function parameters instead of package-level globals.
+- **[Webapp] Simplified UI**: Removed browser split-pane mode, replaced with a progressive sidebar adapting to site lifecycle stage. Merged blessing requests into a single view.
+- **[Webapp] Welcome flow**: New users see a "What just happened?" educational disclosure after init.
+
+### Added
+
+- **New tests**: Added test suites for `comment`, `site/init`, `site/wellknown`, `render/page`, and `template/engine` packages.
+- **Render page helpers**: New page rendering utilities in `render/page.go` for index page generation.
+
+### Fixed
+
+- **Verify command robustness**: Improved error handling for edge cases in signature verification.
+- **Template section rendering**: Additional test coverage for section rendering edge cases.
+
 ## [0.53.0] - 2026-02-13
 
 This release improves homepage performance with limited post/comment sections and archive pages, adds quality of life improvements to the webapp (feed auto-refresh, following metadata display), and introduces authenticated discovery queries for privacy-sensitive operations.

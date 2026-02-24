@@ -18,6 +18,11 @@ type NotificationHandler struct {
 	Rules []notification.Rule
 	// MutedDomains is a set of domains to suppress notifications from.
 	MutedDomains map[string]bool
+	// FollowedDomains is a set of domains we follow. Used by the unified sync
+	// loop for client-side "followed_author" filtering when events aren't
+	// pre-filtered by actor in the DS query. If nil, falls back to the legacy
+	// behavior of accepting any non-self actor.
+	FollowedDomains map[string]bool
 }
 
 // NotificationConfig is the user configuration stored in config/notifications.json.
@@ -114,6 +119,12 @@ func (h *NotificationHandler) Process(events []discovery.StreamEvent) []notifica
 			vars := notification.TemplateVarsFromEvent(evt.Actor, evt.Timestamp, evt.Payload)
 			message := notification.ResolveTemplate(rule.Template.Message, vars)
 
+			// Resolve link template
+			link := ""
+			if rule.Template.Link != "" {
+				link = notification.ResolveTemplate(rule.Template.Link, vars)
+			}
+
 			// Compute dedupe key
 			dedupeKey := notification.DedupeKey(rule.ID, evt.Payload)
 
@@ -126,6 +137,8 @@ func (h *NotificationHandler) Process(events []discovery.StreamEvent) []notifica
 				Actor:     evt.Actor,
 				Icon:      rule.Template.Icon,
 				Message:   message,
+				Link:      link,
+				Payload:   evt.Payload,
 				EventIDs:  []int{eventID},
 				CreatedAt: evt.Timestamp,
 			})
@@ -147,8 +160,12 @@ func (h *NotificationHandler) matchesFilter(rule notification.Rule, evt discover
 		return sourceDomain == h.MyDomain
 
 	case "followed_author":
-		// For "followed_author" relevance, the caller should have pre-filtered
-		// via the actor query parameter. We just check it's not us.
+		// In unified sync mode, FollowedDomains is populated for client-side
+		// filtering. In legacy mode (nil), the caller pre-filtered via the
+		// actor query parameter so we just check it's not us.
+		if h.FollowedDomains != nil {
+			return h.FollowedDomains[evt.Actor]
+		}
 		return evt.Actor != h.MyDomain
 
 	default:

@@ -5,6 +5,8 @@
     - theme:about        - About section (theme: snippets/about.html)
     - theme:post-item    - Post list item (theme: snippets/post-item.html)
     - theme:comment-item - Comment list item (theme: snippets/comment-item.html)
+    - theme:polis-widget    - Interactive comment/follow widget (theme: snippets/polis-widget.html)
+    - theme:also-reading    - "Also reading" list of followed authors (theme: snippets/also-reading.html)
 
     To override a theme snippet, create a global snippet with the same name
     and change the "theme:" prefix to use the global version instead.
@@ -25,6 +27,7 @@
     <!-- Hero -->
     <section class="hero">
         <h1 class="hero-title">{{site_title}}</h1>
+        {{> theme:polis-widget}}
     </section>
 
     <!-- About -->
@@ -51,6 +54,16 @@
 {{#recent_comments}}
                 {{> theme:comment-item}}
 {{/recent_comments}}
+            </div>
+        </div>
+    </section>
+
+    <!-- Also Reading -->
+    <section class="also-reading">
+        <div class="container">
+            <h2 class="section-title">Also Reading</h2>
+            <div class="also-reading-list">
+                {{> theme:also-reading}}
             </div>
         </div>
     </section>

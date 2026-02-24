@@ -28,7 +28,7 @@ set -e
 #   4. Hardcoded defaults
 
 # Fixed constants (never configurable - required for discovery)
-VERSION="0.54.0"
+VERSION="0.55.0"
 WELL_KNOWN_DIR=".well-known"
 WELL_KNOWN_FILE="polis"
 
@@ -428,6 +428,15 @@ EOF
         }' > "$manifest_path"
     files_created+=("$manifest_path")
     success_human "Created $manifest_path"
+
+    # Create default about snippet
+    if [ ! -f "$snippets_dir/about.md" ]; then
+        cat > "$snippets_dir/about.md" << 'ABOUT'
+Welcome to my polis space. This site runs on *polis*—signed markdown on your own domain. No platform, no middleman, just you and your words.
+ABOUT
+        files_created+=("$snippets_dir/about.md")
+        success_human "Created $snippets_dir/about.md"
+    fi
 
     # Create .gitignore if it doesn't exist
     if [ ! -f ".gitignore" ]; then

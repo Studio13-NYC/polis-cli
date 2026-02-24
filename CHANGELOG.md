@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.55.0] - 2026-02-24
+
+This release adds an About page editor to the webapp, introduces theme switching from the Settings panel, ships new `also-reading` and `polis-widget` snippets for all six built-in themes, and delivers a range of webapp usability improvements.
+
+### Added
+
+- **[Go CLI] `theme.ExtractPalette()` and `theme.ListThemesWithPalettes()`**: New functions parse CSS `--color-*` variables from theme stylesheets to produce color swatches for UI previews.
+- **`also-reading.html` snippet for all 6 themes**: New theme snippet enables an "Also Reading" sidebar section across especial, especial-light, sols, turbo, vice, and zane themes.
+- **`polis-widget.html` snippet for all 6 themes**: New theme snippet provides a standardized Polis widget embed block for all built-in themes.
+- **[Webapp] Theme switcher in Settings**: Users can now switch their site theme from the Settings panel. A grid of available themes with color palette swatches is displayed; selecting a theme updates the manifest, copies the CSS, and re-renders the site immediately.
+- **[Webapp] About page editor**: New editor for the global `about.html` snippet, displayed in the Snippets sidebar across all site lifecycle stages. Mirrors the full-screen layout of the post editor.
+- **[Webapp] `POST /api/settings/theme` endpoint**: Switches the active theme with validation, CSS copy, and full site re-render.
+- **[Webapp] `POST /api/settings/sync` endpoint**: New sync endpoint with a DELETE handler for the widget API.
+
+### Changed
+
+- **[Webapp] Consolidated Conversations tab**: The Social sidebar now presents a single Conversations view (merging the previous Activity and Posts & Comments tabs). All feed type badges use a consistent green color.
+- **[Webapp] My Comments tab order**: Tabs reordered to All, Drafts, Blessed, Pending, Denied.
+- **[Webapp] Standardized Refresh buttons**: Action buttons across all views now uniformly labeled "Refresh".
+- **[Webapp] Deep-link intent paths updated**: Follow intents now redirect to `/_/social/following?intent=follow&target=X`; comment intents route to `/_/comments/new`. Legacy root-path intents remain supported.
+- **[Webapp] Snippets sidebar visibility**: Snippets (About) sidebar shown in all lifecycle stages including `first_post`.
+- **"Space" terminology**: Post-init welcome message uses "space" instead of "site" in the onboarding message.
+
+### Fixed
+
+- **[Webapp] Widget follow/unfollow toggle**: Public site widget now includes a Follow/Unfollow toggle for logged-in users.
+- **[Webapp] CORS headers**: Metadata files and the widget DELETE endpoint now include correct CORS headers.
+- **[Webapp] `blessing.granted` stream event**: Fixed actor field to correctly identify the granter instead of the recipient.
+- **[Webapp] Webapp version in metadata files**: Fixed webapp writing `"dev"` as the version string in metadata files.
+- **[Webapp] Sidebar snippets section placement**: Fixed `sidebar-section-snippets` placement inside `sidebar-my-site`.
+- **[Webapp] About editor textarea styling**: About editor textarea now matches the post editor styling.
+- **[Webapp] Feed item display**: Fixed grouped feed item title fallback and URL display; fixed underline on grouped feed item links.
+
 ## [0.54.0] - 2026-02-17
 
 This release shifts author identity from email to domain, simplifies the webapp with a streamlined sidebar and improved onboarding, and adds documentation for contributing, webapp usage, and security policy.

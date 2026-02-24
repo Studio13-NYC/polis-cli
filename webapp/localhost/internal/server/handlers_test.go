@@ -1,6 +1,7 @@
 package server
 
 import (
+	"archive/zip"
 	"bytes"
 	"encoding/json"
 	"net/http"
@@ -9,11 +10,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/vdibart/polis-cli/cli-go/pkg/feed"
 	"github.com/vdibart/polis-cli/cli-go/pkg/following"
 	"github.com/vdibart/polis-cli/cli-go/pkg/hooks"
 	"github.com/vdibart/polis-cli/cli-go/pkg/signing"
+	"github.com/vdibart/polis-cli/cli-go/pkg/stream"
 )
 
 // Helper to create a test server with temp directory
@@ -1495,6 +1498,21 @@ func TestHandleCommentsSync_DiscoveryNotConfigured(t *testing.T) {
 	}
 }
 
+func TestHandleCommentsSync_PrivateKeyNotConfigured(t *testing.T) {
+	s := newTestServer(t)
+	s.DiscoveryURL = "https://discovery.example.com"
+	s.DiscoveryKey = "test-key"
+
+	req := httptest.NewRequest(http.MethodPost, "/api/comments/sync", nil)
+	rr := httptest.NewRecorder()
+
+	s.handleCommentsSync(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("expected status 400, got %d", rr.Code)
+	}
+}
+
 // ============================================================================
 // handleBlessingRequests Tests
 // ============================================================================
@@ -1514,6 +1532,21 @@ func TestHandleBlessingRequests_MethodNotAllowed(t *testing.T) {
 
 func TestHandleBlessingRequests_DiscoveryNotConfigured(t *testing.T) {
 	s := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/blessing/requests", nil)
+	rr := httptest.NewRecorder()
+
+	s.handleBlessingRequests(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("expected status 400, got %d", rr.Code)
+	}
+}
+
+func TestHandleBlessingRequests_PrivateKeyNotConfigured(t *testing.T) {
+	s := newTestServer(t)
+	s.DiscoveryURL = "https://discovery.example.com"
+	s.DiscoveryKey = "test-key"
 
 	req := httptest.NewRequest(http.MethodGet, "/api/blessing/requests", nil)
 	rr := httptest.NewRecorder()
@@ -1574,7 +1607,7 @@ func TestHandleBlessingGrant_PrivateKeyNotConfigured(t *testing.T) {
 	}
 }
 
-func TestHandleBlessingGrant_MissingCommentVersion(t *testing.T) {
+func TestHandleBlessingGrant_MissingCommentURL(t *testing.T) {
 	s := newConfiguredServer(t)
 	s.DiscoveryURL = "https://discovery.example.com"
 	s.DiscoveryKey = "test-key"
@@ -4602,6 +4635,345 @@ func TestHandleActivityStream_WithFollowingNoDiscovery(t *testing.T) {
 }
 
 // ============================================================================
+// handleConversations Tests
+// ============================================================================
+
+func TestHandleConversations_MethodNotAllowed(t *testing.T) {
+	s := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/conversations", nil)
+	rr := httptest.NewRecorder()
+
+	s.handleConversations(rr, req)
+
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405, got %d", rr.Code)
+	}
+}
+
+func TestHandleConversations_EmptyState(t *testing.T) {
+	s := newConfiguredServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/conversations", nil)
+	rr := httptest.NewRecorder()
+
+	s.handleConversations(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp ConversationsResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode: %v", err)
+	}
+
+	if len(resp.CommentThreads) != 0 {
+		t.Errorf("expected 0 threads, got %d", len(resp.CommentThreads))
+	}
+	if resp.OnYourPosts.PendingCount != 0 {
+		t.Errorf("expected 0 pending, got %d", resp.OnYourPosts.PendingCount)
+	}
+	if resp.OnYourPosts.BlessedCount != 0 {
+		t.Errorf("expected 0 blessed, got %d", resp.OnYourPosts.BlessedCount)
+	}
+}
+
+func TestHandleConversations_WithData(t *testing.T) {
+	s := newConfiguredServer(t)
+
+	now := time.Now()
+	discoveryDomain := s.GetDiscoveryDomain()
+
+	// Seed feed cache with comment items
+	cacheFile := feed.CacheFile(s.DataDir, discoveryDomain)
+	os.MkdirAll(filepath.Dir(cacheFile), 0755)
+
+	items := []feed.CachedFeedItem{
+		{
+			ID:           "c1",
+			Type:         "comment",
+			Title:        "Great post!",
+			URL:          "https://alice.example.com/comments/great.md",
+			Published:    now.Add(-1 * time.Hour).Format(time.RFC3339),
+			AuthorURL:    "https://alice.example.com",
+			AuthorDomain: "alice.example.com",
+			CachedAt:     now.Format(time.RFC3339),
+		},
+		{
+			ID:           "c2",
+			Type:         "comment",
+			Title:        "Thanks!",
+			URL:          "https://alice.example.com/comments/thanks.md",
+			Published:    now.Add(-2 * time.Hour).Format(time.RFC3339),
+			AuthorURL:    "https://alice.example.com",
+			AuthorDomain: "alice.example.com",
+			CachedAt:     now.Format(time.RFC3339),
+			ReadAt:       now.Format(time.RFC3339),
+		},
+		{
+			ID:           "c3",
+			Type:         "comment",
+			Title:        "Interesting",
+			URL:          "https://bob.example.com/comments/interesting.md",
+			Published:    now.Add(-3 * time.Hour).Format(time.RFC3339),
+			AuthorURL:    "https://bob.example.com",
+			AuthorDomain: "bob.example.com",
+			CachedAt:     now.Format(time.RFC3339),
+		},
+		{
+			ID:           "p1",
+			Type:         "post",
+			Title:        "A post (not a comment)",
+			URL:          "https://alice.example.com/posts/apost.md",
+			Published:    now.Add(-30 * time.Minute).Format(time.RFC3339),
+			AuthorURL:    "https://alice.example.com",
+			AuthorDomain: "alice.example.com",
+			CachedAt:     now.Format(time.RFC3339),
+		},
+	}
+
+	var buf bytes.Buffer
+	for _, item := range items {
+		data, _ := json.Marshal(item)
+		buf.Write(data)
+		buf.WriteByte('\n')
+	}
+	os.WriteFile(cacheFile, buf.Bytes(), 0644)
+
+	// Write blessing state
+	store := stream.NewStore(s.DataDir, discoveryDomain)
+	blessingState := stream.BlessingState{
+		Blessings: []stream.BlessingEntry{
+			{
+				SourceURL: "https://carol.example.com/comments/hello.md",
+				TargetURL: "https://mysite.example.com/posts/intro.md",
+				Status:    "pending",
+				Actor:     "carol.example.com",
+				UpdatedAt: now.Add(-10 * time.Minute).Format(time.RFC3339),
+			},
+			{
+				SourceURL: "https://dave.example.com/comments/nice.md",
+				TargetURL: "https://mysite.example.com/posts/intro.md",
+				Status:    "granted",
+				Actor:     "dave.example.com",
+				UpdatedAt: now.Add(-20 * time.Minute).Format(time.RFC3339),
+			},
+		},
+		Granted: 1,
+		Denied:  0,
+	}
+	store.SaveState("polis.blessing", blessingState)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/conversations", nil)
+	rr := httptest.NewRecorder()
+
+	s.handleConversations(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp ConversationsResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode: %v", err)
+	}
+
+	// Should have 2 comment threads (alice: 2 comments, bob: 1 comment)
+	// Posts are excluded
+	if len(resp.CommentThreads) != 2 {
+		t.Errorf("expected 2 threads, got %d", len(resp.CommentThreads))
+	}
+	if len(resp.CommentThreads) > 0 {
+		// alice should be first (most recent comment)
+		if resp.CommentThreads[0].AuthorDomain != "alice.example.com" {
+			t.Errorf("expected first thread from alice, got %q", resp.CommentThreads[0].AuthorDomain)
+		}
+		if len(resp.CommentThreads[0].Comments) != 2 {
+			t.Errorf("expected 2 comments from alice, got %d", len(resp.CommentThreads[0].Comments))
+		}
+		// First comment should be unread, second should be read
+		if !resp.CommentThreads[0].Comments[0].Unread {
+			t.Error("expected first comment to be unread")
+		}
+		if resp.CommentThreads[0].Comments[1].Unread {
+			t.Error("expected second comment to be read")
+		}
+	}
+
+	// Blessing stats
+	if resp.OnYourPosts.PendingCount != 1 {
+		t.Errorf("expected 1 pending, got %d", resp.OnYourPosts.PendingCount)
+	}
+	if resp.OnYourPosts.BlessedCount != 1 {
+		t.Errorf("expected 1 blessed, got %d", resp.OnYourPosts.BlessedCount)
+	}
+	if len(resp.OnYourPosts.Recent) != 2 {
+		t.Errorf("expected 2 recent blessings, got %d", len(resp.OnYourPosts.Recent))
+	}
+}
+
+// ============================================================================
+// handlePulse Tests
+// ============================================================================
+
+func TestHandlePulse_MethodNotAllowed(t *testing.T) {
+	s := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/pulse", nil)
+	rr := httptest.NewRecorder()
+
+	s.handlePulse(rr, req)
+
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405, got %d", rr.Code)
+	}
+}
+
+func TestHandlePulse_EmptyState(t *testing.T) {
+	s := newConfiguredServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/pulse", nil)
+	rr := httptest.NewRecorder()
+
+	s.handlePulse(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp PulseResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode pulse response: %v", err)
+	}
+
+	if resp.Network.Following != 0 {
+		t.Errorf("expected 0 following, got %d", resp.Network.Following)
+	}
+	if resp.Network.Followers != 0 {
+		t.Errorf("expected 0 followers, got %d", resp.Network.Followers)
+	}
+	if len(resp.Recent) != 0 {
+		t.Errorf("expected 0 recent items, got %d", len(resp.Recent))
+	}
+	if len(resp.TopAuthors) != 0 {
+		t.Errorf("expected 0 top authors, got %d", len(resp.TopAuthors))
+	}
+}
+
+func TestHandlePulse_WithFeedData(t *testing.T) {
+	s := newConfiguredServer(t)
+
+	// Add a following entry
+	followingPath := following.DefaultPath(s.DataDir)
+	f, _ := following.Load(followingPath)
+	f.Add("https://alice.example.com")
+	f.Add("https://bob.example.com")
+	following.Save(followingPath, f)
+
+	// Write feed cache items (JSONL format)
+	discoveryDomain := s.GetDiscoveryDomain()
+	cacheFile := feed.CacheFile(s.DataDir, discoveryDomain)
+	os.MkdirAll(filepath.Dir(cacheFile), 0755)
+
+	now := time.Now()
+	items := []feed.CachedFeedItem{
+		{
+			ID:           "item1",
+			Type:         "post",
+			Title:        "Hello World",
+			URL:          "https://alice.example.com/posts/hello.md",
+			Published:    now.Add(-1 * time.Hour).Format(time.RFC3339),
+			AuthorURL:    "https://alice.example.com",
+			AuthorDomain: "alice.example.com",
+			CachedAt:     now.Format(time.RFC3339),
+		},
+		{
+			ID:           "item2",
+			Type:         "comment",
+			Title:        "Nice post",
+			URL:          "https://bob.example.com/comments/nice.md",
+			Published:    now.Add(-2 * time.Hour).Format(time.RFC3339),
+			AuthorURL:    "https://bob.example.com",
+			AuthorDomain: "bob.example.com",
+			CachedAt:     now.Format(time.RFC3339),
+		},
+		{
+			ID:           "item3",
+			Type:         "post",
+			Title:        "Another post",
+			URL:          "https://alice.example.com/posts/another.md",
+			Published:    now.Add(-3 * time.Hour).Format(time.RFC3339),
+			AuthorURL:    "https://alice.example.com",
+			AuthorDomain: "alice.example.com",
+			CachedAt:     now.Format(time.RFC3339),
+			ReadAt:       now.Format(time.RFC3339),
+		},
+	}
+
+	var buf bytes.Buffer
+	for _, item := range items {
+		data, _ := json.Marshal(item)
+		buf.Write(data)
+		buf.WriteByte('\n')
+	}
+	os.WriteFile(cacheFile, buf.Bytes(), 0644)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/pulse", nil)
+	rr := httptest.NewRecorder()
+
+	s.handlePulse(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp PulseResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode pulse response: %v", err)
+	}
+
+	// Network stats
+	if resp.Network.Following != 2 {
+		t.Errorf("expected 2 following, got %d", resp.Network.Following)
+	}
+	if resp.Network.FeedUnread != 2 {
+		t.Errorf("expected 2 unread feed items, got %d", resp.Network.FeedUnread)
+	}
+
+	// Recent highlights (all 3 items within 7 days)
+	if len(resp.Recent) != 3 {
+		t.Errorf("expected 3 recent items, got %d", len(resp.Recent))
+	}
+	if len(resp.Recent) > 0 {
+		if resp.Recent[0].Title != "Hello World" {
+			t.Errorf("expected first recent item 'Hello World', got %q", resp.Recent[0].Title)
+		}
+		if !resp.Recent[0].Unread {
+			t.Error("expected first recent item to be unread")
+		}
+	}
+
+	// Top authors (alice: 2 posts, bob: 1 comment)
+	if len(resp.TopAuthors) != 2 {
+		t.Errorf("expected 2 top authors, got %d", len(resp.TopAuthors))
+	}
+	if len(resp.TopAuthors) > 0 {
+		if resp.TopAuthors[0].Domain != "alice.example.com" {
+			t.Errorf("expected top author 'alice.example.com', got %q", resp.TopAuthors[0].Domain)
+		}
+		if resp.TopAuthors[0].PostCount != 2 {
+			t.Errorf("expected alice to have 2 posts, got %d", resp.TopAuthors[0].PostCount)
+		}
+	}
+
+	// Site stats
+	if resp.Site.Posts != 0 {
+		t.Errorf("expected 0 site posts (none published), got %d", resp.Site.Posts)
+	}
+}
+
+// ============================================================================
 // handleFollowerCount Tests
 // ============================================================================
 
@@ -5117,5 +5489,1176 @@ func TestHandleNotifications_MethodNotAllowed(t *testing.T) {
 
 	if w.Code != http.StatusMethodNotAllowed {
 		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+// ============================================================================
+// handleUpdateSiteTitle Tests
+// ============================================================================
+
+func TestHandleUpdateSiteTitle_HappyPath(t *testing.T) {
+	s := newConfiguredServer(t)
+
+	body := jsonBody(t, map[string]string{"site_title": "My New Title"})
+	req := httptest.NewRequest(http.MethodPost, "/api/settings/site-title", body)
+	w := httptest.NewRecorder()
+
+	s.handleUpdateSiteTitle(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["success"] != true {
+		t.Error("expected success")
+	}
+	if resp["site_title"] != "My New Title" {
+		t.Errorf("expected title 'My New Title', got %q", resp["site_title"])
+	}
+
+	// Verify persisted
+	data, _ := os.ReadFile(filepath.Join(s.DataDir, ".well-known", "polis"))
+	var wk map[string]interface{}
+	json.Unmarshal(data, &wk)
+	if wk["site_title"] != "My New Title" {
+		t.Errorf("expected persisted title 'My New Title', got %q", wk["site_title"])
+	}
+}
+
+func TestHandleUpdateSiteTitle_EmptyTitle(t *testing.T) {
+	s := newConfiguredServer(t)
+
+	body := jsonBody(t, map[string]string{"site_title": ""})
+	req := httptest.NewRequest(http.MethodPost, "/api/settings/site-title", body)
+	w := httptest.NewRecorder()
+
+	s.handleUpdateSiteTitle(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["site_title"] != "" {
+		t.Errorf("expected empty title, got %q", resp["site_title"])
+	}
+}
+
+func TestHandleUpdateSiteTitle_MethodNotAllowed(t *testing.T) {
+	s := newConfiguredServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/settings/site-title", nil)
+	w := httptest.NewRecorder()
+
+	s.handleUpdateSiteTitle(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+// ============================================================================
+// handleDownloadSite Tests
+// ============================================================================
+
+func TestHandleDownloadSite_HappyPath(t *testing.T) {
+	// Reset rate limiter
+	downloadMu.Lock()
+	lastDownloadTime = time.Time{}
+	downloadMu.Unlock()
+
+	s := newConfiguredServer(t)
+
+	// Create a test post
+	os.WriteFile(filepath.Join(s.DataDir, "posts", "hello.md"), []byte("# Hello"), 0644)
+
+	// Create a private key file that should be excluded
+	os.MkdirAll(filepath.Join(s.DataDir, ".polis", "keys"), 0755)
+	os.WriteFile(filepath.Join(s.DataDir, ".polis", "keys", "id_ed25519"), []byte("PRIVATE"), 0600)
+
+	// Create logs directory that should be excluded
+	os.MkdirAll(filepath.Join(s.DataDir, "logs"), 0755)
+	os.WriteFile(filepath.Join(s.DataDir, "logs", "2026-01-01.log"), []byte("log data"), 0644)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/download-site", nil)
+	w := httptest.NewRecorder()
+
+	s.handleDownloadSite(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	if ct := w.Header().Get("Content-Type"); ct != "application/zip" {
+		t.Errorf("expected Content-Type application/zip, got %q", ct)
+	}
+
+	if cd := w.Header().Get("Content-Disposition"); !strings.Contains(cd, "polis-site.zip") {
+		t.Errorf("expected Content-Disposition with polis-site.zip, got %q", cd)
+	}
+
+	// Parse the zip and check contents
+	reader, err := zip.NewReader(bytes.NewReader(w.Body.Bytes()), int64(w.Body.Len()))
+	if err != nil {
+		t.Fatalf("failed to read zip: %v", err)
+	}
+
+	files := make(map[string]bool)
+	for _, f := range reader.File {
+		files[f.Name] = true
+	}
+
+	// Should contain posts and .well-known/polis
+	if !files["posts/hello.md"] {
+		t.Error("zip should contain posts/hello.md")
+	}
+	if !files[filepath.Join(".well-known", "polis")] {
+		t.Error("zip should contain .well-known/polis")
+	}
+
+	// Should NOT contain private keys or logs
+	for name := range files {
+		if strings.HasPrefix(name, filepath.Join(".polis", "keys")) {
+			t.Errorf("zip should not contain keys: %s", name)
+		}
+		if strings.HasPrefix(name, "logs") {
+			t.Errorf("zip should not contain logs: %s", name)
+		}
+	}
+}
+
+// ============================================================================
+// handleThemeSwitch Tests
+// ============================================================================
+
+// setupTestTheme creates a minimal valid theme in the test server's themes dir.
+func setupTestTheme(t *testing.T, s *Server, name string) {
+	t.Helper()
+	themeDir := filepath.Join(s.DataDir, ".polis", "themes", name)
+	os.MkdirAll(themeDir, 0755)
+
+	// Required template files
+	for _, f := range []string{"post.html", "comment.html", "comment-inline.html", "index.html"} {
+		os.WriteFile(filepath.Join(themeDir, f), []byte("<html></html>"), 0644)
+	}
+
+	// CSS file with color variables
+	css := `:root {
+    --color-bg: #1a1525;
+    --color-text: #f0e8dc;
+    --color-peach: #e8a060;
+    --color-teal: #5fbfaf;
+    --color-cyan: #00d4ff;
+}
+body { background: var(--color-bg); }
+`
+	os.WriteFile(filepath.Join(themeDir, name+".css"), []byte(css), 0644)
+}
+
+func TestHandleThemeSwitch_Success(t *testing.T) {
+	s := newConfiguredServer(t)
+	setupTestTheme(t, s, "sols")
+	setupTestTheme(t, s, "turbo")
+
+	// Set an initial manifest so SetActiveTheme can update it
+	manifestDir := filepath.Join(s.DataDir, "metadata")
+	os.MkdirAll(manifestDir, 0755)
+	os.WriteFile(filepath.Join(manifestDir, "manifest.json"),
+		[]byte(`{"version":"0.1.0","active_theme":"sols","post_count":0,"comment_count":0}`), 0644)
+
+	body := jsonBody(t, map[string]string{"theme": "turbo"})
+	req := httptest.NewRequest(http.MethodPost, "/api/settings/theme", body)
+	w := httptest.NewRecorder()
+
+	s.handleThemeSwitch(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["success"] != true {
+		t.Error("expected success=true")
+	}
+	if resp["theme"] != "turbo" {
+		t.Errorf("expected theme=turbo, got %v", resp["theme"])
+	}
+
+	// Verify manifest was updated
+	manifestData, _ := os.ReadFile(filepath.Join(manifestDir, "manifest.json"))
+	if !strings.Contains(string(manifestData), `"active_theme": "turbo"`) {
+		t.Errorf("manifest should contain active_theme turbo, got: %s", string(manifestData))
+	}
+
+	// Verify CSS was copied to styles.css
+	stylesData, err := os.ReadFile(filepath.Join(s.DataDir, "styles.css"))
+	if err != nil {
+		t.Fatalf("styles.css not created: %v", err)
+	}
+	if !strings.Contains(string(stylesData), "--color-bg") {
+		t.Error("styles.css should contain theme CSS variables")
+	}
+}
+
+func TestHandleThemeSwitch_InvalidTheme(t *testing.T) {
+	s := newConfiguredServer(t)
+	setupTestTheme(t, s, "sols")
+
+	body := jsonBody(t, map[string]string{"theme": "nonexistent"})
+	req := httptest.NewRequest(http.MethodPost, "/api/settings/theme", body)
+	w := httptest.NewRecorder()
+
+	s.handleThemeSwitch(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleThemeSwitch_MethodNotAllowed(t *testing.T) {
+	s := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/settings/theme", nil)
+	w := httptest.NewRecorder()
+
+	s.handleThemeSwitch(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+func TestHandleThemeSwitch_EmptyTheme(t *testing.T) {
+	s := newTestServer(t)
+
+	body := jsonBody(t, map[string]string{"theme": ""})
+	req := httptest.NewRequest(http.MethodPost, "/api/settings/theme", body)
+	w := httptest.NewRecorder()
+
+	s.handleThemeSwitch(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleSettings_IncludesThemes(t *testing.T) {
+	s := newConfiguredServer(t)
+	setupTestTheme(t, s, "sols")
+
+	// Create manifest with active theme
+	manifestDir := filepath.Join(s.DataDir, "metadata")
+	os.MkdirAll(manifestDir, 0755)
+	os.WriteFile(filepath.Join(manifestDir, "manifest.json"),
+		[]byte(`{"version":"0.1.0","active_theme":"sols","post_count":0,"comment_count":0}`), 0644)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/settings", nil)
+	w := httptest.NewRecorder()
+
+	s.handleSettings(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+
+	if resp["active_theme"] != "sols" {
+		t.Errorf("expected active_theme=sols, got %v", resp["active_theme"])
+	}
+
+	themes, ok := resp["themes"].([]interface{})
+	if !ok {
+		t.Fatal("expected themes to be an array")
+	}
+	if len(themes) == 0 {
+		t.Error("expected at least one theme")
+	}
+
+	// Check first theme has expected fields
+	theme := themes[0].(map[string]interface{})
+	if theme["name"] != "sols" {
+		t.Errorf("expected theme name=sols, got %v", theme["name"])
+	}
+	if theme["active"] != true {
+		t.Error("expected theme to be marked active")
+	}
+	colors, ok := theme["colors"].([]interface{})
+	if !ok || len(colors) != 5 {
+		t.Errorf("expected 5 colors, got %v", theme["colors"])
+	}
+}
+
+func TestHandleDownloadSite_MethodNotAllowed(t *testing.T) {
+	s := newConfiguredServer(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/download-site", nil)
+	w := httptest.NewRecorder()
+
+	s.handleDownloadSite(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+// ============================================================================
+// handleSiteUnregister Tests
+// ============================================================================
+
+func TestHandleSiteUnregister_BlocksPolisPub(t *testing.T) {
+	s := newConfiguredServer(t)
+	s.DiscoveryURL = "https://ds.polis.pub"
+	s.DiscoveryKey = "test-key"
+	s.BaseURL = "https://mysite.polis.pub"
+
+	req := httptest.NewRequest(http.MethodPost, "/api/site/unregister", nil)
+	w := httptest.NewRecorder()
+
+	s.handleSiteUnregister(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected 403 for polis.pub domain, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "Cannot unregister hosted polis.pub sites") {
+		t.Errorf("expected polis.pub block message, got %s", w.Body.String())
+	}
+}
+
+func TestHandleSiteUnregister_MethodNotAllowed(t *testing.T) {
+	s := newConfiguredServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/site/unregister", nil)
+	w := httptest.NewRecorder()
+
+	s.handleSiteUnregister(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+// ============================================================================
+// Self-Follow Prevention Tests
+// ============================================================================
+
+func TestHandleFollowing_SelfFollowRejected(t *testing.T) {
+	s := newConfiguredServer(t)
+
+	// BaseURL is "https://test-site.polis.pub" from newConfiguredServer
+	// Try to follow own domain
+	body := jsonBody(t, map[string]string{"url": "https://test-site.polis.pub/"})
+	req := httptest.NewRequest(http.MethodPost, "/api/following", body)
+	w := httptest.NewRecorder()
+
+	s.handleFollowing(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for self-follow, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "Cannot follow your own site") {
+		t.Errorf("expected self-follow error message, got %s", w.Body.String())
+	}
+}
+
+func TestHandleFollowing_SelfFollowRejectedNoTrailingSlash(t *testing.T) {
+	s := newConfiguredServer(t)
+
+	// Without trailing slash should also be rejected
+	body := jsonBody(t, map[string]string{"url": "https://test-site.polis.pub"})
+	req := httptest.NewRequest(http.MethodPost, "/api/following", body)
+	w := httptest.NewRecorder()
+
+	s.handleFollowing(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for self-follow without trailing slash, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// ── Widget Comment Tests ─────────────────────────────────────────────
+
+func TestWidgetCommentSuccess(t *testing.T) {
+	s := newConfiguredServer(t)
+
+	body := jsonBody(t, map[string]string{
+		"target": "https://alice.polis.pub/posts/20260220/hello-world",
+		"text":   "Great post!",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/widget/comment", body)
+	w := httptest.NewRecorder()
+
+	s.handleWidgetComment(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["success"] != true {
+		t.Error("expected success: true")
+	}
+	if resp["comment_id"] == nil || resp["comment_id"] == "" {
+		t.Error("expected comment_id in response")
+	}
+}
+
+func TestWidgetCommentMethodNotAllowed(t *testing.T) {
+	s := newConfiguredServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/widget/comment", nil)
+	w := httptest.NewRecorder()
+
+	s.handleWidgetComment(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+func TestWidgetCommentMissingFields(t *testing.T) {
+	s := newConfiguredServer(t)
+
+	body := jsonBody(t, map[string]string{"target": "", "text": ""})
+	req := httptest.NewRequest(http.MethodPost, "/api/widget/comment", body)
+	w := httptest.NewRecorder()
+
+	s.handleWidgetComment(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestWidgetCommentNoKeys(t *testing.T) {
+	s := newTestServer(t) // No keys configured
+
+	body := jsonBody(t, map[string]string{
+		"target": "https://alice.polis.pub/posts/20260220/hello",
+		"text":   "Test",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/widget/comment", body)
+	w := httptest.NewRecorder()
+
+	s.handleWidgetComment(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for unconfigured server, got %d", w.Code)
+	}
+}
+
+// ============================================================================
+// handleCounts Tests
+// ============================================================================
+
+func TestHandleCounts_ReturnsJSON(t *testing.T) {
+	s := newConfiguredServer(t)
+
+	// Posts are counted from metadata/public.jsonl (not filesystem)
+	indexPath := filepath.Join(s.DataDir, "metadata", "public.jsonl")
+	indexContent := `{"path":"posts/20260222/hello.md","title":"Hello"}
+{"path":"posts/20260222/world.md","title":"World"}
+`
+	os.WriteFile(indexPath, []byte(indexContent), 0644)
+
+	pendingDir := filepath.Join(s.DataDir, ".polis", "comments", "pending")
+	os.WriteFile(filepath.Join(pendingDir, "c1.md"), []byte("---\n---\nComment"), 0644)
+
+	// Blessed comments in date-based subdirectory
+	blessedDir := filepath.Join(s.DataDir, "comments", "20260222")
+	os.MkdirAll(blessedDir, 0755)
+	os.WriteFile(filepath.Join(blessedDir, "my-comment.md"), []byte("---\n---\nBlessed"), 0644)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/counts", nil)
+	w := httptest.NewRecorder()
+
+	s.handleCounts(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+
+	var counts CountsPayload
+	if err := json.NewDecoder(w.Body).Decode(&counts); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if counts.Posts != 2 {
+		t.Errorf("posts = %d, want 2", counts.Posts)
+	}
+	if counts.MyPending != 1 {
+		t.Errorf("my_pending = %d, want 1", counts.MyPending)
+	}
+	if counts.MyBlessed != 1 {
+		t.Errorf("my_blessed = %d, want 1", counts.MyBlessed)
+	}
+}
+
+func TestHandleCounts_MethodNotAllowed(t *testing.T) {
+	s := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/counts", nil)
+	w := httptest.NewRecorder()
+
+	s.handleCounts(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+func TestHandleCounts_EmptySite(t *testing.T) {
+	s := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/counts", nil)
+	w := httptest.NewRecorder()
+
+	s.handleCounts(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var counts CountsPayload
+	json.NewDecoder(w.Body).Decode(&counts)
+
+	// All counts should be zero for empty site
+	if counts.Posts != 0 || counts.Drafts != 0 || counts.MyPending != 0 {
+		t.Errorf("expected all zeros, got posts=%d drafts=%d pending=%d", counts.Posts, counts.Drafts, counts.MyPending)
+	}
+}
+
+// ============================================================================
+// handleSSE Tests
+// ============================================================================
+
+func TestHandleSSE_MethodNotAllowed(t *testing.T) {
+	s := newTestServer(t)
+	s.sseClients = make(map[chan SSEEvent]struct{})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sse", nil)
+	w := httptest.NewRecorder()
+
+	s.handleSSE(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+// ============================================================================
+// cursorLess / cursorGreater Tests (sync utilities)
+// ============================================================================
+
+func TestCursorLess(t *testing.T) {
+	tests := []struct {
+		a, b string
+		want bool
+	}{
+		{"1", "2", true},
+		{"2", "1", false},
+		{"10", "9", false},
+		{"9", "10", true},
+		{"100", "100", false},
+		{"0", "1", true},
+	}
+
+	for _, tt := range tests {
+		got := cursorLess(tt.a, tt.b)
+		if got != tt.want {
+			t.Errorf("cursorLess(%q, %q) = %v, want %v", tt.a, tt.b, got, tt.want)
+		}
+	}
+}
+
+func TestComputeAllCounts_WithFollowing(t *testing.T) {
+	s := newConfiguredServer(t)
+
+	// following.json lives at metadata/following.json (from following.DefaultPath)
+	followingContent := `{"version":"test","following":[{"url":"https://alice.com"},{"url":"https://bob.com"}]}`
+	os.WriteFile(filepath.Join(s.DataDir, "metadata", "following.json"), []byte(followingContent), 0644)
+
+	counts := s.computeAllCounts()
+	if counts.Following != 2 {
+		t.Errorf("following = %d, want 2", counts.Following)
+	}
+}
+
+func TestComputeAllCounts_PostsSkipsCommentEntries(t *testing.T) {
+	s := newConfiguredServer(t)
+
+	// public.jsonl contains both posts and blessed comments
+	indexContent := `{"path":"posts/20260222/hello.md","title":"Hello"}
+{"path":"comments/20260222/c1.md","title":"Re: Hello"}
+{"path":"posts/20260222/world.md","title":"World"}
+`
+	os.WriteFile(filepath.Join(s.DataDir, "metadata", "public.jsonl"), []byte(indexContent), 0644)
+
+	counts := s.computeAllCounts()
+	if counts.Posts != 2 {
+		t.Errorf("posts = %d, want 2 (should exclude comment entries)", counts.Posts)
+	}
+}
+
+// ==================== Feed Grouped Tests ====================
+
+func TestHandleFeedGrouped_Empty(t *testing.T) {
+	s := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/feed/grouped", nil)
+	w := httptest.NewRecorder()
+	s.handleFeedGrouped(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+
+	groups := resp["groups"].([]interface{})
+	if len(groups) != 0 {
+		t.Errorf("expected 0 groups, got %d", len(groups))
+	}
+	if resp["total_items"].(float64) != 0 {
+		t.Errorf("expected total_items=0, got %v", resp["total_items"])
+	}
+}
+
+func TestHandleFeedGrouped_PostOnly(t *testing.T) {
+	s := newTestServer(t)
+	discoveryDomain := s.GetDiscoveryDomain()
+	cm := feed.NewCacheManager(s.DataDir, discoveryDomain)
+
+	cm.MergeItems([]feed.FeedItem{
+		{
+			Type:         "post",
+			Title:        "Hello World",
+			URL:          "https://alice.polis.pub/posts/hello.md",
+			Published:    "2026-02-23T10:00:00Z",
+			AuthorURL:    "https://alice.polis.pub",
+			AuthorDomain: "alice.polis.pub",
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/feed/grouped", nil)
+	w := httptest.NewRecorder()
+	s.handleFeedGrouped(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+
+	groups := resp["groups"].([]interface{})
+	if len(groups) != 1 {
+		t.Fatalf("expected 1 group, got %d", len(groups))
+	}
+
+	g := groups[0].(map[string]interface{})
+	if g["post_title"] != "Hello World" {
+		t.Errorf("expected post_title 'Hello World', got %v", g["post_title"])
+	}
+	if g["has_post"] != true {
+		t.Errorf("expected has_post=true")
+	}
+	if g["total_comments"].(float64) != 0 {
+		t.Errorf("expected 0 comments, got %v", g["total_comments"])
+	}
+}
+
+func TestHandleFeedGrouped_CommentsGroupByTarget(t *testing.T) {
+	s := newTestServer(t)
+	discoveryDomain := s.GetDiscoveryDomain()
+	cm := feed.NewCacheManager(s.DataDir, discoveryDomain)
+
+	postURL := "https://alice.polis.pub/posts/hello.md"
+	cm.MergeItems([]feed.FeedItem{
+		{
+			Type:         "post",
+			Title:        "Hello World",
+			URL:          postURL,
+			Published:    "2026-02-23T10:00:00Z",
+			AuthorURL:    "https://alice.polis.pub",
+			AuthorDomain: "alice.polis.pub",
+		},
+		{
+			Type:         "comment",
+			Title:        "Comment 1",
+			URL:          "https://bob.polis.pub/comments/c1.md",
+			Published:    "2026-02-23T11:00:00Z",
+			AuthorURL:    "https://bob.polis.pub",
+			AuthorDomain: "bob.polis.pub",
+			TargetURL:    postURL,
+		},
+		{
+			Type:         "comment",
+			Title:        "Comment 2",
+			URL:          "https://carol.polis.pub/comments/c2.md",
+			Published:    "2026-02-23T12:00:00Z",
+			AuthorURL:    "https://carol.polis.pub",
+			AuthorDomain: "carol.polis.pub",
+			TargetURL:    postURL,
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/feed/grouped", nil)
+	w := httptest.NewRecorder()
+	s.handleFeedGrouped(w, req)
+
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+
+	groups := resp["groups"].([]interface{})
+	if len(groups) != 1 {
+		t.Fatalf("expected 1 group (comments grouped with post), got %d", len(groups))
+	}
+
+	g := groups[0].(map[string]interface{})
+	if g["total_comments"].(float64) != 2 {
+		t.Errorf("expected 2 comments, got %v", g["total_comments"])
+	}
+	if g["post_title"] != "Hello World" {
+		t.Errorf("expected post title, got %v", g["post_title"])
+	}
+	if g["last_activity"] != "2026-02-23T12:00:00Z" {
+		t.Errorf("expected last_activity to be latest comment time, got %v", g["last_activity"])
+	}
+	ids := g["item_ids"].([]interface{})
+	if len(ids) != 3 {
+		t.Errorf("expected 3 item_ids (1 post + 2 comments), got %d", len(ids))
+	}
+}
+
+func TestHandleFeedGrouped_NetworkClassification(t *testing.T) {
+	s := newTestServer(t)
+	discoveryDomain := s.GetDiscoveryDomain()
+	cm := feed.NewCacheManager(s.DataDir, discoveryDomain)
+
+	// Create following.json with bob as followed
+	followingPath := following.DefaultPath(s.DataDir)
+	f := &following.FollowingFile{
+		Version: "1.0",
+		Following: []following.FollowingEntry{
+			{URL: "https://bob.polis.pub", AddedAt: "2026-01-01T00:00:00Z"},
+		},
+	}
+	following.Save(followingPath, f)
+
+	postURL := "https://alice.polis.pub/posts/hello.md"
+	cm.MergeItems([]feed.FeedItem{
+		{
+			Type:         "post",
+			Title:        "Hello",
+			URL:          postURL,
+			Published:    "2026-02-23T10:00:00Z",
+			AuthorURL:    "https://alice.polis.pub",
+			AuthorDomain: "alice.polis.pub",
+		},
+		{
+			Type:         "comment",
+			Title:        "Network comment",
+			URL:          "https://bob.polis.pub/comments/c1.md",
+			Published:    "2026-02-23T11:00:00Z",
+			AuthorURL:    "https://bob.polis.pub",
+			AuthorDomain: "bob.polis.pub",
+			TargetURL:    postURL,
+		},
+		{
+			Type:         "comment",
+			Title:        "External comment",
+			URL:          "https://stranger.polis.pub/comments/c2.md",
+			Published:    "2026-02-23T12:00:00Z",
+			AuthorURL:    "https://stranger.polis.pub",
+			AuthorDomain: "stranger.polis.pub",
+			TargetURL:    postURL,
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/feed/grouped", nil)
+	w := httptest.NewRecorder()
+	s.handleFeedGrouped(w, req)
+
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+
+	groups := resp["groups"].([]interface{})
+	if len(groups) != 1 {
+		t.Fatalf("expected 1 group, got %d", len(groups))
+	}
+
+	g := groups[0].(map[string]interface{})
+	if g["network_comments"].(float64) != 1 {
+		t.Errorf("expected 1 network comment, got %v", g["network_comments"])
+	}
+	if g["external_comments"].(float64) != 1 {
+		t.Errorf("expected 1 external comment, got %v", g["external_comments"])
+	}
+}
+
+func TestHandleFeedGrouped_SortByLastActivity(t *testing.T) {
+	s := newTestServer(t)
+	discoveryDomain := s.GetDiscoveryDomain()
+	cm := feed.NewCacheManager(s.DataDir, discoveryDomain)
+
+	cm.MergeItems([]feed.FeedItem{
+		{
+			Type:         "post",
+			Title:        "Old Post",
+			URL:          "https://alice.polis.pub/posts/old.md",
+			Published:    "2026-02-20T10:00:00Z",
+			AuthorURL:    "https://alice.polis.pub",
+			AuthorDomain: "alice.polis.pub",
+		},
+		{
+			Type:         "post",
+			Title:        "New Post",
+			URL:          "https://bob.polis.pub/posts/new.md",
+			Published:    "2026-02-22T10:00:00Z",
+			AuthorURL:    "https://bob.polis.pub",
+			AuthorDomain: "bob.polis.pub",
+		},
+		{
+			Type:         "comment",
+			Title:        "Late comment on old post",
+			URL:          "https://carol.polis.pub/comments/c1.md",
+			Published:    "2026-02-23T10:00:00Z",
+			AuthorURL:    "https://carol.polis.pub",
+			AuthorDomain: "carol.polis.pub",
+			TargetURL:    "https://alice.polis.pub/posts/old.md",
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/feed/grouped", nil)
+	w := httptest.NewRecorder()
+	s.handleFeedGrouped(w, req)
+
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+
+	groups := resp["groups"].([]interface{})
+	if len(groups) != 2 {
+		t.Fatalf("expected 2 groups, got %d", len(groups))
+	}
+
+	// Old post with late comment should be first (most recent activity)
+	first := groups[0].(map[string]interface{})
+	if first["post_title"] != "Old Post" {
+		t.Errorf("expected 'Old Post' first (has most recent comment), got %v", first["post_title"])
+	}
+}
+
+func TestHandleFeedGrouped_OrphanComments(t *testing.T) {
+	s := newTestServer(t)
+	discoveryDomain := s.GetDiscoveryDomain()
+	cm := feed.NewCacheManager(s.DataDir, discoveryDomain)
+
+	cm.MergeItems([]feed.FeedItem{
+		{
+			Type:         "comment",
+			Title:        "Orphan comment",
+			URL:          "https://bob.polis.pub/comments/orphan.md",
+			Published:    "2026-02-23T10:00:00Z",
+			AuthorURL:    "https://bob.polis.pub",
+			AuthorDomain: "bob.polis.pub",
+			// No TargetURL — old cached item
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/feed/grouped", nil)
+	w := httptest.NewRecorder()
+	s.handleFeedGrouped(w, req)
+
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+
+	groups := resp["groups"].([]interface{})
+	if len(groups) != 1 {
+		t.Fatalf("expected 1 group for orphan comment, got %d", len(groups))
+	}
+
+	g := groups[0].(map[string]interface{})
+	if g["has_post"] != false {
+		t.Errorf("orphan comment group should have has_post=false")
+	}
+	if g["total_comments"].(float64) != 1 {
+		t.Errorf("expected 1 comment, got %v", g["total_comments"])
+	}
+}
+
+func TestHandleFeedGrouped_MethodNotAllowed(t *testing.T) {
+	s := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/feed/grouped", nil)
+	w := httptest.NewRecorder()
+	s.handleFeedGrouped(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+// ============================================================================
+// About Page Tests
+// ============================================================================
+
+func TestHandleAbout_GET_WithFile(t *testing.T) {
+	s := newTestServer(t)
+
+	// Create snippets/about.md
+	aboutPath := filepath.Join(s.DataDir, "snippets", "about.md")
+	if err := os.WriteFile(aboutPath, []byte("Custom about content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/about", nil)
+	w := httptest.NewRecorder()
+	s.handleAbout(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["content"] != "Custom about content" {
+		t.Errorf("content = %q, want %q", resp["content"], "Custom about content")
+	}
+	if resp["has_custom"] != true {
+		t.Errorf("has_custom = %v, want true", resp["has_custom"])
+	}
+}
+
+func TestHandleAbout_GET_NoFile(t *testing.T) {
+	s := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/about", nil)
+	w := httptest.NewRecorder()
+	s.handleAbout(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["has_custom"] != false {
+		t.Errorf("has_custom = %v, want false", resp["has_custom"])
+	}
+	content, ok := resp["content"].(string)
+	if !ok || content == "" {
+		t.Error("content should be a non-empty default string")
+	}
+}
+
+func TestHandleAbout_GET_DefaultContentNotEmpty(t *testing.T) {
+	s := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/about", nil)
+	w := httptest.NewRecorder()
+	s.handleAbout(w, req)
+
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+	content, _ := resp["content"].(string)
+	if content == "" {
+		t.Error("default about content must not be empty — editor must always prepopulate")
+	}
+	if !strings.Contains(content, "polis") {
+		t.Error("default about content should mention polis")
+	}
+}
+
+func TestHandleAbout_POST(t *testing.T) {
+	s := newTestServer(t)
+
+	body := jsonBody(t, map[string]string{"content": "My custom about text"})
+	req := httptest.NewRequest(http.MethodPost, "/api/about", body)
+	w := httptest.NewRecorder()
+	s.handleAbout(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["success"] != true {
+		t.Error("expected success: true")
+	}
+
+	// Verify file was written
+	data, err := os.ReadFile(filepath.Join(s.DataDir, "snippets", "about.md"))
+	if err != nil {
+		t.Fatalf("about.md should exist: %v", err)
+	}
+	if string(data) != "My custom about text" {
+		t.Errorf("file content = %q, want %q", string(data), "My custom about text")
+	}
+}
+
+func TestHandleAbout_POST_Overwrites(t *testing.T) {
+	s := newTestServer(t)
+
+	// Write initial content
+	aboutPath := filepath.Join(s.DataDir, "snippets", "about.md")
+	os.WriteFile(aboutPath, []byte("old content"), 0644)
+
+	body := jsonBody(t, map[string]string{"content": "new content"})
+	req := httptest.NewRequest(http.MethodPost, "/api/about", body)
+	w := httptest.NewRecorder()
+	s.handleAbout(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+
+	data, _ := os.ReadFile(aboutPath)
+	if string(data) != "new content" {
+		t.Errorf("file content = %q, want %q", string(data), "new content")
+	}
+}
+
+func TestHandleAbout_POST_CreatesDir(t *testing.T) {
+	s := newTestServer(t)
+
+	// Remove snippets dir to test dir creation
+	os.RemoveAll(filepath.Join(s.DataDir, "snippets"))
+
+	body := jsonBody(t, map[string]string{"content": "about text"})
+	req := httptest.NewRequest(http.MethodPost, "/api/about", body)
+	w := httptest.NewRecorder()
+	s.handleAbout(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	data, err := os.ReadFile(filepath.Join(s.DataDir, "snippets", "about.md"))
+	if err != nil {
+		t.Fatalf("about.md should exist after dir creation: %v", err)
+	}
+	if string(data) != "about text" {
+		t.Errorf("file content = %q, want %q", string(data), "about text")
+	}
+}
+
+func TestHandleAbout_POST_EmptyContent(t *testing.T) {
+	s := newTestServer(t)
+
+	body := jsonBody(t, map[string]string{"content": ""})
+	req := httptest.NewRequest(http.MethodPost, "/api/about", body)
+	w := httptest.NewRecorder()
+	s.handleAbout(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+
+	data, err := os.ReadFile(filepath.Join(s.DataDir, "snippets", "about.md"))
+	if err != nil {
+		t.Fatalf("about.md should exist even with empty content: %v", err)
+	}
+	if string(data) != "" {
+		t.Errorf("file content = %q, want empty", string(data))
+	}
+}
+
+func TestHandleAbout_MethodNotAllowed(t *testing.T) {
+	s := newTestServer(t)
+
+	for _, method := range []string{http.MethodPut, http.MethodDelete, http.MethodPatch} {
+		req := httptest.NewRequest(method, "/api/about", nil)
+		w := httptest.NewRecorder()
+		s.handleAbout(w, req)
+
+		if w.Code != http.StatusMethodNotAllowed {
+			t.Errorf("%s: expected 405, got %d", method, w.Code)
+		}
+	}
+}
+
+// ============================================================================
+// Widget Follow/Unfollow Tests
+// ============================================================================
+
+func TestWidgetFollowMethodNotAllowed(t *testing.T) {
+	s := newConfiguredServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/widget/follow", nil)
+	w := httptest.NewRecorder()
+
+	s.handleWidgetFollow(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+func TestWidgetFollowNoKeys(t *testing.T) {
+	s := newTestServer(t) // No keys configured
+
+	body := jsonBody(t, map[string]string{"author": "alice.polis.pub"})
+	req := httptest.NewRequest(http.MethodPost, "/api/widget/follow", body)
+	w := httptest.NewRecorder()
+
+	s.handleWidgetFollow(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestWidgetFollowMissingAuthor(t *testing.T) {
+	s := newConfiguredServer(t)
+
+	body := jsonBody(t, map[string]string{"author": ""})
+	req := httptest.NewRequest(http.MethodPost, "/api/widget/follow", body)
+	w := httptest.NewRecorder()
+
+	s.handleWidgetFollow(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for empty author, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestWidgetUnfollowNoKeys(t *testing.T) {
+	s := newTestServer(t) // No keys configured
+
+	body := jsonBody(t, map[string]string{"author": "alice.polis.pub"})
+	req := httptest.NewRequest(http.MethodDelete, "/api/widget/follow", body)
+	w := httptest.NewRecorder()
+
+	s.handleWidgetFollow(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestWidgetUnfollowMissingAuthor(t *testing.T) {
+	s := newConfiguredServer(t)
+
+	body := jsonBody(t, map[string]string{"author": ""})
+	req := httptest.NewRequest(http.MethodDelete, "/api/widget/follow", body)
+	w := httptest.NewRecorder()
+
+	s.handleWidgetFollow(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for empty author, got %d: %s", w.Code, w.Body.String())
 	}
 }

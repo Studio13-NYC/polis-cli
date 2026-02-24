@@ -3,6 +3,9 @@
 package blessing
 
 import (
+	"net/url"
+	"strings"
+
 	"github.com/vdibart/polis-cli/cli-go/pkg/discovery"
 )
 
@@ -19,30 +22,53 @@ type IncomingRequest struct {
 	CreatedAt      string `json:"created_at"`
 }
 
-// FetchPendingRequests retrieves all pending blessing requests for the given domain.
-// Uses the unified relationship-query endpoint with status=pending.
+// FetchPendingRequests retrieves pending blessing requests for the authenticated domain.
+// The DS post-filter scopes results to records where the caller is the actor (commenter),
+// source_url domain (commenter), or target_url domain (post owner).
+// We filter client-side to only return records where target_url domain matches ours,
+// so the post owner sees incoming requests but the commenter doesn't.
 func FetchPendingRequests(client *discovery.Client, domain string) ([]IncomingRequest, error) {
 	resp, err := client.QueryRelationships("polis.blessing", map[string]string{
-		"actor":  domain,
 		"status": "pending",
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	// Convert RelationshipRecord to IncomingRequest
-	result := make([]IncomingRequest, len(resp.Records))
-	for i, r := range resp.Records {
-		// Extract author from metadata if available
-		author, _ := r.Metadata["author"].(string)
-
-		result[i] = IncomingRequest{
-			CommentURL: r.SourceURL,
-			InReplyTo:  r.TargetURL,
-			Author:     author,
-			CreatedAt:  r.CreatedAt,
+	// Filter to records where target_url domain matches our domain.
+	// This ensures only the post owner sees incoming blessing requests,
+	// not the commenter (whose source_url domain would match instead).
+	var result []IncomingRequest
+	for _, r := range resp.Records {
+		if !domainMatches(r.TargetURL, domain) {
+			continue
 		}
+
+		commentVersion, _ := r.Metadata["comment_version"].(string)
+
+		result = append(result, IncomingRequest{
+			ID:             r.ID.String(),
+			CommentURL:     r.SourceURL,
+			CommentVersion: commentVersion,
+			InReplyTo:      r.TargetURL,
+			Author:         r.Actor,
+			CreatedAt:      r.CreatedAt,
+		})
+	}
+
+	if result == nil {
+		result = []IncomingRequest{}
 	}
 
 	return result, nil
+}
+
+// domainMatches checks if a URL's host matches the given domain.
+func domainMatches(rawURL, domain string) bool {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	host := parsed.Hostname()
+	return strings.EqualFold(host, domain)
 }

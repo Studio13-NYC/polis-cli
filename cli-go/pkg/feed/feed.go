@@ -10,4 +10,6 @@ type FeedItem struct {
 	Hash         string `json:"hash,omitempty"`
 	AuthorURL    string `json:"author_url"`
 	AuthorDomain string `json:"author_domain"`
+	TargetURL    string `json:"target_url,omitempty"`
+	TargetDomain string `json:"target_domain,omitempty"`
 }

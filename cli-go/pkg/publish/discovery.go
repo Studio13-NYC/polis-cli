@@ -50,13 +50,17 @@ func RegisterPost(dataDir string, result *PublishResult, privateKey []byte, cfg 
 		return nil
 	}
 
-	// Read author email from .well-known/polis (single source of truth)
+	// Determine author identity from .well-known/polis (single source of truth)
 	wk, err := site.LoadWellKnown(dataDir)
 	if err != nil {
 		return fmt.Errorf("load .well-known/polis: %w", err)
 	}
-	if wk.Email == "" {
-		return fmt.Errorf("no email in .well-known/polis")
+	author := wk.Email
+	if author == "" {
+		author = wk.Domain
+	}
+	if author == "" {
+		return fmt.Errorf("no author identity in .well-known/polis (need email or domain)")
 	}
 
 	// Build post URL from base URL + path
@@ -71,7 +75,7 @@ func RegisterPost(dataDir string, result *PublishResult, privateKey []byte, cfg 
 
 	// Build canonical JSON for signing
 	canonical, err := discovery.MakeContentCanonicalJSON(
-		"polis.post", postURL, result.Version, wk.Email, metadata,
+		"polis.post", postURL, result.Version, author, metadata,
 	)
 	if err != nil {
 		return fmt.Errorf("canonical JSON: %w", err)
@@ -87,7 +91,7 @@ func RegisterPost(dataDir string, result *PublishResult, privateKey []byte, cfg 
 		Type:      "polis.post",
 		URL:       postURL,
 		Version:   result.Version,
-		Author:    wk.Email,
+		Author:    author,
 		Metadata:  metadata,
 		Signature: sig,
 	}

@@ -24,14 +24,16 @@ func GetGenerator() string {
 
 // StateEntry represents a single notification in state.jsonl.
 type StateEntry struct {
-	ID        string `json:"id"`
-	RuleID    string `json:"rule_id"`
-	Actor     string `json:"actor"`
-	Icon      string `json:"icon"`
-	Message   string `json:"message"`
-	EventIDs  []int  `json:"event_ids"`
-	CreatedAt string `json:"created_at"`
-	ReadAt    string `json:"read_at,omitempty"`
+	ID        string                 `json:"id"`
+	RuleID    string                 `json:"rule_id"`
+	Actor     string                 `json:"actor"`
+	Icon      string                 `json:"icon"`
+	Message   string                 `json:"message"`
+	Link      string                 `json:"link,omitempty"`
+	Payload   map[string]interface{} `json:"payload,omitempty"`
+	EventIDs  []int                  `json:"event_ids"`
+	CreatedAt string                 `json:"created_at"`
+	ReadAt    string                 `json:"read_at,omitempty"`
 }
 
 // StateDir returns the state directory for a given DS domain.

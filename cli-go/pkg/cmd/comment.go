@@ -285,7 +285,7 @@ func handleCommentSync(args []string) {
 	privKey, _ := loadPrivateKey(dir)
 	client := discovery.NewAuthenticatedClient(discoveryURL, discoveryKey, myDomain, privKey)
 
-	result, err := comment.SyncPendingComments(dir, client, nil)
+	result, err := comment.SyncPendingComments(dir, baseURL, client, nil)
 	if err != nil {
 		exitError("Failed to sync comments: %v", err)
 	}

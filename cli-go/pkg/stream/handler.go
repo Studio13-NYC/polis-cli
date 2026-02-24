@@ -26,3 +26,47 @@ var BuiltinHandlers = map[string]ProjectionHandler{
 	"polis.follow":   &FollowHandler{},
 	"polis.blessing": &BlessingHandler{},
 }
+
+// SyncHandler processes batches of stream events as part of the unified sync loop.
+// Implementations are registered with the webapp's sync loop and receive
+// only the event types they declare interest in.
+type SyncHandler interface {
+	// Name returns a human-readable handler name (for logging).
+	Name() string
+	// EventTypes returns the event types this handler processes.
+	EventTypes() []string
+	// Process handles a batch of filtered events.
+	// Returns a HandlerResult indicating what changed.
+	Process(events []discovery.StreamEvent) HandlerResult
+}
+
+// HandlerResult reports the outcome of a SyncHandler.Process call.
+type HandlerResult struct {
+	FilesChanged bool  // triggers RenderSite
+	NewItems     int   // count of items created (notifications, feed entries, etc.)
+	Error        error // non-fatal; logged but doesn't block other handlers
+}
+
+// FilterEvents returns events whose Type matches any of the given types.
+// If types contains "*", all events are returned.
+func FilterEvents(events []discovery.StreamEvent, types []string) []discovery.StreamEvent {
+	if len(types) == 0 {
+		return nil
+	}
+	for _, t := range types {
+		if t == "*" {
+			return events
+		}
+	}
+	typeSet := make(map[string]bool, len(types))
+	for _, t := range types {
+		typeSet[t] = true
+	}
+	var filtered []discovery.StreamEvent
+	for _, evt := range events {
+		if typeSet[evt.Type] {
+			filtered = append(filtered, evt)
+		}
+	}
+	return filtered
+}

@@ -135,6 +135,79 @@ This is a test comment.`
 	}
 }
 
+func TestPublishComment_CopiesFilesAndUpdatesIndex(t *testing.T) {
+	dataDir := t.TempDir()
+
+	// Create required directories
+	os.MkdirAll(filepath.Join(dataDir, ".polis", "comments", "pending"), 0755)
+	os.MkdirAll(filepath.Join(dataDir, "comments"), 0755)
+	os.MkdirAll(filepath.Join(dataDir, "metadata"), 0755)
+	os.MkdirAll(filepath.Join(dataDir, "posts"), 0755)
+
+	// Create a pending comment
+	commentContent := `---
+title: Re: hello-world
+type: comment
+published: 2026-02-15T10:00:00Z
+generator: polis-cli-go/0.50.0
+in-reply-to:
+  url: https://alice.polis.pub/posts/20260215/hello-world.md
+  root-post: https://alice.polis.pub/posts/20260215/hello-world.md
+current-version: sha256:abc123
+author: bob.polis.pub
+signature: fakesig
+---
+
+This is a **test** comment.`
+
+	commentID := "bob-hello-world-20260215"
+	pendingPath := filepath.Join(dataDir, ".polis", "comments", "pending", commentID+".md")
+	os.WriteFile(pendingPath, []byte(commentContent), 0644)
+
+	// Publish
+	err := PublishComment(dataDir, commentID)
+	if err != nil {
+		t.Fatalf("PublishComment failed: %v", err)
+	}
+
+	// Verify .md file was copied to comments/YYYYMMDD/
+	mdPath := filepath.Join(dataDir, "comments", "20260215", commentID+".md")
+	if _, err := os.Stat(mdPath); os.IsNotExist(err) {
+		t.Error("expected .md file in comments/20260215/")
+	}
+
+	// Note: HTML rendering is now handled by RenderSite(), not PublishComment().
+	// The .html file is NOT expected here.
+
+	// Verify public.jsonl was updated
+	indexPath := filepath.Join(dataDir, "metadata", "public.jsonl")
+	indexData, err := os.ReadFile(indexPath)
+	if err != nil {
+		t.Fatalf("expected public.jsonl: %v", err)
+	}
+	if !containsString(string(indexData), commentID) {
+		t.Error("public.jsonl does not contain published comment")
+	}
+
+	// Verify pending file is NOT removed (publish is a copy, not a move)
+	if _, err := os.Stat(pendingPath); os.IsNotExist(err) {
+		t.Error("pending file should still exist after publish (removed by MoveComment later)")
+	}
+}
+
+func containsString(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(s) > 0 && stringContains(s, substr))
+}
+
+func stringContains(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
+
 // ============================================================================
 // SignComment Domain Identity Tests (Phase 0)
 // ============================================================================

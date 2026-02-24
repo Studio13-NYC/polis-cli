@@ -548,3 +548,83 @@ func TestInit_MetadataDirDerived(t *testing.T) {
 		t.Errorf("manifest.json should exist in derived metadata dir: %v", err)
 	}
 }
+
+// ============================================================================
+// About Snippet Tests
+// ============================================================================
+
+func TestInit_CreatesAboutSnippet(t *testing.T) {
+	dir := t.TempDir()
+
+	result, err := Init(dir, InitOptions{})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	if !result.Success {
+		t.Fatal("Init should succeed")
+	}
+
+	aboutPath := filepath.Join(dir, "snippets", "about.md")
+	if _, err := os.Stat(aboutPath); err != nil {
+		t.Fatalf("snippets/about.md should exist: %v", err)
+	}
+
+	// Verify it's in FilesCreated
+	found := false
+	for _, f := range result.FilesCreated {
+		if f == "snippets/about.md" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("snippets/about.md should be in FilesCreated, got: %v", result.FilesCreated)
+	}
+}
+
+func TestInit_DoesNotOverwriteAbout(t *testing.T) {
+	dir := t.TempDir()
+
+	// Pre-create the snippets dir and about.md with custom content
+	snippetsDir := filepath.Join(dir, "snippets")
+	os.MkdirAll(snippetsDir, 0755)
+	customContent := "My custom about page\n"
+	os.WriteFile(filepath.Join(snippetsDir, "about.md"), []byte(customContent), 0644)
+
+	// Init will fail because keys don't exist yet — but we test the re-init scenario
+	// by checking that our pre-created about.md survives init
+	_, err := Init(dir, InitOptions{})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(snippetsDir, "about.md"))
+	if err != nil {
+		t.Fatalf("about.md should still exist: %v", err)
+	}
+	if string(data) != customContent {
+		t.Errorf("about.md content = %q, want %q (should not overwrite)", string(data), customContent)
+	}
+}
+
+func TestInit_AboutSnippetContent(t *testing.T) {
+	dir := t.TempDir()
+
+	_, err := Init(dir, InitOptions{})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "snippets", "about.md"))
+	if err != nil {
+		t.Fatalf("about.md should exist: %v", err)
+	}
+
+	content := string(data)
+	if !strings.Contains(content, "polis") {
+		t.Error("about.md should mention 'polis'")
+	}
+	if content == "" {
+		t.Error("about.md should not be empty")
+	}
+}

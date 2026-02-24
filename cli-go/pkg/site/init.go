@@ -210,6 +210,17 @@ func Init(siteDir string, opts InitOptions) (*InitResult, error) {
 		return nil, fmt.Errorf("failed to create metadata files: %w", err)
 	}
 
+	// Create default about snippet
+	aboutPath := filepath.Join(siteDir, opts.SnippetsDir, "about.md")
+	if _, err := os.Stat(aboutPath); os.IsNotExist(err) {
+		aboutContent := "Welcome to my polis space. This site runs on *polis*\u2014signed markdown on your own domain. No platform, no middleman, just you and your words.\n"
+		if err := os.WriteFile(aboutPath, []byte(aboutContent), 0644); err != nil {
+			return nil, fmt.Errorf("failed to create default about snippet: %w", err)
+		}
+		rel, _ := filepath.Rel(siteDir, aboutPath)
+		filesCreated = append(filesCreated, rel)
+	}
+
 	// Create webapp-config.json with webapp-specific defaults only.
 	// Discovery credentials (DISCOVERY_SERVICE_URL/KEY) belong in .env
 	// and are loaded at runtime by the webapp's LoadEnv().

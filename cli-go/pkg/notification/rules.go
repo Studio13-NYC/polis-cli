@@ -29,6 +29,10 @@ type RuleFilter struct {
 type RuleTemplate struct {
 	Icon    string `json:"icon"`
 	Message string `json:"message"`
+	// Link is a URL template for the notification's click target.
+	// Supports {{var}} substitution (same vars as Message).
+	// Examples: "/_/#blessings", "/_/#followers", "{{source_url}}"
+	Link string `json:"link,omitempty"`
 }
 
 // DefaultRules returns the built-in rule set seeded on first sync.
@@ -39,7 +43,7 @@ func DefaultRules() []Rule {
 			EventType: "polis.follow.announced",
 			Enabled:   true,
 			Filter:    RuleFilter{Relevance: "target_domain"},
-			Template:  RuleTemplate{Icon: "\U0001F464", Message: "{{actor}} started following you"},
+			Template:  RuleTemplate{Icon: "\U0001F464", Message: "{{actor}} started following you", Link: "/_/#followers"},
 			Batch:     true,
 			BatchWindow: "24h",
 		},
@@ -48,56 +52,56 @@ func DefaultRules() []Rule {
 			EventType: "polis.follow.removed",
 			Enabled:   true,
 			Filter:    RuleFilter{Relevance: "target_domain"},
-			Template:  RuleTemplate{Icon: "\U0001F464", Message: "{{actor}} unfollowed you"},
+			Template:  RuleTemplate{Icon: "\U0001F464", Message: "{{actor}} unfollowed you", Link: "/_/#followers"},
 		},
 		{
 			ID:        "blessing-requested",
 			EventType: "polis.blessing.requested",
 			Enabled:   true,
 			Filter:    RuleFilter{Relevance: "target_domain"},
-			Template:  RuleTemplate{Icon: "\U0001F514", Message: "{{actor}} requested a blessing on {{post_name}}"},
+			Template:  RuleTemplate{Icon: "\U0001F514", Message: "{{actor}} requested a blessing on {{post_name}}", Link: "/_/#blessings"},
 		},
 		{
 			ID:        "blessing-granted",
 			EventType: "polis.blessing.granted",
 			Enabled:   true,
 			Filter:    RuleFilter{Relevance: "source_domain"},
-			Template:  RuleTemplate{Icon: "\u2713", Message: "{{actor}} blessed your comment"},
+			Template:  RuleTemplate{Icon: "\u2713", Message: "{{actor}} blessed your comment", Link: "/_/#my-comments-blessed"},
 		},
 		{
 			ID:        "blessing-denied",
 			EventType: "polis.blessing.denied",
 			Enabled:   true,
 			Filter:    RuleFilter{Relevance: "source_domain"},
-			Template:  RuleTemplate{Icon: "\u2717", Message: "{{actor}} denied your comment"},
+			Template:  RuleTemplate{Icon: "\u2717", Message: "{{actor}} denied your comment", Link: "/_/#my-comments-denied"},
 		},
 		{
 			ID:        "new-comment",
 			EventType: "polis.comment.published",
 			Enabled:   true,
 			Filter:    RuleFilter{Relevance: "target_domain"},
-			Template:  RuleTemplate{Icon: "\U0001F4AC", Message: "{{actor}} commented on {{post_name}}"},
+			Template:  RuleTemplate{Icon: "\U0001F4AC", Message: "{{actor}} commented on {{post_name}}", Link: "/_/#blessings"},
 		},
 		{
 			ID:        "updated-comment",
 			EventType: "polis.comment.republished",
 			Enabled:   false,
 			Filter:    RuleFilter{Relevance: "target_domain"},
-			Template:  RuleTemplate{Icon: "\U0001F4AC", Message: "{{actor}} updated their comment on {{post_name}}"},
+			Template:  RuleTemplate{Icon: "\U0001F4AC", Message: "{{actor}} updated their comment on {{post_name}}", Link: "/_/#blessings"},
 		},
 		{
 			ID:        "new-post",
 			EventType: "polis.post.published",
 			Enabled:   true,
 			Filter:    RuleFilter{Relevance: "followed_author"},
-			Template:  RuleTemplate{Icon: "\U0001F4DD", Message: "{{actor}} published a new post"},
+			Template:  RuleTemplate{Icon: "\U0001F4DD", Message: "{{actor}} published a new post", Link: "/_/#feed"},
 		},
 		{
 			ID:        "updated-post",
 			EventType: "polis.post.republished",
 			Enabled:   false,
 			Filter:    RuleFilter{Relevance: "followed_author"},
-			Template:  RuleTemplate{Icon: "\U0001F4DD", Message: "{{actor}} updated a post"},
+			Template:  RuleTemplate{Icon: "\U0001F4DD", Message: "{{actor}} updated a post", Link: "/_/#feed"},
 		},
 	}
 }
@@ -119,18 +123,23 @@ func TemplateVarsFromEvent(actor, timestamp string, payload map[string]interface
 		"timestamp": timestamp,
 	}
 
-	for _, key := range []string{"source_url", "target_url", "target_domain", "source_domain"} {
+	for _, key := range []string{"source_url", "target_url", "target_domain", "source_domain", "in_reply_to", "comment_url"} {
 		if v, ok := payload[key].(string); ok {
 			vars[key] = v
 		}
 	}
 
-	// Derive post_name from target_url or url (last path segment, without extension)
+	// Derive post_name from target_url, url, in_reply_to, or comment_url
+	// (blessing events from the DS use in_reply_to/comment_url instead of target_url)
 	postURL := ""
 	if targetURL, ok := payload["target_url"].(string); ok && targetURL != "" {
 		postURL = targetURL
 	} else if u, ok := payload["url"].(string); ok && u != "" {
 		postURL = u
+	} else if v, ok := payload["in_reply_to"].(string); ok && v != "" {
+		postURL = v
+	} else if v, ok := payload["comment_url"].(string); ok && v != "" {
+		postURL = v
 	}
 	if postURL != "" {
 		base := path.Base(postURL)

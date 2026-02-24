@@ -142,7 +142,7 @@ type ContentCheckResponse struct {
 
 // ContentRecord represents a content item from the discovery service.
 type ContentRecord struct {
-	ID        int64                  `json:"id"`
+	ID        json.Number            `json:"id"`
 	Type      string                 `json:"type"`
 	URL       string                 `json:"url"`
 	Version   string                 `json:"version"`
@@ -151,6 +151,22 @@ type ContentRecord struct {
 	Metadata  map[string]interface{} `json:"metadata"`
 	CreatedAt string                 `json:"created_at"`
 	UpdatedAt string                 `json:"updated_at"`
+}
+
+// UnmarshalJSON handles DS responses where metadata may arrive as a
+// JSON string (double-encoded from Postgres JSONB) instead of an object.
+func (r *ContentRecord) UnmarshalJSON(data []byte) error {
+	type Alias ContentRecord
+	var raw struct {
+		Alias
+		Metadata json.RawMessage `json:"metadata"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*r = ContentRecord(raw.Alias)
+	r.Metadata = unmarshalJSONBField(raw.Metadata)
+	return nil
 }
 
 // ContentQueryResponse is the response from content-query.
@@ -174,7 +190,7 @@ type RelationshipUpdateRequest struct {
 
 // RelationshipRecord represents a relationship from the discovery service.
 type RelationshipRecord struct {
-	ID        int64                  `json:"id"`
+	ID        json.Number            `json:"id"`
 	Type      string                 `json:"type"`
 	SourceURL string                 `json:"source_url"`
 	TargetURL string                 `json:"target_url"`
@@ -183,6 +199,22 @@ type RelationshipRecord struct {
 	Metadata  map[string]interface{} `json:"metadata"`
 	CreatedAt string                 `json:"created_at"`
 	UpdatedAt string                 `json:"updated_at"`
+}
+
+// UnmarshalJSON handles DS responses where metadata may arrive as a
+// JSON string (double-encoded from Postgres JSONB) instead of an object.
+func (r *RelationshipRecord) UnmarshalJSON(data []byte) error {
+	type Alias RelationshipRecord
+	var raw struct {
+		Alias
+		Metadata json.RawMessage `json:"metadata"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*r = RelationshipRecord(raw.Alias)
+	r.Metadata = unmarshalJSONBField(raw.Metadata)
+	return nil
 }
 
 // RelationshipQueryResponse is the response from relationship-query.
@@ -363,15 +395,12 @@ func (c *Client) QueryContent(contentType string, filters map[string]string) (*C
 func (c *Client) UpdateRelationship(relType, sourceURL, targetURL, action string, privateKey []byte) error {
 	endpoint := c.BaseURL + "/ds-relationship-update"
 
-	timestamp := time.Now().UTC().Format("2006-01-02T15:04:05Z")
-
-	// Create canonical payload for signing
+	// Create canonical payload for signing (must match DS buildRelationshipCanonicalJSON)
 	canonicalPayload := relationshipCanonicalPayload{
 		Type:      relType,
 		SourceURL: sourceURL,
 		TargetURL: targetURL,
 		Action:    action,
-		Timestamp: timestamp,
 	}
 	canonicalJSON, err := json.Marshal(canonicalPayload)
 	if err != nil {
@@ -476,12 +505,12 @@ type contentCanonicalPayload struct {
 }
 
 // relationshipCanonicalPayload is the canonical payload for relationship update signing.
+// Must match DS buildRelationshipCanonicalJSON: {type, source_url, target_url, action}
 type relationshipCanonicalPayload struct {
 	Type      string `json:"type"`
 	SourceURL string `json:"source_url"`
 	TargetURL string `json:"target_url"`
 	Action    string `json:"action"`
-	Timestamp string `json:"timestamp"`
 }
 
 // MakeContentCanonicalJSON creates canonical JSON for content registration signing.
@@ -496,13 +525,13 @@ func MakeContentCanonicalJSON(contentType, contentURL, version, author string, m
 }
 
 // MakeRelationshipCanonicalJSON creates canonical JSON for relationship update signing.
-func MakeRelationshipCanonicalJSON(relType, sourceURL, targetURL, action, timestamp string) ([]byte, error) {
+// Must match DS buildRelationshipCanonicalJSON: {type, source_url, target_url, action}
+func MakeRelationshipCanonicalJSON(relType, sourceURL, targetURL, action string) ([]byte, error) {
 	return json.Marshal(relationshipCanonicalPayload{
 		Type:      relType,
 		SourceURL: sourceURL,
 		TargetURL: targetURL,
 		Action:    action,
-		Timestamp: timestamp,
 	})
 }
 
@@ -871,14 +900,62 @@ func (c *Client) RegisterMigration(oldDomain, newDomain string, privateKey []byt
 // Stream (ds-stream-* endpoints, table: ds_events)
 // ============================================================================
 
+// unmarshalJSONBField handles Postgres JSONB fields that may arrive as either
+// a JSON object or a double-encoded JSON string (e.g. "{\"key\":\"val\"}").
+func unmarshalJSONBField(raw json.RawMessage) map[string]interface{} {
+	if len(raw) == 0 {
+		return map[string]interface{}{}
+	}
+	var result map[string]interface{}
+	if raw[0] == '"' {
+		// Double-encoded string — unquote then parse
+		var s string
+		if err := json.Unmarshal(raw, &s); err == nil {
+			json.Unmarshal([]byte(s), &result)
+		}
+	} else {
+		json.Unmarshal(raw, &result)
+	}
+	if result == nil {
+		return map[string]interface{}{}
+	}
+	return result
+}
+
 // StreamEvent represents a single event in the discovery stream.
 type StreamEvent struct {
-	ID        int64                  `json:"id"`
+	ID        json.Number            `json:"id"`
 	Type      string                 `json:"type"`
 	Timestamp string                 `json:"timestamp"`
 	Actor     string                 `json:"actor"`
 	Signature string                 `json:"signature"`
 	Payload   map[string]interface{} `json:"payload"`
+}
+
+// UnmarshalJSON handles DS responses where payload may arrive as a
+// JSON string (double-encoded from Postgres JSONB) instead of an object.
+func (e *StreamEvent) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		ID        json.Number     `json:"id"`
+		Type      string          `json:"type"`
+		Timestamp string          `json:"timestamp"`
+		Actor     string          `json:"actor"`
+		Signature string          `json:"signature"`
+		Payload   json.RawMessage `json:"payload"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	e.ID = raw.ID
+	e.Type = raw.Type
+	e.Timestamp = raw.Timestamp
+	e.Actor = raw.Actor
+	e.Signature = raw.Signature
+
+	e.Payload = unmarshalJSONBField(raw.Payload)
+
+	return nil
 }
 
 // StreamQueryResponse is the response from GET /ds-stream.

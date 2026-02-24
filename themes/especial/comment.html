@@ -3,6 +3,7 @@
 
     Snippets loaded by this template:
     - theme:blessed-comment - Blessed comment block (theme: snippets/blessed-comment.html)
+    - theme:polis-widget    - Interactive comment/follow widget (theme: snippets/polis-widget.html)
 
     To override a theme snippet, create a global snippet with the same name
     and change the "theme:" prefix to use the global version instead.
@@ -22,7 +23,7 @@
 <body>
     <!-- Navigation -->
     <nav class="site-nav">
-        <a href="{{home_path}}" class="nav-home">&larr; Home</a>
+        <a href="{{home_path}}" class="nav-home">&larr; {{author_domain}}</a>
     </nav>
 
     <!-- Hero -->
@@ -67,14 +68,13 @@
     <!-- Footer -->
     <footer class="site-footer">
         <div class="post-meta">
-            <span class="meta-label">Signed by</span>
-            <span class="meta-value">{{author_name}}</span>
-            <span class="meta-sep">|</span>
             <span class="meta-label">Version</span>
             <span class="meta-value">{{signature_short}}</span>
         </div>
         <a href="https://polis.pub" class="footer-logo">POLIS<span class="footer-tagline">Your content, free from platform control</span></a>
     </footer>
+
+    {{> theme:polis-widget}}
 
 <!-- Source: {{url}} | Version: {{version}} -->
 </body>

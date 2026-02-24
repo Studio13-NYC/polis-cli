@@ -22,25 +22,9 @@ const App = {
     // Hosted mode: set via window.__POLIS_HOSTED by the hosted service
     isHosted: !!(window.__POLIS_HOSTED),
 
-    // Snippet state
+    // Snippet state (used by about editor for preview)
     snippetState: {
-        currentPath: '',
-        editingPath: null,
-        editingSource: null,
-        activeTheme: null,
-        filter: 'all',  // Filter: "all", "global", or "theme"
-    },
-
-    // Sample data for Mustache template preview
-    snippetSampleData: {
-        url: 'https://alice.polis.pub/posts/2026/01/sample-post.md',
-        title: 'Sample Post Title',
-        published_human: 'Jan 30, 2026',
-        target_author: 'alice.polis.pub',
-        author_name: 'Alice',
-        preview: 'This is a preview of the comment content...',
-        comment_count: '3',
-        content: '<p>This is the full comment content with <strong>formatting</strong>.</p>',
+        editingPath: 'about.md',
     },
 
     // Data cache for counts
@@ -59,13 +43,19 @@ const App = {
         feed: 0,
         feedUnread: 0,
         following: 0,
+        followers: 0,
     },
 
-    // Feed state
-    _feedItems: null,
-    _feedTypeFilter: '',
-    _feedRefreshing: false,
-    _hideRead: false,
+    // SSE connection + polling fallback
+    _eventSource: null,
+    _countsPollTimer: null,
+
+    // Comments published state
+    _commentsPublishedFilter: 'all',
+
+    // Conversations subtab state
+    _conversationsSubtab: 'all',
+    _conversationsRefreshing: false,
 
     // Screen management
     screens: {
@@ -74,7 +64,7 @@ const App = {
         dashboard: document.getElementById('dashboard-screen'),
         editor: document.getElementById('editor-screen'),
         comment: document.getElementById('comment-screen'),
-        snippet: document.getElementById('snippet-screen'),
+        about: document.getElementById('about-screen'),
     },
 
     // Site base URL for live links
@@ -139,6 +129,44 @@ const App = {
             }, duration);
         }
         return toast;
+    },
+
+    // Pulsing "Broadcasting to your followers...." below a post item
+    showBroadcastPulse(targetItem) {
+        const existing = document.getElementById('broadcast-pulse');
+        if (existing) existing.remove();
+        if (!targetItem) return;
+
+        const el = document.createElement('div');
+        el.id = 'broadcast-pulse';
+        el.className = 'broadcast-pulse';
+        el.textContent = 'Broadcasting to your followers\u2026';
+
+        targetItem.style.position = 'relative';
+        targetItem.appendChild(el);
+
+        // Pulse 5 times then remove
+        let count = 0;
+        const maxPulses = 5;
+        el.style.opacity = '0';
+
+        const pulse = () => {
+            if (count >= maxPulses) {
+                el.style.transition = 'opacity 1.2s ease-out';
+                el.style.opacity = '0';
+                setTimeout(() => el.remove(), 1300);
+                return;
+            }
+            el.style.transition = 'opacity 1.2s ease-in';
+            el.style.opacity = '1';
+            setTimeout(() => {
+                el.style.transition = 'opacity 1.2s ease-out';
+                el.style.opacity = '0';
+                count++;
+                setTimeout(pulse, 400);
+            }, 1600);
+        };
+        setTimeout(pulse, 500);
     },
 
     // Confirm modal (replaces browser confirm())
@@ -208,8 +236,259 @@ const App = {
     // Intent state (set by URL params, consumed after dashboard loads)
     _pendingIntent: null,
 
+    // Navigation generation counter — prevents stale async loads from overwriting newer navigation
+    _navGeneration: 0,
+
+    // ── Deep-link routing ────────────────────────────────────────────────
+
+    // Base path for all SPA routes (/_/ on both localhost and hosted)
+    basePath: '/_',
+
+    // Route table: [pattern, config] pairs. Checked in order.
+    // Parameterized segments: :id (single segment), :path+ (catch-all, one or more segments).
+    ROUTES: [
+        ['/',                            { mode: 'my-site', view: 'posts-published', screen: 'dashboard' }],
+        ['/posts',                       { mode: 'my-site', view: 'posts-published', screen: 'dashboard' }],
+        ['/posts/drafts',                { mode: 'my-site', view: 'posts-drafts',    screen: 'dashboard' }],
+        ['/posts/new',                   { screen: 'editor', action: 'newPost' }],
+        ['/posts/drafts/:id',            { screen: 'editor', action: 'openDraft' }],
+        ['/comments',                    { mode: 'my-site', view: 'comments-published', screen: 'dashboard' }],
+        ['/comments/drafts',             { mode: 'my-site', view: 'comments-published', screen: 'dashboard', tabHint: 'drafts' }],
+        ['/comments/pending',            { mode: 'my-site', view: 'comments-published', screen: 'dashboard', tabHint: 'pending' }],
+        ['/comments/blessed',            { mode: 'my-site', view: 'comments-published', screen: 'dashboard', tabHint: 'blessed' }],
+        ['/comments/denied',             { mode: 'my-site', view: 'comments-published', screen: 'dashboard', tabHint: 'denied' }],
+        ['/comments/new',                { screen: 'comment', action: 'newComment' }],
+        ['/comments/drafts/:id',         { screen: 'comment', action: 'openCommentDraft' }],
+        ['/blessings',                   { mode: 'my-site', view: 'blessing-requests',    screen: 'dashboard' }],
+        ['/snippets',                    { mode: 'my-site', view: 'about',            screen: 'dashboard' }],
+        ['/social',                      { mode: 'social',  view: 'conversations',    screen: 'dashboard' }],
+        ['/social/feed',                 { mode: 'social',  view: 'conversations',    screen: 'dashboard' }],
+        // Plugin routes injected by _registerPlugins()
+        ['/social/following',            { mode: 'social',  view: 'following',        screen: 'dashboard' }],
+        ['/social/followers',            { mode: 'social',  view: 'followers',        screen: 'dashboard' }],
+        ['/settings',                    { view: 'settings', screen: 'dashboard' }],
+        ['/posts/:path+',                { screen: 'editor', action: 'openPost' }],
+    ],
+
+    // Reverse lookup: view name → canonical path (for pushState)
+    VIEW_PATHS: {
+        'posts-published':     '/posts',
+        'posts-drafts':        '/posts/drafts',
+        'comments-published':  '/comments',
+        'blessing-requests':   '/blessings',
+        'about':               '/snippets',
+        'following':           '/social/following',
+        'followers':           '/social/followers',
+        'settings':            '/settings',
+    },
+
+    // Social plugins: each entry defines a social view that gets a sidebar button,
+    // route, and dispatch entry. Removing an entry removes the view entirely.
+    SOCIAL_PLUGINS: [
+        { id: 'pulse',         label: 'Pulse',         path: '/social/pulse',         title: 'Community Pulse',  actions: '',                                                                                                                                                              render: 'renderPulse',                autoRefresh: true  },
+        { id: 'conversations', label: 'Conversations', path: '/social/conversations', title: 'Conversations',    actions: '<button class="secondary sync-btn" onclick="App.markAllConversationsRead()">Mark All Read</button> <button class="secondary sync-btn" onclick="App.refreshConversations()">Refresh</button>', render: 'renderConversationsTabbed',   autoRefresh: true  },
+    ],
+
+    // Resolve a pathname against the route table.
+    // Returns { config, params } or null if no match.
+    resolveRoute(pathname) {
+        // Strip base path prefix
+        let path = pathname;
+        if (path.startsWith(this.basePath)) {
+            path = path.slice(this.basePath.length);
+        }
+        // Normalize: ensure leading slash, strip trailing slash (except bare /)
+        if (!path.startsWith('/')) path = '/' + path;
+        if (path.length > 1 && path.endsWith('/')) path = path.slice(0, -1);
+        // Strip .md extension from post paths
+        if (path.endsWith('.md')) path = path.slice(0, -3);
+
+        for (const [pattern, config] of this.ROUTES) {
+            const params = this._matchPattern(pattern, path);
+            if (params !== null) {
+                return { config, params };
+            }
+        }
+        return null;
+    },
+
+    // Match a route pattern against a path. Returns params object or null.
+    _matchPattern(pattern, path) {
+        const patternParts = pattern.split('/').filter(Boolean);
+        const pathParts = path.split('/').filter(Boolean);
+
+        // Check for catch-all parameter (:name+)
+        const lastPattern = patternParts[patternParts.length - 1];
+        const hasCatchAll = lastPattern && lastPattern.startsWith(':') && lastPattern.endsWith('+');
+
+        if (hasCatchAll) {
+            // Need at least as many path parts as pattern parts
+            if (pathParts.length < patternParts.length) return null;
+        } else {
+            // Exact segment count required
+            if (pathParts.length !== patternParts.length) return null;
+        }
+
+        const params = {};
+        for (let i = 0; i < patternParts.length; i++) {
+            const pp = patternParts[i];
+            if (pp.startsWith(':') && pp.endsWith('+')) {
+                // Catch-all: consume remaining path segments
+                const name = pp.slice(1, -1);
+                params[name] = pathParts.slice(i).join('/');
+                return params;
+            } else if (pp.startsWith(':')) {
+                // Named parameter: single segment
+                params[pp.slice(1)] = pathParts[i];
+            } else {
+                // Literal match
+                if (pp !== pathParts[i]) return null;
+            }
+        }
+        return params;
+    },
+
+    // Navigate to a deep-link path. Updates URL bar and renders the route.
+    // opts.replace: use replaceState instead of pushState
+    // opts.skipRender: only update URL, don't render (used during init)
+    async navigateTo(path, opts = {}) {
+        const route = this.resolveRoute(path);
+        if (!route) {
+            this.showToast('Page not found', 'warning');
+            window.history.replaceState({}, '', this.basePath + '/posts');
+            if (!opts.skipRender) {
+                this.sidebarMode = 'my-site';
+                this._updateSidebarUI('my-site');
+                this.currentView = 'posts-published';
+                this._updateSidebarActiveItem('posts-published');
+                await this.loadViewContent();
+                this.showScreen('dashboard');
+            }
+            return;
+        }
+
+        const { config, params } = route;
+        const gen = ++this._navGeneration;
+        const fullPath = this.basePath + (path.startsWith('/') ? path : '/' + path);
+
+        // Update URL
+        if (opts.replace) {
+            window.history.replaceState({}, '', fullPath);
+        } else {
+            window.history.pushState({}, '', fullPath);
+        }
+
+        if (opts.skipRender) return;
+
+        // Dashboard views
+        if (config.screen === 'dashboard') {
+            if (config.mode) {
+                this.sidebarMode = config.mode;
+                this._updateSidebarUI(config.mode);
+            }
+            this.currentView = config.view;
+            if (config.tabHint) this._commentsPublishedFilter = config.tabHint;
+            this._updateSidebarActiveItem(config.view);
+            await this.loadViewContent();
+            if (gen !== this._navGeneration) return; // stale
+            this.showScreen('dashboard');
+            return;
+        }
+
+        // Editor/action screens
+        switch (config.action) {
+            case 'newPost':
+                this.newPost({ pushState: false });
+                break;
+            case 'openDraft':
+                await this.openDraft(params.id, { pushState: false });
+                break;
+            case 'openPost':
+                await this.openPost(params.path, { pushState: false });
+                break;
+            case 'newComment':
+                this.newComment({ pushState: false });
+                break;
+            case 'openCommentDraft':
+                await this.openCommentDraft(params.id, { pushState: false });
+                break;
+        }
+    },
+
+    // Build full URL path for a view name
+    pathForView(view) {
+        const rel = this.VIEW_PATHS[view];
+        return rel ? this.basePath + rel : this.basePath + '/posts';
+    },
+
+    // Build full URL path for an editor/action screen
+    pathForScreen(type, params = {}) {
+        switch (type) {
+            case 'newPost':      return this.basePath + '/posts/new';
+            case 'openDraft':    return this.basePath + '/posts/drafts/' + encodeURIComponent(params.id);
+            case 'openPost':     return this.basePath + '/posts/' + params.path;
+            case 'newComment':   return this.basePath + '/comments/new';
+            case 'openCommentDraft': return this.basePath + '/comments/drafts/' + encodeURIComponent(params.id);
+            default:             return this.basePath + '/posts';
+        }
+    },
+
+    // Update sidebar section visibility without triggering a view change
+    _updateSidebarUI(mode) {
+        const mySite = document.getElementById('sidebar-my-site');
+        const social = document.getElementById('sidebar-social');
+        if (mode === 'social') {
+            mySite.classList.add('hidden');
+            social.classList.remove('hidden');
+        } else {
+            social.classList.add('hidden');
+            mySite.classList.remove('hidden');
+        }
+        document.querySelectorAll('.sidebar-mode-toggle .mode-tab').forEach(tab => {
+            tab.classList.toggle('active', tab.dataset.sidebarMode === mode);
+        });
+    },
+
+    // Update sidebar active item highlight without triggering content load
+    _updateSidebarActiveItem(view) {
+        const settingsBtn = document.getElementById('settings-btn');
+        if (settingsBtn) settingsBtn.classList.toggle('active', view === 'settings');
+        document.querySelectorAll('.sidebar .nav-item').forEach(item => {
+            item.classList.remove('active');
+            if (item.dataset.view === view) {
+                item.classList.add('active');
+            }
+        });
+    },
+
+    // Register social plugins: inject routes, view paths, and sidebar buttons.
+    // Must run before bindEvents() so dynamically created buttons get click handlers.
+    _registerPlugins() {
+        const nav = document.getElementById('social-plugins-nav');
+        for (const plugin of this.SOCIAL_PLUGINS) {
+            // Inject route
+            const routeIdx = this.ROUTES.findIndex(([p]) => p === '/social/following');
+            this.ROUTES.splice(routeIdx, 0, [plugin.path, { mode: 'social', view: plugin.id, screen: 'dashboard' }]);
+
+            // Inject view path
+            this.VIEW_PATHS[plugin.id] = plugin.path;
+
+            // Create sidebar button
+            if (nav) {
+                const btn = document.createElement('button');
+                btn.className = 'nav-item';
+                btn.dataset.view = plugin.id;
+                btn.textContent = plugin.label;
+                nav.appendChild(btn);
+            }
+        }
+    },
+
     // Initialize app
     async init() {
+        // Register social plugins before anything else (must precede bindEvents)
+        this._registerPlugins();
+
         // Parse intent params from URL before anything else
         this._pendingIntent = this.parseIntentParams();
 
@@ -231,16 +510,31 @@ const App = {
                     this.updateDomainDisplay(status.base_url);
                     this.siteBaseUrl = status.base_url || '';
                     await this.loadAllCounts();
-                    await this.loadViewContent();
                     this.initNotifications();
-                    this.initFeedPolling();
-                    this.showScreen('dashboard');
+                    this.initSSE();
                     this.checkSetupBanner();
+
+                    // Show follow link footer in sidebar
+                    const followFooter = document.getElementById('sidebar-follow-link');
+                    if (followFooter && this.siteBaseUrl) {
+                        followFooter.classList.remove('hidden');
+                    }
 
                     // Auto-issue widget token in hosted mode (fire and forget)
                     if (this.isHosted) {
                         this.ensureWidgetToken();
+                        // Set cross-tenant cookie so the widget on other tenants' post pages
+                        // can detect this user's instance (localStorage is per-origin)
+                        try {
+                            if (this.siteBaseUrl) {
+                                document.cookie = 'polis_instance=' + encodeURIComponent(this.siteBaseUrl) +
+                                    '; domain=.polis.pub; path=/; max-age=31536000; SameSite=Lax; Secure';
+                            }
+                        } catch (e) {}
                     }
+
+                    // Resolve deep-linked state from current URL path
+                    await this._restoreRouteFromURL();
 
                     // Process pending intent after dashboard is ready
                     if (this._pendingIntent) {
@@ -272,9 +566,16 @@ const App = {
                         this.siteBaseUrl = status.base_url || '';
                         this.initNotifications();
                         await this.loadAllCounts();
-    
-                        await this.loadViewContent();
-                        this.showScreen('dashboard');
+                        this.initSSE();
+
+                        // Show follow link footer in sidebar
+                        const followFooter2 = document.getElementById('sidebar-follow-link');
+                        if (followFooter2 && this.siteBaseUrl) {
+                            followFooter2.classList.remove('hidden');
+                        }
+
+                        // Resolve deep-linked state from current URL path
+                        await this._restoreRouteFromURL();
                         this.checkSetupBanner();
                     } else {
                         this.showScreen('welcome');
@@ -286,6 +587,67 @@ const App = {
         }
 
         this.bindEvents();
+    },
+
+    // Restore view/screen from the current URL path on page load.
+    async _restoreRouteFromURL() {
+        const pathname = window.location.pathname;
+        const route = this.resolveRoute(pathname);
+
+        if (!route) {
+            // Unknown deep-link path — fall back to default
+            await this.loadViewContent();
+            this.showScreen('dashboard');
+            window.history.replaceState({}, '', this.basePath + '/posts');
+            return;
+        }
+
+        const { config, params } = route;
+
+        // Normalize short-form URLs (e.g. /_/ → /_/posts, /_/social → /_/social/feed)
+        if (config.view) {
+            const canonical = this.pathForView(config.view);
+            if (canonical !== pathname && pathname !== this.basePath + '/' && pathname !== this.basePath) {
+                window.history.replaceState({}, '', canonical);
+            } else if (pathname === this.basePath + '/' || pathname === this.basePath || pathname === '/') {
+                window.history.replaceState({}, '', this.basePath + '/posts');
+            }
+        }
+
+        if (config.screen === 'dashboard') {
+            if (config.mode) {
+                this.sidebarMode = config.mode;
+                this._updateSidebarUI(config.mode);
+            }
+            this.currentView = config.view;
+            if (config.tabHint) this._commentsPublishedFilter = config.tabHint;
+            this._updateSidebarActiveItem(config.view);
+            await this.loadViewContent();
+            this.showScreen('dashboard');
+            return;
+        }
+
+        // For editor/action screens, show dashboard first (as fallback) then open
+        await this.loadViewContent();
+        this.showScreen('dashboard');
+
+        switch (config.action) {
+            case 'newPost':
+                this.newPost({ pushState: false });
+                break;
+            case 'openDraft':
+                await this.openDraft(params.id, { pushState: false });
+                break;
+            case 'openPost':
+                await this.openPost(params.path, { pushState: false });
+                break;
+            case 'newComment':
+                this.newComment({ pushState: false });
+                break;
+            case 'openCommentDraft':
+                await this.openCommentDraft(params.id, { pushState: false });
+                break;
+        }
     },
 
     // Render validation errors on the error screen
@@ -315,80 +677,66 @@ const App = {
         await this.init();
     },
 
-    // Load all counts for sidebar badges
+    // Load all counts for sidebar badges via single consolidated endpoint
     async loadAllCounts() {
         try {
-            // Load posts count
-            const posts = await this.api('GET', '/api/posts');
-            this.counts.posts = (posts.posts || []).length;
-
-            // Load drafts count
-            const drafts = await this.api('GET', '/api/drafts');
-            this.counts.drafts = (drafts.drafts || []).length;
-
-            // Load MY comment counts (outgoing)
-            const myPending = await this.api('GET', '/api/comments/pending');
-            this.counts.myPending = (myPending.comments || []).length;
-
-            const myBlessed = await this.api('GET', '/api/comments/blessed');
-            this.counts.myBlessed = (myBlessed.comments || []).length;
-
-            const myDenied = await this.api('GET', '/api/comments/denied');
-            this.counts.myDenied = (myDenied.comments || []).length;
-
-            const commentDrafts = await this.api('GET', '/api/comments/drafts');
-            this.counts.myCommentDrafts = (commentDrafts.drafts || []).length;
-
-            // Load INCOMING counts (on my posts)
-            try {
-                const incomingRequests = await this.api('GET', '/api/blessing/requests');
-                this.counts.incomingPending = (incomingRequests.requests || []).length;
-            } catch (e) {
-                // Discovery service not configured
-                this.counts.incomingPending = 0;
-            }
-
-            try {
-                const blessedComments = await this.api('GET', '/api/blessed-comments');
-                let incomingBlessed = 0;
-                if (blessedComments.comments) {
-                    for (const pc of blessedComments.comments) {
-                        incomingBlessed += (pc.blessed || []).length;
-                    }
-                }
-                this.counts.incomingBlessed = incomingBlessed;
-            } catch (e) {
-                this.counts.incomingBlessed = 0;
-            }
-
-            // Load social counts
-            try {
-                const followingData = await this.api('GET', '/api/following');
-                this.counts.following = followingData.count || 0;
-            } catch (e) {
-                this.counts.following = 0;
-            }
-
-            try {
-                const feedCounts = await this.api('GET', '/api/feed/counts');
-                this.counts.feed = feedCounts.total || 0;
-                this.counts.feedUnread = feedCounts.unread || 0;
-            } catch (e) {
-                this.counts.feed = 0;
-                this.counts.feedUnread = 0;
-            }
-
-            try {
-                const followerData = await this.api('GET', '/api/followers/count');
-                this.counts.followers = followerData.count || 0;
-            } catch (e) {
-                this.counts.followers = 0;
-            }
+            const c = await this.api('GET', '/api/counts');
+            this.counts.posts = c.posts || 0;
+            this.counts.drafts = c.drafts || 0;
+            this.counts.myPending = c.my_pending || 0;
+            this.counts.myBlessed = c.my_blessed || 0;
+            this.counts.myDenied = c.my_denied || 0;
+            this.counts.myCommentDrafts = c.my_comment_drafts || 0;
+            this.counts.incomingPending = c.incoming_pending || 0;
+            this.counts.incomingBlessed = c.incoming_blessed || 0;
+            this.counts.feed = c.feed || 0;
+            this.counts.feedUnread = c.feed_unread || 0;
+            this.counts.following = c.following || 0;
+            this.counts.followers = c.followers || 0;
+            this.notificationState.unreadCount = c.notifications_unread || 0;
 
             this.updateBadges();
             this.updateSidebar();
+            this._updateNotificationDot();
         } catch (err) {
             console.error('Failed to load counts:', err);
+        }
+    },
+
+    // Apply SSE-pushed counts to local state and update UI
+    _applyCountsFromSSE(c) {
+        this.counts.posts = c.posts || 0;
+        this.counts.drafts = c.drafts || 0;
+        this.counts.myPending = c.my_pending || 0;
+        this.counts.myBlessed = c.my_blessed || 0;
+        this.counts.myDenied = c.my_denied || 0;
+        this.counts.myCommentDrafts = c.my_comment_drafts || 0;
+        this.counts.incomingPending = c.incoming_pending || 0;
+        this.counts.incomingBlessed = c.incoming_blessed || 0;
+        this.counts.feed = c.feed || 0;
+        this.counts.feedUnread = c.feed_unread || 0;
+        this.counts.following = c.following || 0;
+        this.counts.followers = c.followers || 0;
+        this.notificationState.unreadCount = c.notifications_unread || 0;
+
+        this.updateBadges();
+        this.updateSidebar();
+        this._updateNotificationDot();
+
+        // If on a view that shows items affected by sync, refresh it
+        const autoRefreshViews = ['feed', 'blessing-requests', 'followers', 'comments-published',
+            ...this.SOCIAL_PLUGINS.filter(p => p.autoRefresh).map(p => p.id)];
+        if (autoRefreshViews.includes(this.currentView)) {
+            const contentList = document.getElementById('content-list');
+            if (contentList) this.loadViewContent();
+        }
+    },
+
+    // Update notification dot visibility
+    _updateNotificationDot() {
+        const dot = document.getElementById('notification-dot');
+        if (dot) {
+            dot.classList.toggle('hidden', this.notificationState.unreadCount === 0);
         }
     },
 
@@ -396,14 +744,12 @@ const App = {
     updateBadges() {
         this.updateBadge('posts-count', this.counts.posts);
         this.updateBadge('drafts-count', this.counts.drafts);
-        // My comments (outgoing)
-        this.updateBadge('my-comment-drafts-count', this.counts.myCommentDrafts);
-        this.updateBadge('my-pending-count', this.counts.myPending, true);
-        this.updateBadge('my-blessed-count', this.counts.myBlessed);
-        this.updateBadge('my-denied-count', this.counts.myDenied);
+        // My comments (consolidated total)
+        const totalComments = (this.counts.myCommentDrafts || 0) + (this.counts.myPending || 0)
+                            + (this.counts.myBlessed || 0) + (this.counts.myDenied || 0);
+        this.updateBadge('comments-published-count', totalComments);
         // Incoming (on my posts)
         this.updateBadge('incoming-pending-count', this.counts.incomingPending, true);
-        this.updateBadge('incoming-blessed-count', this.counts.incomingBlessed);
         // Social
         this.updateBadge('feed-count', this.counts.feedUnread, this.counts.feedUnread > 0);
         this.updateBadge('following-count', this.counts.following);
@@ -426,12 +772,14 @@ const App = {
     // Detect lifecycle stage from counts
     detectLifecycleStage() {
         const hasPosts = this.counts.posts > 0;
+        const hasOutgoingComments = (this.counts.myPending || 0) + (this.counts.myBlessed || 0) + (this.counts.myDenied || 0) > 0;
         const hasIncomingBlessed = this.counts.incomingBlessed > 0;
+        const hasIncomingPending = this.counts.incomingPending > 0;
         const isActive = hasIncomingBlessed || this.counts.posts >= 3;
 
         if (isActive) {
             this.lifecycleStage = 'active';
-        } else if (hasPosts) {
+        } else if (hasPosts || hasOutgoingComments || hasIncomingPending) {
             this.lifecycleStage = 'first_post';
         } else {
             this.lifecycleStage = 'just_arrived';
@@ -447,35 +795,29 @@ const App = {
         const sections = {
             posts: document.getElementById('sidebar-section-posts'),
             comments: document.getElementById('sidebar-section-comments'),
-            onMyPosts: document.getElementById('sidebar-section-on-my-posts'),
             snippets: document.getElementById('sidebar-section-snippets'),
         };
 
         // Social sidebar sections
         const socialSections = {
             discover: document.getElementById('sidebar-section-discover'),
-            authors: document.getElementById('sidebar-section-authors'),
-            stats: document.getElementById('sidebar-section-stats'),
         };
 
-        // just_arrived: Write (new post btn) + Feed + Settings only
+        // just_arrived: Write (new post btn) + Snippets (About) + Feed + Settings only
         // first_post: + Posts, Comments
-        // active: + On My Posts, Snippets, full Social
+        // active: + On My Posts, full Social
         if (stage === 'just_arrived') {
             if (sections.posts) sections.posts.classList.add('hidden');
             if (sections.comments) sections.comments.classList.add('hidden');
-            if (sections.onMyPosts) sections.onMyPosts.classList.add('hidden');
-            if (sections.snippets) sections.snippets.classList.add('hidden');
+            if (sections.snippets) sections.snippets.classList.remove('hidden');
         } else if (stage === 'first_post') {
             if (sections.posts) sections.posts.classList.remove('hidden');
             if (sections.comments) sections.comments.classList.remove('hidden');
-            if (sections.onMyPosts) sections.onMyPosts.classList.add('hidden');
-            if (sections.snippets) sections.snippets.classList.add('hidden');
+            if (sections.snippets) sections.snippets.classList.remove('hidden');
         } else {
             // active: show everything
             if (sections.posts) sections.posts.classList.remove('hidden');
             if (sections.comments) sections.comments.classList.remove('hidden');
-            if (sections.onMyPosts) sections.onMyPosts.classList.remove('hidden');
             if (sections.snippets) sections.snippets.classList.remove('hidden');
         }
         this.updateWelcomePanel();
@@ -508,18 +850,8 @@ const App = {
                     </div>
                 </div>
             `;
-        } else if (stage === 'first_post') {
-            html = `
-                <div class="welcome-content">
-                    <p>Share your post to start getting comments and followers.</p>
-                    <div class="welcome-actions">
-                        <button class="primary" onclick="App.newPost()">Write another post</button>
-                        <button class="secondary" onclick="App.copyShareLink()">Copy site link</button>
-                    </div>
-                </div>
-            `;
         }
-        // active stage: no welcome panel
+        // first_post and active stages: no welcome panel
 
         if (html) {
             panel.innerHTML = html;
@@ -541,11 +873,59 @@ const App = {
         }
     },
 
+    // Build the polis.pub follow link for this site
+    getFollowLink() {
+        if (!this.siteBaseUrl) return null;
+        try {
+            const domain = new URL(this.siteBaseUrl).hostname;
+            if (domain.endsWith('.polis.pub')) {
+                return 'https://polis.pub/f/' + domain.replace('.polis.pub', '');
+            }
+            return 'https://polis.pub/f/' + domain;
+        } catch {
+            return null;
+        }
+    },
+
+    // Copy follow link to clipboard
+    async copyFollowLink() {
+        const link = this.getFollowLink();
+        if (!link) {
+            this.showToast('Site not configured yet', 'warning');
+            return;
+        }
+        try {
+            await navigator.clipboard.writeText(link);
+            this.showToast('Follow link copied!', 'success');
+            const btn = document.getElementById('copy-follow-link-btn');
+            if (btn) {
+                const original = btn.innerHTML;
+                btn.classList.add('copied');
+                btn.innerHTML = '&#10003; Copied!';
+                setTimeout(() => {
+                    btn.classList.remove('copied');
+                    btn.innerHTML = original;
+                }, 2000);
+            }
+        } catch (err) {
+            this.showToast('Failed to copy link', 'error');
+        }
+    },
+
     // Load content for current view
     async loadViewContent() {
         const contentTitle = document.getElementById('content-title');
         const contentActions = document.getElementById('content-actions');
         const contentList = document.getElementById('content-list');
+
+        // Plugin dispatch: check if current view is a social plugin
+        const plugin = this.SOCIAL_PLUGINS.find(p => p.id === this.currentView);
+        if (plugin) {
+            contentTitle.textContent = plugin.title;
+            contentActions.innerHTML = plugin.actions;
+            await this[plugin.render](contentList);
+            return;
+        }
 
         switch (this.currentView) {
             case 'posts-published':
@@ -560,32 +940,14 @@ const App = {
                 await this.renderDraftsList(contentList);
                 break;
 
-            // MY COMMENTS (outgoing - I wrote these)
-            case 'my-comments-drafts':
-                contentTitle.textContent = 'My Comment Drafts';
-                contentActions.innerHTML = '<button class="primary" onclick="App.newComment()">New Comment</button>';
-                await this.renderMyCommentDraftsList(contentList);
-                break;
-
-            case 'my-comments-pending':
-                contentTitle.textContent = 'My Pending Comments';
+            // MY COMMENTS (all statuses in one tabbed view)
+            case 'comments-published':
+                contentTitle.textContent = 'My Comments';
                 contentActions.innerHTML = `
-                    <button id="sync-comments-btn" class="secondary sync-btn" onclick="App.syncComments()">Sync Status</button>
+                    <button id="sync-comments-btn" class="secondary sync-btn" onclick="App.syncComments()">Refresh</button>
                     <button class="primary" onclick="App.newComment()">New Comment</button>
                 `;
-                await this.renderMyCommentsList(contentList, 'pending');
-                break;
-
-            case 'my-comments-blessed':
-                contentTitle.textContent = 'My Blessed Comments';
-                contentActions.innerHTML = '<button class="primary" onclick="App.newComment()">New Comment</button>';
-                await this.renderMyCommentsList(contentList, 'blessed');
-                break;
-
-            case 'my-comments-denied':
-                contentTitle.textContent = 'My Denied Comments';
-                contentActions.innerHTML = '<button class="primary" onclick="App.newComment()">New Comment</button>';
-                await this.renderMyCommentsList(contentList, 'denied');
+                await this.renderCommentsPublished(contentList);
                 break;
 
             // ON MY POSTS (incoming - others wrote these)
@@ -601,64 +963,34 @@ const App = {
                 this.renderSettings(contentList);
                 break;
 
-            case 'snippets':
-                contentTitle.textContent = 'All Snippets';
-                contentActions.innerHTML = '<button class="primary" onclick="App.newSnippet()">New Snippet</button>';
-                this.snippetState.filter = 'all';
-                await this.renderSnippetsList(contentList);
-                break;
-
-            case 'snippets-global':
-                contentTitle.textContent = 'Global Snippets';
-                contentActions.innerHTML = '<button class="primary" onclick="App.newSnippet()">New Snippet</button>';
-                this.snippetState.filter = 'global';
-                await this.renderSnippetsList(contentList);
-                break;
-
-            case 'snippets-theme':
-                contentTitle.textContent = 'Theme Snippets';
-                contentActions.innerHTML = '';
-                this.snippetState.filter = 'theme';
-                await this.renderSnippetsList(contentList);
-                break;
+            case 'about':
+                await this.openAboutEditor();
+                return;
 
             // Social views
-            case 'feed':
-                contentTitle.textContent = 'Conversations';
-                contentActions.innerHTML = '<button class="secondary sync-btn" onclick="App.markAllFeedRead()">Mark All Read</button> <button class="secondary sync-btn" onclick="App.refreshFeed()">Refresh</button>';
-                await this.renderFeedList(contentList);
-                break;
-
             case 'following':
                 contentTitle.textContent = 'Following';
                 contentActions.innerHTML = '<button class="primary" onclick="App.openFollowPanel()">Follow Author</button>';
                 await this.renderFollowingList(contentList);
                 break;
 
-            case 'activity':
-                contentTitle.textContent = 'Activity';
-                contentActions.innerHTML = '<button class="secondary sync-btn" onclick="App.resetActivity()">Reset</button> <button class="secondary sync-btn" onclick="App.refreshActivity()">Refresh</button>';
-                await this.renderActivityStream(contentList);
-                break;
-
             case 'followers':
                 contentTitle.textContent = 'Followers';
-                contentActions.innerHTML = '<button class="secondary sync-btn" onclick="App.refreshFollowers(true)">Full Refresh</button>';
+                contentActions.innerHTML = '<button class="secondary sync-btn" onclick="App.refreshFollowers(true)">Refresh</button>';
                 await this.renderFollowersList(contentList);
                 break;
 
-            case 'suggested-authors':
-                contentTitle.textContent = 'Suggested Authors';
-                contentActions.innerHTML = '';
-                await this.renderSuggestedAuthors(contentList);
-                break;
 
         }
     },
 
     // Set active view and update UI
-    setActiveView(view) {
+    setActiveView(view, opts = {}) {
         this.currentView = view;
+
+        // Deactivate settings gear if navigating away
+        const settingsBtn = document.getElementById('settings-btn');
+        if (settingsBtn) settingsBtn.classList.toggle('active', view === 'settings');
 
         // Update sidebar active state
         document.querySelectorAll('.sidebar .nav-item').forEach(item => {
@@ -668,8 +1000,25 @@ const App = {
             }
         });
 
+        // Update URL bar
+        if (opts.pushState !== false) {
+            const path = this.pathForView(view);
+            window.history.pushState({}, '', path);
+        }
+
         // Load content for the view
         this.loadViewContent();
+    },
+
+    // Toggle settings view from header gear icon
+    toggleSettings() {
+        if (this.currentView === 'settings') {
+            // Go back to the default view for the current sidebar mode
+            const defaultView = this.sidebarMode === 'social' ? 'conversations' : 'posts-published';
+            this.setActiveView(defaultView);
+        } else {
+            this.setActiveView('settings');
+        }
     },
 
     // Bind event handlers
@@ -714,11 +1063,15 @@ const App = {
             });
         });
 
-        // Back button
+        // Back button (editor)
         document.getElementById('back-btn').addEventListener('click', async () => {
             await this.loadAllCounts();
-            await this.loadViewContent();
-            this.showScreen('dashboard');
+            history.back();
+        });
+
+        // Popstate handler — browser back/forward navigation
+        window.addEventListener('popstate', async () => {
+            await this._restoreRouteFromURL();
         });
 
         // Save draft button
@@ -757,8 +1110,7 @@ const App = {
         // Comment back button
         document.getElementById('comment-back-btn').addEventListener('click', async () => {
             await this.loadAllCounts();
-            await this.loadViewContent();
-            this.showScreen('dashboard');
+            history.back();
         });
 
         // Save comment draft button
@@ -780,8 +1132,6 @@ const App = {
                     this.saveDraft();
                 } else if (!this.screens.comment.classList.contains('hidden')) {
                     this.saveCommentDraft();
-                } else if (!this.screens.snippet.classList.contains('hidden')) {
-                    this.saveSnippet();
                 }
             }
             // Ctrl/Cmd + Enter to publish
@@ -793,41 +1143,17 @@ const App = {
             }
         });
 
-        // Snippet back button
-        document.getElementById('snippet-back-btn').addEventListener('click', async () => {
-            await this.loadViewContent();
-            this.showScreen('dashboard');
+        // About editor events
+        document.getElementById('about-back-btn').addEventListener('click', () => {
+            history.back();
         });
-
-        // Save snippet button
-        document.getElementById('save-snippet-btn').addEventListener('click', async () => {
-            await this.saveSnippet();
+        document.getElementById('about-publish-btn').addEventListener('click', () => {
+            this.publishAbout();
         });
-
-        // New snippet panel events
-        document.getElementById('new-snippet-close-btn').addEventListener('click', () => {
-            this.closeNewSnippetPanel();
-        });
-        document.getElementById('new-snippet-cancel-btn').addEventListener('click', () => {
-            this.closeNewSnippetPanel();
-        });
-        document.getElementById('new-snippet-create-btn').addEventListener('click', async () => {
-            await this.createSnippet();
-        });
-        document.querySelector('#new-snippet-panel .wizard-overlay').addEventListener('click', () => {
-            this.closeNewSnippetPanel();
-        });
-
-        // Live preview for snippet editor (debounced)
-        let snippetPreviewTimeout = null;
-        document.getElementById('snippet-content').addEventListener('input', () => {
-            // Debounce the preview update to avoid too many API calls
-            if (snippetPreviewTimeout) {
-                clearTimeout(snippetPreviewTimeout);
-            }
-            snippetPreviewTimeout = setTimeout(() => {
-                this.updateSnippetPreview();
-            }, 300);
+        let aboutPreviewTimeout = null;
+        document.getElementById('about-editor-textarea').addEventListener('input', () => {
+            if (aboutPreviewTimeout) clearTimeout(aboutPreviewTimeout);
+            aboutPreviewTimeout = setTimeout(() => this.updateAboutPreview(), 300);
         });
 
     },
@@ -896,8 +1222,16 @@ const App = {
             this.siteBaseUrl = result.base_url || '';
             this.initNotifications();
             await this.loadAllCounts();
+            this.initSSE();
             await this.loadViewContent();
             this.showScreen('dashboard');
+            window.history.replaceState({}, '', this.pathForView('posts-published'));
+
+            // Show follow link footer in sidebar
+            const followFooterInit = document.getElementById('sidebar-follow-link');
+            if (followFooterInit && this.siteBaseUrl) {
+                followFooterInit.classList.remove('hidden');
+            }
 
             // Open setup wizard to guide through deploy & register
             this.openSetupWizard();
@@ -960,8 +1294,10 @@ const App = {
             this.updateDomainDisplay(result.base_url);
             this.initNotifications();
             await this.loadAllCounts();
+            this.initSSE();
             await this.loadViewContent();
             this.showScreen('dashboard');
+            window.history.replaceState({}, '', this.pathForView('posts-published'));
         } catch (err) {
             this.showToast('Failed to link site: ' + err.message, 'error');
         } finally {
@@ -973,7 +1309,7 @@ const App = {
     },
 
     // New post action
-    newPost() {
+    newPost(opts = {}) {
         this.currentDraftId = null;
         this.currentPostPath = null;
         this.currentFrontmatter = '';
@@ -986,14 +1322,20 @@ const App = {
 
         this.updateEditorFmToggle();
         this.updatePublishButton();
+        if (opts.pushState !== false) {
+            window.history.pushState({}, '', this.pathForScreen('newPost'));
+        }
         this.showScreen('editor');
     },
 
     // New comment action
-    newComment() {
+    newComment(opts = {}) {
         this.currentCommentDraftId = null;
         document.getElementById('reply-to-url').value = '';
         document.getElementById('comment-input').value = '';
+        if (opts.pushState !== false) {
+            window.history.pushState({}, '', this.pathForScreen('newComment'));
+        }
         this.showScreen('comment');
     },
 
@@ -1021,7 +1363,7 @@ const App = {
                             <details class="whats-new">
                                 <summary>Wait, what just happened?</summary>
                                 <div class="whats-new-body">
-                                    <p>We just created a Polis site for you!</p>
+                                    <p>We just created a Polis space for you!</p>
                                     <p>See that <code>/_/</code> in the URL? Only you can access this dashboard.</p>
                                     <p>Only you can publish to${domain ? ` <strong>${this.escapeHtml(domain)}</strong>` : ' your site'}, but everyone can see it &mdash; and verify you wrote it.</p>
                                     <p>Anyone with a Polis site can comment on your posts, but you decide which comments appear here.</p>
@@ -1048,6 +1390,7 @@ const App = {
                                 <span class="item-date">${this.formatDate(post.published)}</span>
                                 <span class="item-time">${this.formatTime(post.published)}</span>
                             </div>
+                            ${this.siteBaseUrl ? `<a class="view-live-btn" href="${this.escapeHtml(this.siteBaseUrl + '/' + post.path.replace(/\.md$/, '.html'))}" target="_blank" rel="noopener" title="View live" onclick="event.stopPropagation()">&#x2197;</a>` : ''}
                         </div>
                     `).join('')}
                 </div>
@@ -1113,67 +1456,124 @@ const App = {
         }
     },
 
-    // Render MY comments list by status (outgoing - I wrote these)
-    async renderMyCommentsList(container, status) {
+    // Extract hostname from a URL
+    extractDomainFromUrl(url) {
+        try { return new URL(url).hostname; } catch { return ''; }
+    },
+
+    // Render combined "My Comments" view with pill tabs (All/Drafts/Pending/Blessed/Denied)
+    async renderCommentsPublished(container, filter) {
+        if (filter) this._commentsPublishedFilter = filter;
+        const currentFilter = this._commentsPublishedFilter;
+
+        // Fetch all 4 statuses in parallel
+        let drafts = [], pending = [], blessed = [], denied = [];
         try {
-            const result = await this.api('GET', `/api/comments/${status}`);
-            const comments = result.comments || [];
-
-            // Update count
-            const countKey = status === 'pending' ? 'myPending' : status === 'blessed' ? 'myBlessed' : 'myDenied';
-            this.counts[countKey] = comments.length;
-            const badgeId = status === 'pending' ? 'my-pending-count' : status === 'blessed' ? 'my-blessed-count' : 'my-denied-count';
-            this.updateBadge(badgeId, comments.length, status === 'pending');
-
-            if (comments.length === 0) {
-                const messages = {
-                    pending: { title: 'No pending comments', desc: 'Comments you sent awaiting blessing will appear here' },
-                    blessed: { title: 'No blessed comments', desc: 'Your approved comments will appear here' },
-                    denied: { title: 'No denied comments', desc: 'Your denied comments will appear here' },
-                };
-                const msg = messages[status] || { title: 'No comments', desc: '' };
-
-                container.innerHTML = `
-                    <div class="content-list">
-                        <div class="empty-state">
-                            <h3>${msg.title}</h3>
-                            <p>${msg.desc}</p>
-                            <button class="primary" onclick="App.newComment()">New Comment</button>
-                        </div>
-                    </div>
-                `;
-                return;
-            }
-
-            container.innerHTML = `
-                <div class="content-list">
-                    ${comments.map(c => `
-                        <div class="content-item" data-id="${this.escapeHtml(c.id)}" onclick="App.viewMyComment('${this.escapeHtml(c.id)}', '${status}')">
-                            <div class="item-info">
-                                <div class="item-title">${this.escapeHtml(c.title || c.id)}</div>
-                                <div class="item-path">Re: ${this.escapeHtml(this.truncateUrl(c.in_reply_to))}</div>
-                            </div>
-                            <div class="item-meta-right">
-                                <div class="item-date-group">
-                                    <span class="item-date">${this.formatDate(c.timestamp)}</span>
-                                    <span class="item-time">${this.formatTime(c.timestamp)}</span>
-                                </div>
-                                <span class="comment-status-badge ${status}">${status}</span>
-                            </div>
-                        </div>
-                    `).join('')}
-                </div>
-            `;
+            const [draftsRes, pendingRes, blessedRes, deniedRes] = await Promise.all([
+                this.api('GET', '/api/comments/drafts').catch(() => ({ drafts: [] })),
+                this.api('GET', '/api/comments/pending').catch(() => ({ comments: [] })),
+                this.api('GET', '/api/comments/blessed').catch(() => ({ comments: [] })),
+                this.api('GET', '/api/comments/denied').catch(() => ({ comments: [] })),
+            ]);
+            drafts = (draftsRes.drafts || []).map(d => ({
+                ...d,
+                _status: 'draft',
+                _sortDate: d.updated_at || d.created_at || '',
+                _title: d.content ? d.content.substring(0, 60) : d.id,
+                _domain: this.extractDomainFromUrl(d.in_reply_to),
+            }));
+            pending = (pendingRes.comments || []).map(c => ({
+                ...c,
+                _status: 'pending',
+                _sortDate: c.timestamp || '',
+                _title: c.title || c.id,
+                _domain: this.extractDomainFromUrl(c.in_reply_to),
+            }));
+            blessed = (blessedRes.comments || []).map(c => ({
+                ...c,
+                _status: 'blessed',
+                _sortDate: c.timestamp || '',
+                _title: c.title || c.id,
+                _domain: this.extractDomainFromUrl(c.in_reply_to),
+            }));
+            denied = (deniedRes.comments || []).map(c => ({
+                ...c,
+                _status: 'denied',
+                _sortDate: c.timestamp || '',
+                _title: c.title || c.id,
+                _domain: this.extractDomainFromUrl(c.in_reply_to),
+            }));
         } catch (err) {
-            container.innerHTML = `
-                <div class="content-list">
-                    <div class="empty-state">
-                        <h3>Failed to load comments</h3>
-                        <p>${this.escapeHtml(err.message)}</p>
+            container.innerHTML = `<div class="content-list"><div class="empty-state"><h3>Failed to load</h3><p>${this.escapeHtml(err.message)}</p></div></div>`;
+            return;
+        }
+
+        // Update badge counts
+        this.counts.myCommentDrafts = drafts.length;
+        this.counts.myPending = pending.length;
+        this.counts.myBlessed = blessed.length;
+        this.counts.myDenied = denied.length;
+        const total = drafts.length + pending.length + blessed.length + denied.length;
+        this.updateBadge('comments-published-count', total);
+
+        // Build pill-style filter tabs
+        const tabClass = (name) => name === currentFilter ? 'feed-filter-tab active' : 'feed-filter-tab';
+        const tabs = `
+            <div class="feed-filter-tabs">
+                <button class="${tabClass('all')}" onclick="App.renderCommentsPublished(document.getElementById('content-list'), 'all')">All (${total})</button>
+                <button class="${tabClass('drafts')}" onclick="App.renderCommentsPublished(document.getElementById('content-list'), 'drafts')">Drafts (${drafts.length})</button>
+                <button class="${tabClass('blessed')}" onclick="App.renderCommentsPublished(document.getElementById('content-list'), 'blessed')">Blessed (${blessed.length})</button>
+                <button class="${tabClass('pending')}" onclick="App.renderCommentsPublished(document.getElementById('content-list'), 'pending')">Pending (${pending.length})</button>
+                <button class="${tabClass('denied')}" onclick="App.renderCommentsPublished(document.getElementById('content-list'), 'denied')">Denied (${denied.length})</button>
+            </div>
+        `;
+
+        // Filter items
+        let items = [];
+        if (currentFilter === 'all') items = [...drafts, ...pending, ...blessed, ...denied];
+        else if (currentFilter === 'drafts') items = drafts;
+        else if (currentFilter === 'pending') items = pending;
+        else if (currentFilter === 'blessed') items = blessed;
+        else if (currentFilter === 'denied') items = denied;
+
+        // Sort by date descending
+        items.sort((a, b) => (b._sortDate || '').localeCompare(a._sortDate || ''));
+
+        if (items.length === 0) {
+            const emptyMessages = {
+                all: 'No comments yet',
+                drafts: 'No comment drafts',
+                pending: 'No pending comments',
+                blessed: 'No blessed comments',
+                denied: 'No denied comments',
+            };
+            container.innerHTML = `${tabs}<div class="content-list"><div class="empty-state"><h3>${emptyMessages[currentFilter] || 'No comments'}</h3><p>Write a comment to reply to someone's post</p><button class="primary" onclick="App.newComment()">New Comment</button></div></div>`;
+            return;
+        }
+
+        const itemsHtml = items.map(item => {
+            const date = item._sortDate;
+            const onclick = item._status === 'draft'
+                ? `App.openCommentDraft('${this.escapeHtml(item.id)}')`
+                : `App.viewMyComment('${this.escapeHtml(item.id)}', '${item._status}')`;
+            return `
+                <div class="content-item" onclick="${onclick}">
+                    <div class="item-info">
+                        <div class="item-title">${this.escapeHtml(item._title)}</div>
+                        <div class="item-path">
+                            <span class="comment-status-badge ${item._status}">${item._status}</span>
+                            ${item._domain ? this.escapeHtml(item._domain) : ''}
+                        </div>
+                    </div>
+                    <div class="item-date-group">
+                        <span class="item-date">${this.formatDate(date)}</span>
+                        <span class="item-time">${this.formatTime(date)}</span>
                     </div>
                 </div>
             `;
-        }
+        }).join('');
+
+        container.innerHTML = `${tabs}<div class="content-list">${itemsHtml}</div>`;
     },
 
     // View a comment (my outgoing comments)
@@ -1186,157 +1586,80 @@ const App = {
         }
     },
 
-    // Show comment detail modal/view
-    showCommentDetail(comment, status) {
-        const modal = document.createElement('div');
-        modal.className = 'modal-overlay';
-        modal.innerHTML = `
-            <div class="modal comment-detail-modal">
-                <div class="modal-header">
-                    <h3>${this.escapeHtml(comment.title || comment.id)}</h3>
-                    <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">&times;</button>
+    // Show comment detail in flyout panel with content preview
+    async showCommentDetail(comment, status) {
+        const panel = document.getElementById('comment-detail-panel');
+        const body = document.getElementById('comment-detail-body');
+        const footer = document.getElementById('comment-detail-footer');
+        const title = document.getElementById('comment-detail-title');
+
+        title.textContent = comment.title || comment.id;
+
+        body.innerHTML = `
+            <div class="comment-detail-meta">
+                <div class="comment-detail-row">
+                    <span class="comment-detail-label">Status:</span>
+                    <span class="comment-detail-value"><span class="comment-status-badge ${status}">${status}</span></span>
                 </div>
-                <div class="modal-body">
-                    <div class="comment-detail-meta">
-                        <div class="meta-row">
-                            <span class="meta-label">Status:</span>
-                            <span class="comment-status-badge ${status}">${status}</span>
-                        </div>
-                        <div class="meta-row">
-                            <span class="meta-label">In Reply To:</span>
-                            <a href="${this.escapeHtml(comment.in_reply_to)}" target="_blank">${this.escapeHtml(comment.in_reply_to)}</a>
-                        </div>
-                        <div class="meta-row">
-                            <span class="meta-label">Timestamp:</span>
-                            <span>${this.formatDate(comment.timestamp)}</span>
-                        </div>
-                        ${comment.comment_url ? `
-                        <div class="meta-row">
-                            <span class="meta-label">Comment URL:</span>
-                            <a href="${this.escapeHtml(comment.comment_url)}" target="_blank">${this.escapeHtml(comment.comment_url)}</a>
-                        </div>
-                        ` : ''}
-                    </div>
-                    <div class="comment-detail-content">
-                        ${this.escapeHtml(comment.content || '(No content preview)')}
-                    </div>
+                <div class="comment-detail-row">
+                    <span class="comment-detail-label">In Reply To:</span>
+                    <span class="comment-detail-value"><a href="${this.escapeHtml(comment.in_reply_to)}" target="_blank">${this.escapeHtml(this.truncateUrl(comment.in_reply_to))}</a></span>
+                </div>
+                <div class="comment-detail-row">
+                    <span class="comment-detail-label">Submitted:</span>
+                    <span class="comment-detail-value">${this.formatDate(comment.timestamp)}</span>
+                </div>
+            </div>
+            <div class="comment-detail-preview">
+                <div class="comment-detail-preview-label">Comment</div>
+                <div class="comment-detail-preview-content parchment-preview" id="my-comment-preview">
+                    <span class="text-muted">Loading comment...</span>
                 </div>
             </div>
         `;
-        document.body.appendChild(modal);
-        modal.addEventListener('click', (e) => {
-            if (e.target === modal) modal.remove();
-        });
-    },
 
-    // Render MY comment drafts list
-    async renderMyCommentDraftsList(container) {
-        try {
-            const result = await this.api('GET', '/api/comments/drafts');
-            const drafts = result.drafts || [];
-            this.counts.myCommentDrafts = drafts.length;
-            this.updateBadge('my-comment-drafts-count', drafts.length);
+        footer.innerHTML = `
+            <button class="secondary" onclick="App.closeCommentDetail()">Close</button>
+        `;
 
-            if (drafts.length === 0) {
-                container.innerHTML = `
-                    <div class="content-list">
-                        <div class="empty-state">
-                            <h3>No comment drafts</h3>
-                            <p>Start writing a comment to reply to a post</p>
-                            <button class="primary" onclick="App.newComment()">New Comment</button>
-                        </div>
-                    </div>
-                `;
-                return;
+        panel.classList.remove('hidden');
+        this.bindCommentDetailEvents();
+
+        // Fetch and display comment content
+        const previewEl = document.getElementById('my-comment-preview');
+        if (comment.comment_url) {
+            const content = await this.fetchCommentContent(comment.comment_url);
+            if (previewEl) {
+                if (content) {
+                    previewEl.innerHTML = content;
+                } else {
+                    previewEl.innerHTML = `<a href="${this.escapeHtml(comment.comment_url)}" target="_blank">Open comment in new tab &rarr;</a>`;
+                }
             }
-
-            container.innerHTML = `
-                <div class="content-list">
-                    ${drafts.map(d => `
-                        <div class="comment-item" onclick="App.openCommentDraft('${this.escapeHtml(d.id)}')">
-                            <div class="comment-header">
-                                <div class="comment-target">
-                                    Re: <a href="${this.escapeHtml(d.in_reply_to)}" target="_blank">${this.escapeHtml(this.truncateUrl(d.in_reply_to))}</a>
-                                </div>
-                                <span class="comment-status draft">draft</span>
-                            </div>
-                            <div class="comment-preview">${this.escapeHtml(d.content ? d.content.substring(0, 100) : d.id)}</div>
-                            <div class="comment-meta">
-                                <span>${this.formatDate(d.updated_at || d.created_at)}</span>
-                            </div>
-                        </div>
-                    `).join('')}
-                </div>
-            `;
-        } catch (err) {
-            container.innerHTML = `
-                <div class="content-list">
-                    <div class="empty-state">
-                        <h3>Failed to load drafts</h3>
-                        <p>${this.escapeHtml(err.message)}</p>
-                    </div>
-                </div>
-            `;
+        } else if (comment.content) {
+            if (previewEl) {
+                previewEl.innerHTML = `<pre style="white-space: pre-wrap; margin: 0;">${this.escapeHtml(comment.content)}</pre>`;
+            }
+        } else {
+            if (previewEl) {
+                previewEl.innerHTML = '<span class="text-muted">No content preview available</span>';
+            }
         }
     },
 
-    // Render INCOMING pending blessing requests (on my posts - others wrote these)
-    async renderIncomingPendingList(container) {
+    // Fetch remote comment/post content for preview
+    async fetchCommentContent(url) {
         try {
-            const result = await this.api('GET', '/api/blessing/requests');
-            const requests = result.requests || [];
-            this.counts.incomingPending = requests.length;
-            this.updateBadge('incoming-pending-count', requests.length, true);
-
-            if (requests.length === 0) {
-                container.innerHTML = `
-                    <div class="content-list">
-                        <div class="empty-state">
-                            <h3>No pending blessing requests</h3>
-                            <p>When someone comments on your posts, their blessing requests will appear here. <a href="https://polis.pub/docs/blessings" target="_blank" rel="noopener">What are blessings?</a></p>
-                        </div>
-                    </div>
-                `;
-                return;
-            }
-
-            container.innerHTML = `
-                <div class="content-list">
-                    ${requests.map(r => `
-                        <div class="comment-item incoming-request" data-version="${this.escapeHtml(r.comment_version)}" onclick="App.openPendingRequestDetail(${this.escapeHtml(JSON.stringify(JSON.stringify(r)))})">
-                            <div class="comment-header">
-                                <span class="comment-author">${this.escapeHtml(r.author)}</span>
-                                <span class="comment-date">${this.formatDate(r.timestamp)}</span>
-                            </div>
-                            <div class="comment-target">
-                                On: <a href="${this.escapeHtml(r.in_reply_to)}" target="_blank" onclick="event.stopPropagation()">${this.escapeHtml(this.truncateUrl(r.in_reply_to))}</a>
-                            </div>
-                            <div class="comment-url">
-                                <a href="${this.escapeHtml(r.comment_url)}" target="_blank" onclick="event.stopPropagation()">View comment</a>
-                            </div>
-                            <div class="comment-actions">
-                                <button class="primary" onclick="event.stopPropagation(); App.grantBlessing('${this.escapeHtml(r.comment_version)}', '${this.escapeHtml(r.comment_url)}', '${this.escapeHtml(r.in_reply_to)}')">Bless</button>
-                                <button class="secondary danger" onclick="event.stopPropagation(); App.denyBlessing('${this.escapeHtml(r.comment_url)}', '${this.escapeHtml(r.in_reply_to)}')">Deny</button>
-                            </div>
-                        </div>
-                    `).join('')}
-                </div>
-            `;
-        } catch (err) {
-            container.innerHTML = `
-                <div class="content-list">
-                    <div class="empty-state">
-                        <h3>Failed to load requests</h3>
-                        <p>${this.escapeHtml(err.message)}</p>
-                    </div>
-                </div>
-            `;
+            const result = await this.api('GET', '/api/remote/post?url=' + encodeURIComponent(url));
+            return result.content || '';
+        } catch {
+            return null;
         }
     },
 
-    // Open pending request detail panel
-    openPendingRequestDetail(requestJson) {
-        const request = JSON.parse(requestJson);
+    // Open pending request detail panel with comment content preview
+    async openPendingRequestDetail(index) {
+        const request = this._pendingRequests[index];
         const panel = document.getElementById('comment-detail-panel');
         const body = document.getElementById('comment-detail-body');
         const footer = document.getElementById('comment-detail-footer');
@@ -1352,21 +1675,17 @@ const App = {
                 </div>
                 <div class="comment-detail-row">
                     <span class="comment-detail-label">On post:</span>
-                    <span class="comment-detail-value"><a href="${this.escapeHtml(request.in_reply_to)}" target="_blank">${this.escapeHtml(request.in_reply_to)}</a></span>
-                </div>
-                <div class="comment-detail-row">
-                    <span class="comment-detail-label">Comment:</span>
-                    <span class="comment-detail-value"><a href="${this.escapeHtml(request.comment_url)}" target="_blank">${this.escapeHtml(request.comment_url)}</a></span>
+                    <span class="comment-detail-value"><a href="${this.escapeHtml(request.in_reply_to)}" target="_blank">${this.escapeHtml(this.truncateUrl(request.in_reply_to))}</a></span>
                 </div>
                 <div class="comment-detail-row">
                     <span class="comment-detail-label">Submitted:</span>
-                    <span class="comment-detail-value">${this.formatDate(request.timestamp)}</span>
+                    <span class="comment-detail-value">${this.formatDate(request.created_at || request.timestamp)}</span>
                 </div>
             </div>
             <div class="comment-detail-preview">
-                <div class="comment-detail-preview-label">View Comment</div>
-                <div class="comment-detail-preview-content">
-                    <a href="${this.escapeHtml(request.comment_url)}" target="_blank">Open comment in new tab &rarr;</a>
+                <div class="comment-detail-preview-label">Comment</div>
+                <div class="comment-detail-preview-content parchment-preview" id="blessing-comment-preview">
+                    <span class="text-muted">Loading comment...</span>
                 </div>
             </div>
         `;
@@ -1378,70 +1697,23 @@ const App = {
 
         panel.classList.remove('hidden');
         this.bindCommentDetailEvents();
-    },
 
-    // Render INCOMING blessed comments (on my posts)
-    async renderIncomingBlessedList(container) {
-        try {
-            const result = await this.api('GET', '/api/blessed-comments');
-            const postComments = result.comments || [];
-
-            // Flatten for display
-            let allBlessed = [];
-            for (const pc of postComments) {
-                for (const c of (pc.blessed || [])) {
-                    allBlessed.push({
-                        ...c,
-                        post: pc.post
-                    });
+        // Fetch and display comment content
+        if (request.comment_url) {
+            const content = await this.fetchCommentContent(request.comment_url);
+            const previewEl = document.getElementById('blessing-comment-preview');
+            if (previewEl) {
+                if (content) {
+                    previewEl.innerHTML = content;
+                } else {
+                    previewEl.innerHTML = `<a href="${this.escapeHtml(request.comment_url)}" target="_blank">Open comment in new tab &rarr;</a>`;
                 }
             }
-
-            this.counts.incomingBlessed = allBlessed.length;
-            this.updateBadge('incoming-blessed-count', allBlessed.length);
-
-            if (allBlessed.length === 0) {
-                container.innerHTML = `
-                    <div class="content-list">
-                        <div class="empty-state">
-                            <h3>No blessed comments yet</h3>
-                            <p>Comments you approve will appear here</p>
-                        </div>
-                    </div>
-                `;
-                return;
-            }
-
-            container.innerHTML = `
-                <div class="content-list">
-                    ${allBlessed.map(c => `
-                        <div class="content-item" onclick="App.openBlessedCommentDetail(${this.escapeHtml(JSON.stringify(JSON.stringify(c)))})">
-                            <div class="item-info">
-                                <div class="item-title">${this.escapeHtml(this.truncateUrl(c.url))}</div>
-                                <div class="item-path">On: ${this.escapeHtml(c.post)}</div>
-                            </div>
-                            <div class="item-meta-right">
-                                <span class="item-date">${this.formatDate(c.blessed_at)}</span>
-                                <span class="comment-status-badge blessed">blessed</span>
-                            </div>
-                        </div>
-                    `).join('')}
-                </div>
-            `;
-        } catch (err) {
-            container.innerHTML = `
-                <div class="content-list">
-                    <div class="empty-state">
-                        <h3>Failed to load blessed comments</h3>
-                        <p>${this.escapeHtml(err.message)}</p>
-                    </div>
-                </div>
-            `;
         }
     },
 
     // Render combined blessing requests view with tabs (pending/blessed/all)
-    _blessingRequestsFilter: 'pending',
+    _blessingRequestsFilter: 'all',
     async renderBlessingRequests(container, filter) {
         if (filter) this._blessingRequestsFilter = filter;
         const currentFilter = this._blessingRequestsFilter;
@@ -1470,46 +1742,61 @@ const App = {
         this.counts.incomingBlessed = allBlessed.length;
         this.updateBadge('incoming-pending-count', requests.length, true);
 
-        // Build tab bar
-        const tabClass = (name) => name === currentFilter ? 'filter-tab active' : 'filter-tab';
+        // Build pill-style filter tabs (matching feed/conversations)
+        const tabClass = (name) => name === currentFilter ? 'feed-filter-tab active' : 'feed-filter-tab';
         const tabs = `
-            <div class="filter-tabs">
+            <div class="feed-filter-tabs">
+                <button class="${tabClass('all')}" onclick="App.renderBlessingRequests(document.getElementById('content-list'), 'all')">All (${requests.length + allBlessed.length})</button>
                 <button class="${tabClass('pending')}" onclick="App.renderBlessingRequests(document.getElementById('content-list'), 'pending')">Pending (${requests.length})</button>
                 <button class="${tabClass('blessed')}" onclick="App.renderBlessingRequests(document.getElementById('content-list'), 'blessed')">Blessed (${allBlessed.length})</button>
-                <button class="${tabClass('all')}" onclick="App.renderBlessingRequests(document.getElementById('content-list'), 'all')">All (${requests.length + allBlessed.length})</button>
             </div>
         `;
 
-        // Build items
+        // Store for click handlers (avoids serializing JSON into HTML attributes)
+        this._pendingRequests = requests;
+        this._blessedComments = allBlessed;
+
+        // Build items using standard content-item layout
         let items = '';
         if (currentFilter === 'pending' || currentFilter === 'all') {
-            items += requests.map(r => `
-                <div class="comment-item incoming-request" onclick="App.openPendingRequestDetail(${this.escapeHtml(JSON.stringify(JSON.stringify(r)))})">
-                    <div class="comment-header">
-                        <span class="comment-author">${this.escapeHtml(r.author)}</span>
-                        <span class="comment-date">${this.formatDate(r.timestamp)}</span>
-                        <span class="comment-status-badge pending">pending</span>
+            items += requests.map((r, idx) => {
+                const date = r.created_at || r.timestamp;
+                const slug = (r.in_reply_to || '').split('/').pop()?.replace(/\.md$/, '') || 'post';
+                const title = `Re: ${slug}`;
+                return `
+                <div class="content-item" onclick="App.openPendingRequestDetail(${idx})">
+                    <div class="item-info">
+                        <div class="item-title">${this.escapeHtml(title)}</div>
+                        <div class="item-path">
+                            <span class="comment-status-badge pending">PENDING</span>
+                            ${r.author ? this.escapeHtml(r.author) : ''}
+                        </div>
                     </div>
-                    <div class="comment-target">
-                        On: <a href="${this.escapeHtml(r.in_reply_to)}" target="_blank" onclick="event.stopPropagation()">${this.escapeHtml(this.truncateUrl(r.in_reply_to))}</a>
+                    <div class="item-date-group">
+                        <span class="item-date">${this.formatDate(date)}</span>
+                        <span class="item-time">${this.formatTime(date)}</span>
                     </div>
-                    <div class="comment-actions">
-                        <button class="primary" onclick="event.stopPropagation(); App.grantBlessing('${this.escapeHtml(r.comment_version)}', '${this.escapeHtml(r.comment_url)}', '${this.escapeHtml(r.in_reply_to)}')">Bless</button>
-                        <button class="secondary danger" onclick="event.stopPropagation(); App.denyBlessing('${this.escapeHtml(r.comment_url)}', '${this.escapeHtml(r.in_reply_to)}')">Deny</button>
-                    </div>
-                </div>
-            `).join('');
+                </div>`;
+            }).join('');
         }
         if (currentFilter === 'blessed' || currentFilter === 'all') {
-            items += allBlessed.map(c => `
-                <div class="content-item" onclick="App.openBlessedCommentDetail(${this.escapeHtml(JSON.stringify(JSON.stringify(c)))})">
+            items += allBlessed.map((c, idx) => {
+                const domain = this.extractDomainFromUrl(c.post);
+                return `
+                <div class="content-item" onclick="App.openBlessedCommentDetail(${idx})">
                     <div class="item-info">
-                        <span class="item-title">${this.escapeHtml(c.url ? c.url.split('/').pop() : 'comment')}</span>
-                        <span class="comment-status-badge blessed">blessed</span>
+                        <div class="item-title">${this.escapeHtml(c.url ? c.url.split('/').pop() : 'comment')}</div>
+                        <div class="item-path">
+                            <span class="comment-status-badge blessed">blessed</span>
+                            ${domain ? this.escapeHtml(domain) : ''}
+                        </div>
                     </div>
-                    <div class="item-meta">On: ${this.escapeHtml(this.truncateUrl(c.post))}</div>
-                </div>
-            `).join('');
+                    <div class="item-date-group">
+                        <span class="item-date">${this.formatDate(c.blessed_at)}</span>
+                        <span class="item-time">${this.formatTime(c.blessed_at)}</span>
+                    </div>
+                </div>`;
+            }).join('');
         }
 
         if (!items) {
@@ -1524,9 +1811,9 @@ const App = {
         container.innerHTML = `${tabs}<div class="content-list">${items}</div>`;
     },
 
-    // Open blessed comment detail panel
-    openBlessedCommentDetail(commentJson) {
-        const comment = JSON.parse(commentJson);
+    // Open blessed comment detail panel with content preview
+    async openBlessedCommentDetail(index) {
+        const comment = this._blessedComments[index];
         const panel = document.getElementById('comment-detail-panel');
         const body = document.getElementById('comment-detail-body');
         const footer = document.getElementById('comment-detail-footer');
@@ -1541,10 +1828,6 @@ const App = {
                     <span class="comment-detail-value">${this.escapeHtml(comment.post)}</span>
                 </div>
                 <div class="comment-detail-row">
-                    <span class="comment-detail-label">Comment:</span>
-                    <span class="comment-detail-value"><a href="${this.escapeHtml(comment.url)}" target="_blank">${this.escapeHtml(comment.url)}</a></span>
-                </div>
-                <div class="comment-detail-row">
                     <span class="comment-detail-label">Version:</span>
                     <span class="comment-detail-value" style="font-family: var(--font-mono); font-size: 0.8rem;">${this.escapeHtml(comment.version)}</span>
                 </div>
@@ -1554,9 +1837,9 @@ const App = {
                 </div>
             </div>
             <div class="comment-detail-preview">
-                <div class="comment-detail-preview-label">View Comment</div>
-                <div class="comment-detail-preview-content">
-                    <a href="${this.escapeHtml(comment.url)}" target="_blank">Open comment in new tab &rarr;</a>
+                <div class="comment-detail-preview-label">Comment</div>
+                <div class="comment-detail-preview-content parchment-preview" id="blessed-comment-preview">
+                    <span class="text-muted">Loading comment...</span>
                 </div>
             </div>
         `;
@@ -1568,6 +1851,19 @@ const App = {
 
         panel.classList.remove('hidden');
         this.bindCommentDetailEvents();
+
+        // Fetch and display comment content
+        if (comment.url) {
+            const content = await this.fetchCommentContent(comment.url);
+            const previewEl = document.getElementById('blessed-comment-preview');
+            if (previewEl) {
+                if (content) {
+                    previewEl.innerHTML = content;
+                } else {
+                    previewEl.innerHTML = `<a href="${this.escapeHtml(comment.url)}" target="_blank">Open comment in new tab &rarr;</a>`;
+                }
+            }
+        }
     },
 
     // Close comment detail panel
@@ -1613,6 +1909,8 @@ const App = {
             // Store existing hooks for advanced panel
             this.existingHooks = settings.existing_hooks || [];
 
+            const themes = settings.themes || [];
+
             let automationsHtml = '';
             if (automations.length === 0) {
                 automationsHtml = `
@@ -1649,7 +1947,10 @@ const App = {
                         <div class="settings-card">
                             <div class="settings-row">
                                 <span class="settings-row-label">Site:</span>
-                                <span class="settings-row-value">${this.escapeHtml(site.site_title || 'Not configured')}</span>
+                                <span class="settings-row-value" id="site-title-display">${this.escapeHtml(site.site_title || 'Not configured')}</span>
+                                <div class="settings-row-actions">
+                                    <button class="btn-copy" id="site-title-edit-btn" onclick="App.editSiteTitle()">Edit</button>
+                                </div>
                             </div>
                             <div class="settings-row">
                                 <span class="settings-row-label">Public Key:</span>
@@ -1658,10 +1959,41 @@ const App = {
                                     <button class="btn-copy" onclick="App.copyPublicKey('${this.escapeHtml(site.public_key || '')}')">Copy</button>
                                 </div>
                             </div>
+                            ${this.isHosted ? `
+                            <div class="settings-row">
+                                <span class="settings-row-label">Discovery:</span>
+                                <span class="settings-row-value" id="registration-status">Checking...</span>
+                            </div>
+                            ` : ''}
                         </div>
                     </div>
 
-                    ${this.isHosted ? '' : `
+                    ${themes.length > 0 ? `
+                    <div class="settings-section">
+                        <div class="settings-section-label">Theme</div>
+                        <div class="settings-card">
+                            <div class="settings-row" style="flex-direction: column; align-items: flex-start; gap: 0.75rem;">
+                                <div class="theme-picker">
+                                    <select id="theme-select" class="theme-select" onchange="App.onThemeSelectChange()">
+                                        ${themes.map(t => {
+                                            const desc = this.themeDescriptions[t.name] || '';
+                                            const label = desc ? `${t.name} — ${desc}` : t.name;
+                                            return `<option value="${this.escapeHtml(t.name)}" ${t.active ? 'selected' : ''} data-original="${t.active ? 'true' : ''}">${this.escapeHtml(label)}</option>`;
+                                        }).join('')}
+                                    </select>
+                                </div>
+                                <div class="theme-actions">
+                                    <button class="primary" id="theme-apply-btn" disabled onclick="App.applySelectedTheme()">Change Theme</button>
+                                    <span class="theme-view-link" id="theme-view-link" style="display: none;">
+                                        Theme updated. <a href="#" onclick="App.viewSite(); return false;">View your site</a>
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    ` : ''}
+
+                    ${!this.isHosted ? `
                     <div class="settings-section">
                         <div class="settings-section-label">Discovery Service</div>
                         <div class="settings-card">
@@ -1703,7 +2035,7 @@ const App = {
                             </div>
                         </div>
                     </div>
-                    `}
+                    ` : ''}
 
                     ${this.isHosted ? '' : `
                     <div class="settings-section">
@@ -1713,6 +2045,28 @@ const App = {
                         </div>
                     </div>
                     `}
+
+                    <div class="settings-section">
+                        <div class="settings-section-label">Troubleshooting</div>
+                        <div class="settings-card">
+                            <div class="settings-row" style="flex-direction: column; align-items: flex-start; gap: 0.75rem;">
+                                <span class="settings-row-value" style="white-space: normal; color: var(--text-muted); font-family: inherit;">
+                                    Force re-render all posts and comments. Use this if pages look wrong after a theme or snippet change.
+                                </span>
+                                <button class="primary" id="rerender-btn" onclick="App.rerenderSite()">Re-render all pages</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="settings-section">
+                        <div class="settings-section-label">Your Data</div>
+                        <div class="settings-card">
+                            <div class="settings-row" style="flex-direction: column; align-items: flex-start; gap: 0.75rem;">
+                                <span class="settings-row-value" style="white-space: normal; color: var(--text-muted); font-family: inherit;">Download a zip archive of your entire site &mdash; posts, snippets, config, and themes. Private keys are excluded.</span>
+                                <button class="primary" onclick="App.downloadSite()">Download site</button>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             `;
 
@@ -1765,6 +2119,106 @@ const App = {
             }
         } catch (err) {
             this.showToast('Failed to copy: ' + err.message, 'error');
+        }
+    },
+
+    editSiteTitle() {
+        const display = document.getElementById('site-title-display');
+        const btn = document.getElementById('site-title-edit-btn');
+        if (!display || !btn) return;
+
+        const current = display.textContent === 'Not configured' ? '' : display.textContent;
+        display.innerHTML = `<input type="text" id="site-title-input" value="${this.escapeHtml(current)}" style="font-size:0.85rem;font-family:var(--font-mono);background:var(--bg-light);border:1px solid var(--border-color);color:var(--text-color);padding:0.25rem 0.5rem;border-radius:3px;width:100%;">`;
+        btn.textContent = 'Save';
+        btn.onclick = () => App.saveSiteTitle();
+
+        const input = document.getElementById('site-title-input');
+        if (input) { input.focus(); input.select(); }
+    },
+
+    async saveSiteTitle() {
+        const input = document.getElementById('site-title-input');
+        const display = document.getElementById('site-title-display');
+        const btn = document.getElementById('site-title-edit-btn');
+        if (!input || !display || !btn) return;
+
+        const newTitle = input.value.trim();
+        try {
+            const result = await this.api('POST', '/api/settings/site-title', { site_title: newTitle });
+            display.textContent = result.site_title || 'Not configured';
+            document.getElementById('domain-display').textContent = result.site_title || '';
+            btn.textContent = 'Edit';
+            btn.onclick = () => App.editSiteTitle();
+            this.showToast('Site title updated', 'success');
+        } catch (err) {
+            this.showToast('Failed to update title: ' + err.message, 'error');
+        }
+    },
+
+    downloadSite() {
+        window.location.href = '/api/download-site';
+    },
+
+    async rerenderSite() {
+        const btn = document.getElementById('rerender-btn');
+        if (btn) { btn.disabled = true; btn.textContent = 'Rendering...'; }
+        try {
+            const result = await this.api('POST', '/api/render-page', { path: '/' });
+            this.showToast(`Re-rendered ${result.posts_rendered} posts, ${result.comments_rendered} comments`, 'success');
+        } catch (err) {
+            this.showToast('Re-render failed: ' + err.message, 'error');
+        } finally {
+            if (btn) { btn.disabled = false; btn.textContent = 'Re-render all pages'; }
+        }
+    },
+
+    // Theme descriptions for the settings panel
+    themeDescriptions: {
+        'especial': 'Dark gold and navy, inspired by Modelo Especial.',
+        'especial-light': 'Light variant of especial with warm fog tones.',
+        'sols': 'Violet and peach, inspired by Nine Sols.',
+        'turbo': 'Deep blue with bright cyan, retro computing aesthetic.',
+        'vice': 'Warm coral and sunset hues, Miami Vice vibes.',
+        'zane': 'Neutral dark with teal and salmon, based on a classic editor theme.',
+    },
+
+    // Enable/disable the Change Theme button based on dropdown selection
+    onThemeSelectChange() {
+        const select = document.getElementById('theme-select');
+        const btn = document.getElementById('theme-apply-btn');
+        if (!select || !btn) return;
+        const selectedOpt = select.options[select.selectedIndex];
+        const isOriginal = selectedOpt.dataset.original === 'true';
+        btn.disabled = isOriginal;
+    },
+
+    // Apply the currently selected theme from dropdown
+    async applySelectedTheme() {
+        const select = document.getElementById('theme-select');
+        if (!select) return;
+        const name = select.value;
+        try {
+            await this.api('POST', '/api/settings/theme', { theme: name });
+            this.showToast(`Switched to ${name}`, 'success');
+            // Update data-original so the new theme is now "current"
+            Array.from(select.options).forEach(opt => {
+                opt.dataset.original = opt.value === name ? 'true' : '';
+            });
+            // Disable button again since selection now matches active theme
+            const btn = document.getElementById('theme-apply-btn');
+            if (btn) btn.disabled = true;
+            // Show the "view site" link
+            const link = document.getElementById('theme-view-link');
+            if (link) link.style.display = 'inline';
+        } catch (err) {
+            this.showToast('Failed to switch theme: ' + err.message, 'error');
+        }
+    },
+
+    // Open the site in a background tab
+    viewSite() {
+        if (this.siteBaseUrl) {
+            window.open(this.siteBaseUrl, '_blank');
         }
     },
 
@@ -2545,37 +2999,32 @@ echo "File: $POLIS_PATH"</code>
                 const action = isRepublish ? 'Republished' : 'Published';
                 this.showToast(`${action}: ${result.title}`, 'success');
 
-                // Post-action suggestion: share your site
-                if (!isRepublish && this.siteBaseUrl) {
-                    const shareUrl = this.siteBaseUrl;
-                    this.showSuggestion(
-                        `Share your post? <a href="${this.escapeHtml(shareUrl)}" target="_blank" style="color:var(--teal)">${this.escapeHtml(shareUrl.replace(/^https?:\/\//, ''))}</a> ` +
-                        `<button onclick="navigator.clipboard.writeText('${this.escapeHtml(shareUrl)}'); this.textContent='Copied!'; this.disabled=true;" style="background:var(--teal);color:var(--bg-color);border:none;padding:2px 8px;border-radius:3px;font-family:inherit;cursor:pointer;font-size:.75rem;">Copy link</button>`
-                    );
-                }
-
                 // Clear editor and return to dashboard
                 this.currentDraftId = null;
                 this.currentPostPath = null;
                 document.getElementById('markdown-input').value = '';
                 document.getElementById('preview-content').innerHTML =
                     '<p class="empty-state">Start writing to see a preview.</p>';
-        
 
                 // Switch to Published view
                 this.currentView = 'posts-published';
                 await this.loadAllCounts();
                 await this.loadViewContent();
+
+                // Show broadcast pulse on the newly published post
+                if (!isRepublish) {
+                    const postPath = result.path || '';
+                    const item = postPath
+                        ? document.querySelector(`.content-item[data-path="${CSS.escape(postPath)}"]`)
+                        : document.querySelector('.content-item');
+                    this.showBroadcastPulse(item);
+                }
                 this.updatePublishButton();
                 this.showScreen('dashboard');
+                window.history.replaceState({}, '', this.pathForView('posts-published'));
 
                 // Update sidebar active state
-                document.querySelectorAll('.sidebar .nav-item').forEach(item => {
-                    item.classList.remove('active');
-                    if (item.dataset.view === 'posts-published') {
-                        item.classList.add('active');
-                    }
-                });
+                this._updateSidebarActiveItem('posts-published');
             }
         } catch (err) {
             this.showToast('Failed to publish: ' + err.message, 'error');
@@ -2586,7 +3035,7 @@ echo "File: $POLIS_PATH"</code>
     },
 
     // Open a draft for editing
-    async openDraft(id) {
+    async openDraft(id, opts = {}) {
         try {
             const result = await this.api('GET', `/api/drafts/${encodeURIComponent(id)}`);
             this.currentDraftId = id;
@@ -2596,9 +3045,12 @@ echo "File: $POLIS_PATH"</code>
             document.getElementById('markdown-input').value = result.markdown;
             document.getElementById('filename-input').value = id;  // Draft ID is the filename
             document.getElementById('filename-input').disabled = false;
-    
+
             this.updateEditorFmToggle();
             this.updatePublishButton();
+            if (opts.pushState !== false) {
+                window.history.pushState({}, '', this.pathForScreen('openDraft', { id }));
+            }
             this.showScreen('editor');
             this.editorUpdatePreview();
         } catch (err) {
@@ -2607,8 +3059,10 @@ echo "File: $POLIS_PATH"</code>
     },
 
     // Open a published post for editing
-    async openPost(path) {
+    async openPost(path, opts = {}) {
         try {
+            // Strip .md extension if present (normalize URL)
+            const cleanPath = path.endsWith('.md') ? path.slice(0, -3) : path;
             const result = await this.api('GET', `/api/posts/${encodeURIComponent(path)}`);
             this.currentDraftId = null;
             this.currentPostPath = path;
@@ -2622,6 +3076,9 @@ echo "File: $POLIS_PATH"</code>
 
             this.updateEditorFmToggle();
             this.updatePublishButton();
+            if (opts.pushState !== false) {
+                window.history.pushState({}, '', this.pathForScreen('openPost', { path: cleanPath }));
+            }
             this.showScreen('editor');
             this.editorUpdatePreview();
         } catch (err) {
@@ -2660,12 +3117,15 @@ echo "File: $POLIS_PATH"</code>
     },
 
     // Open a comment draft for editing
-    async openCommentDraft(id) {
+    async openCommentDraft(id, opts = {}) {
         try {
             const draft = await this.api('GET', `/api/comments/drafts/${encodeURIComponent(id)}`);
             this.currentCommentDraftId = id;
             document.getElementById('reply-to-url').value = draft.in_reply_to || '';
             document.getElementById('comment-input').value = draft.content || '';
+            if (opts.pushState !== false) {
+                window.history.pushState({}, '', this.pathForScreen('openCommentDraft', { id }));
+            }
             this.showScreen('comment');
         } catch (err) {
             this.showToast('Failed to load draft: ' + err.message, 'error');
@@ -2754,19 +3214,16 @@ echo "File: $POLIS_PATH"</code>
             document.getElementById('reply-to-url').value = '';
             document.getElementById('comment-input').value = '';
 
-            // Switch to my comments pending view
-            this.currentView = 'my-comments-pending';
+            // Switch to comments published view with pending filter
+            this._commentsPublishedFilter = 'pending';
+            this.currentView = 'comments-published';
             await this.loadAllCounts();
+            this.updateSidebar(); // Ensure lifecycle recalculated after count update
+            this.fetchNotificationCount(); // Immediate notification refresh after beseech
             await this.loadViewContent();
             this.showScreen('dashboard');
-
-            // Update sidebar active state
-            document.querySelectorAll('.sidebar .nav-item').forEach(item => {
-                item.classList.remove('active');
-                if (item.dataset.view === 'my-comments-pending') {
-                    item.classList.add('active');
-                }
-            });
+            window.history.replaceState({}, '', this.basePath + '/comments/pending');
+            this._updateSidebarActiveItem('comments-published');
 
             // Show intent-aware CTAs if comment was from an intent param
             if (wasFromIntent) {
@@ -2872,289 +3329,51 @@ echo "File: $POLIS_PATH"</code>
         }
     },
 
-    // Snippet management methods
+    // About page editor (full-screen, matches post editor pattern)
 
-    // Render snippets list with directory navigation
-    async renderSnippetsList(container) {
+    async openAboutEditor() {
         try {
-            const path = this.snippetState.currentPath || '';
-            const filter = this.snippetState.filter || 'all';
-            const result = await this.api('GET', `/api/snippets?path=${encodeURIComponent(path)}&filter=${filter}`);
-            const entries = result.entries || [];
-            this.snippetState.activeTheme = result.active_theme;
-
-            // Build breadcrumb
-            const breadcrumb = this.buildSnippetBreadcrumb(result.path, result.parent);
-
-            if (entries.length === 0 && path === '') {
-                container.innerHTML = `
-                    <div class="content-list">
-                        ${breadcrumb}
-                        <div class="empty-state">
-                            <h3>No snippets yet</h3>
-                            <p>Snippets are reusable HTML/Markdown templates. <a href="https://polis.pub/docs/snippets" target="_blank" rel="noopener">Learn more</a></p>
-                            <button class="primary" onclick="App.newSnippet()">Create Snippet</button>
-                        </div>
-                    </div>
-                `;
-                return;
-            }
-
-            container.innerHTML = `
-                <div class="content-list">
-                    ${breadcrumb}
-                    ${entries.map(entry => entry.is_dir
-                        ? this.renderSnippetDirItem(entry)
-                        : this.renderSnippetFileItem(entry)
-                    ).join('')}
-                </div>
-            `;
+            const result = await this.api('GET', '/api/about');
+            document.getElementById('about-editor-textarea').value = result.content || '';
+            this.showScreen('about');
+            this.updateAboutPreview();
         } catch (err) {
-            container.innerHTML = `
-                <div class="content-list">
-                    <div class="empty-state">
-                        <h3>Failed to load snippets</h3>
-                        <p>${this.escapeHtml(err.message)}</p>
-                    </div>
-                </div>
-            `;
+            this.showToast('Failed to load about content: ' + err.message, 'error');
         }
     },
 
-    // Build breadcrumb navigation for snippets
-    buildSnippetBreadcrumb(currentPath, parentPath) {
-        if (!currentPath) {
-            return ''; // No breadcrumb at root
-        }
+    // Update the about editor live preview
+    async updateAboutPreview() {
+        const textarea = document.getElementById('about-editor-textarea');
+        const preview = document.getElementById('about-editor-preview');
+        if (!textarea || !preview) return;
 
-        const parts = currentPath.split('/');
-        let html = '<div class="snippet-breadcrumb">';
-        html += `<span class="breadcrumb-item" onclick="App.navigateSnippetDir('')">snippets</span>`;
-
-        let accPath = '';
-        for (let i = 0; i < parts.length; i++) {
-            accPath = accPath ? accPath + '/' + parts[i] : parts[i];
-            if (i === parts.length - 1) {
-                html += ` / <span class="breadcrumb-current">${this.escapeHtml(parts[i])}</span>`;
-            } else {
-                html += ` / <span class="breadcrumb-item" onclick="App.navigateSnippetDir('${this.escapeHtml(accPath)}')">${this.escapeHtml(parts[i])}</span>`;
-            }
-        }
-
-        html += '</div>';
-        return html;
-    },
-
-    // Render a directory item in the snippets list
-    renderSnippetDirItem(entry) {
-        return `
-            <div class="snippet-item" onclick="App.navigateSnippetDir('${this.escapeHtml(entry.path)}')">
-                <span class="snippet-icon">&#128193;</span>
-                <div class="snippet-info">
-                    <div class="snippet-name">${this.escapeHtml(entry.name)}/</div>
-                </div>
-                <span class="snippet-arrow">&rarr;</span>
-            </div>
-        `;
-    },
-
-    // Render a file item in the snippets list
-    renderSnippetFileItem(entry) {
-        const sourceClass = entry.type === 'global' ? 'source-global' : 'source-theme';
-        const sourceLabel = entry.type === 'global' ? 'Global' : 'Theme';
-        const overrideNote = entry.has_override ? '<span class="override-note">(overrides theme)</span>' : '';
-
-        // Build full path from polis root
-        let fullPath;
-        if (entry.type === 'global') {
-            fullPath = `snippets/${entry.path}`;
-        } else {
-            const theme = this.snippetState.activeTheme || 'zane';
-            fullPath = `themes/${theme}/snippets/${entry.path}`;
-        }
-
-        return `
-            <div class="snippet-item" onclick="App.openSnippet('${this.escapeHtml(entry.path)}', '${entry.type}')">
-                <span class="snippet-icon">&#128196;</span>
-                <div class="snippet-info">
-                    <div class="snippet-name">${this.escapeHtml(entry.name)}${overrideNote}</div>
-                    <div class="snippet-path">${this.escapeHtml(fullPath)}</div>
-                </div>
-                <span class="snippet-source ${sourceClass}">${sourceLabel}</span>
-            </div>
-        `;
-    },
-
-    // Navigate to a subdirectory in snippets
-    navigateSnippetDir(path) {
-        this.snippetState.currentPath = path;
-        this.loadViewContent();
-    },
-
-    // Open a snippet for editing
-    async openSnippet(path, source) {
-        try {
-            const result = await this.api('GET', `/api/snippets/${encodeURIComponent(path)}?source=${source}`);
-
-            this.snippetState.editingPath = path;
-            this.snippetState.editingSource = result.source;
-
-            // Update UI
-            document.getElementById('snippet-path-label').textContent = path;
-
-            const badge = document.getElementById('snippet-source-badge');
-            badge.textContent = result.source === 'global' ? 'Global' : 'Theme';
-            badge.className = `snippet-source-badge ${result.source === 'global' ? 'source-global' : 'source-theme'}`;
-
-            // Show/hide theme warning
-            const warning = document.getElementById('snippet-theme-warning');
-            if (result.source === 'theme') {
-                warning.classList.remove('hidden');
-            } else {
-                warning.classList.add('hidden');
-            }
-
-            // Set content
-            document.getElementById('snippet-content').value = result.content;
-            await this.updateSnippetPreview();
-
-            this.showScreen('snippet');
-        } catch (err) {
-            this.showToast('Failed to load snippet: ' + err.message, 'error');
-        }
-    },
-
-    // Inject sample data into Mustache template for preview
-    injectSampleData(html) {
-        let result = html;
-
-        // Replace simple variables {{key}} with sample data
-        for (const [key, value] of Object.entries(this.snippetSampleData)) {
-            result = result.replace(new RegExp(`\\{\\{${key}\\}\\}`, 'g'), value);
-        }
-
-        // Replace Mustache partials {{> name }} with placeholder
-        result = result.replace(/\{\{>\s*([^}]+)\s*\}\}/g, '<em class="partial-placeholder">[partial: $1]</em>');
-
-        // Replace any remaining unmatched {{variables}} with placeholder styling
-        result = result.replace(/\{\{([^}>#/]+)\}\}/g, '<code class="var-placeholder">{{$1}}</code>');
-
-        return result;
-    },
-
-    // Update snippet preview
-    async updateSnippetPreview() {
-        const content = document.getElementById('snippet-content').value;
-        const preview = document.getElementById('snippet-preview');
-
+        const content = textarea.value;
         if (!content.trim()) {
-            preview.innerHTML = '<p class="empty-state">Preview will appear here</p>';
+            preview.innerHTML = '<p class="empty-state">Start writing to see a preview.</p>';
             return;
         }
 
-        // For HTML snippets, render as HTML directly
-        // For MD snippets, use the render API to convert markdown to HTML
-        const ext = this.snippetState.editingPath ? this.snippetState.editingPath.split('.').pop() : 'html';
-
-        if (ext === 'md') {
-            // Use the render API to convert markdown to HTML
-            try {
-                const result = await this.api('POST', '/api/render', { markdown: content });
-                preview.innerHTML = result.html || '<p class="empty-state">Preview will appear here</p>';
-            } catch (err) {
-                // Fallback to preformatted text on error
-                preview.innerHTML = `<pre style="white-space: pre-wrap;">${this.escapeHtml(content)}</pre>`;
-            }
-        } else {
-            // HTML preview - inject sample data then render
-            const rendered = this.injectSampleData(content);
-            preview.innerHTML = rendered || '<p class="empty-state">Preview will appear here</p>';
+        try {
+            const result = await this.api('POST', '/api/render', { markdown: content });
+            preview.innerHTML = result.html || '<p class="empty-state">Start writing to see a preview.</p>';
+        } catch (err) {
+            preview.innerHTML = `<pre style="white-space: pre-wrap;">${this.escapeHtml(content)}</pre>`;
         }
     },
 
-    // Save the current snippet
-    async saveSnippet() {
-        const content = document.getElementById('snippet-content').value;
-        const path = this.snippetState.editingPath;
-        const source = this.snippetState.editingSource;
-
-        if (!path) {
-            this.showToast('No snippet to save', 'warning');
-            return;
-        }
-
-        const btn = document.getElementById('save-snippet-btn');
+    // Publish the about page content
+    async publishAbout() {
+        const btn = document.getElementById('about-publish-btn');
         btn.classList.add('btn-loading');
         btn.disabled = true;
 
         try {
-            await this.api('PUT', `/api/snippets/${encodeURIComponent(path)}`, {
-                content: content,
-                source: source
-            });
-
-            this.showToast('Snippet saved', 'success');
+            const textarea = document.getElementById('about-editor-textarea');
+            await this.api('POST', '/api/about', { content: textarea.value });
+            this.showToast('About page published', 'success');
         } catch (err) {
-            this.showToast('Failed to save snippet: ' + err.message, 'error');
-        } finally {
-            btn.classList.remove('btn-loading');
-            btn.disabled = false;
-        }
-    },
-
-    // Show new snippet panel
-    newSnippet() {
-        document.getElementById('new-snippet-name').value = '';
-        document.getElementById('new-snippet-content').value = '';
-        document.getElementById('new-snippet-panel').classList.remove('hidden');
-    },
-
-    // Close new snippet panel
-    closeNewSnippetPanel() {
-        document.getElementById('new-snippet-panel').classList.add('hidden');
-    },
-
-    // Create a new snippet
-    async createSnippet() {
-        const name = document.getElementById('new-snippet-name').value.trim();
-        const content = document.getElementById('new-snippet-content').value;
-
-        if (!name) {
-            this.showToast('Please enter a filename', 'warning');
-            return;
-        }
-
-        // Validate extension
-        if (!name.endsWith('.html') && !name.endsWith('.md')) {
-            this.showToast('Filename must end with .html or .md', 'warning');
-            return;
-        }
-
-        const btn = document.getElementById('new-snippet-create-btn');
-        btn.classList.add('btn-loading');
-        btn.disabled = true;
-
-        try {
-            await this.api('POST', '/api/snippets', {
-                path: name,
-                content: content
-            });
-
-            this.showToast('Snippet created', 'success');
-            this.closeNewSnippetPanel();
-
-            // Navigate to the parent directory of the new snippet
-            const parts = name.split('/');
-            if (parts.length > 1) {
-                parts.pop();
-                this.snippetState.currentPath = parts.join('/');
-            } else {
-                this.snippetState.currentPath = '';
-            }
-
-            await this.loadViewContent();
-        } catch (err) {
-            this.showToast('Failed to create snippet: ' + err.message, 'error');
+            this.showToast('Failed to publish about page: ' + err.message, 'error');
         } finally {
             btn.classList.remove('btn-loading');
             btn.disabled = false;
@@ -3196,7 +3415,7 @@ echo "File: $POLIS_PATH"</code>
     // Social features: sidebar mode, feed, following, remote post
     // ========================================================================
 
-    setSidebarMode(mode) {
+    async setSidebarMode(mode) {
         this.sidebarMode = mode;
         const mySite = document.getElementById('sidebar-my-site');
         const social = document.getElementById('sidebar-social');
@@ -3205,6 +3424,8 @@ echo "File: $POLIS_PATH"</code>
         if (mode === 'social') {
             mySite.classList.add('hidden');
             social.classList.remove('hidden');
+            // Refresh counts so follower/following data is up-to-date
+            await this.loadAllCounts();
             this.setActiveView('feed');
         } else {
             social.classList.add('hidden');
@@ -3221,146 +3442,245 @@ echo "File: $POLIS_PATH"</code>
         this.updateWelcomePanel();
     },
 
-    async renderFeedList(container) {
-        try {
-            container.innerHTML = '<div class="content-list"><div class="empty-state"><p>Loading feed...</p></div></div>';
-            const typeParam = this._feedTypeFilter ? `?type=${this._feedTypeFilter}` : '';
-            const result = await this.api('GET', '/api/feed' + typeParam);
-            const items = result.items || [];
+    // ==================== Conversations (Tabbed) ====================
 
-            this._feedItems = items;
-            this.counts.feed = result.total || 0;
-            this.counts.feedUnread = result.unread || 0;
+    setConversationsSubtab(tab) {
+        this._conversationsSubtab = tab;
+        const contentList = document.getElementById('content-list');
+        if (contentList) this.renderConversationsTabbed(contentList);
+    },
+
+    async renderConversationsTabbed(container) {
+        const subtab = this._conversationsSubtab || 'all';
+        const filterHtml = `
+            <div class="feed-filter-tabs">
+                <button class="feed-filter-tab ${subtab === 'all' ? 'active' : ''}" onclick="App.setConversationsSubtab('all')">All</button>
+                <button class="feed-filter-tab ${subtab === 'posts-comments' ? 'active' : ''}" onclick="App.setConversationsSubtab('posts-comments')">Posts & Comments</button>
+                <button class="feed-filter-tab ${subtab === 'activity' ? 'active' : ''}" onclick="App.setConversationsSubtab('activity')">Activity</button>
+            </div>
+        `;
+
+        switch (subtab) {
+            case 'posts-comments':
+                await this._renderPostsCommentsSubtab(container, filterHtml);
+                break;
+            case 'activity':
+                await this._renderActivitySubtab(container, filterHtml);
+                break;
+            default:
+                await this._renderAllSubtab(container, filterHtml);
+                break;
+        }
+    },
+
+    _titleFromUrl(url) {
+        if (!url) return '(untitled)';
+        try {
+            const filename = new URL(url).pathname.split('/').pop().replace(/\.(md|html)$/, '');
+            return filename.split(/[-_]/).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+        } catch (e) {
+            return '(untitled)';
+        }
+    },
+
+    _renderGroupedItem(group) {
+        const hasComments = group.total_comments > 0;
+        const typeLabel = hasComments ? 'Post + Comments' : 'Post';
+        const badgeClass = hasComments ? 'feed-type-badge post-comments' : 'feed-type-badge post';
+        const isUnread = group.post_unread || group.unread_comments > 0;
+        const unreadClass = isUnread ? ' feed-item-unread' : '';
+        const unreadDot = isUnread ? '<span class="unread-dot"></span>' : '';
+        const title = group.post_title || this._titleFromUrl(group.post_url);
+        const linkUrl = group.post_url ? group.post_url.replace(/\.md$/, '.html') : '#';
+        const ids = JSON.stringify(group.item_ids);
+
+        let summaryHtml = '';
+        if (hasComments) {
+            const parts = [];
+            if (group.network_comments > 0) {
+                parts.push(`${group.network_comments} ${group.network_comments === 1 ? 'person' : 'people'} in your network`);
+            }
+            if (group.external_comments > 0) {
+                parts.push(`${group.external_comments} ${group.external_comments === 1 ? 'person' : 'people'} outside`);
+            }
+            if (parts.length > 0) {
+                summaryHtml = `<div class="grouped-comment-summary">Recent comments from ${parts.join(' and ')}</div>`;
+            }
+        }
+
+        return `
+            <a href="${this.escapeHtml(linkUrl)}" target="_blank" rel="noopener"
+               class="content-item feed-item${unreadClass}"
+               onclick="App._markGroupRead(${this.escapeHtml(ids)})">
+                <div class="item-info">
+                    <div class="item-title">${unreadDot}${this.escapeHtml(title)}</div>
+                    <div class="item-path">
+                        <span class="${badgeClass}">${typeLabel}</span>
+                        ${this.escapeHtml(group.post_domain || '')}
+                    </div>
+                    ${summaryHtml}
+                </div>
+                <div class="item-date-group">
+                    <span class="item-date">${this.formatDate(group.last_activity)}</span>
+                    <span class="item-time">${this.formatTime(group.last_activity)}</span>
+                </div>
+            </a>
+        `;
+    },
+
+    async _markGroupRead(itemIds) {
+        if (!itemIds || itemIds.length === 0) return;
+        for (const id of itemIds) {
+            this.api('POST', '/api/feed/read', { id }).catch(() => {});
+        }
+    },
+
+    async _renderPostsCommentsSubtab(container, filterHtml) {
+        try {
+            container.innerHTML = filterHtml + '<div class="content-list"><div class="empty-state"><p>Loading...</p></div></div>';
+            const result = await this.api('GET', '/api/feed/grouped');
+            const groups = result.groups || [];
+
+            this.counts.feedUnread = result.unread_items || 0;
             this.updateBadge('feed-count', this.counts.feedUnread, this.counts.feedUnread > 0);
 
-            // Build filter tabs
-            const filterHtml = `
-                <div class="feed-filter-tabs">
-                    <button class="feed-filter-tab ${this._feedTypeFilter === '' ? 'active' : ''}" onclick="App.setFeedTypeFilter('')">All</button>
-                    <button class="feed-filter-tab ${this._feedTypeFilter === 'post' ? 'active' : ''}" onclick="App.setFeedTypeFilter('post')">Posts</button>
-                    <button class="feed-filter-tab ${this._feedTypeFilter === 'comment' ? 'active' : ''}" onclick="App.setFeedTypeFilter('comment')">Comments</button>
-                    <button class="feed-read-toggle ${!this._hideRead ? 'active' : ''}" onclick="App.toggleHideRead(!App._hideRead)">${this._hideRead ? 'Show All' : 'Unread Only'}</button>
-                </div>
-            `;
+            if (groups.length === 0) {
+                const emptyMsg = this.counts.following === 0
+                    ? `<h3>No posts or comments yet</h3><p>Follow someone to see their posts here.</p><button class="primary" onclick="App.openFollowPanel()">Follow an author</button>`
+                    : `<h3>No items</h3><p>No posts or comments in the feed yet. Click Refresh to check for new content.</p>`;
+                container.innerHTML = filterHtml + `<div class="content-list"><div class="empty-state">${emptyMsg}</div></div>`;
 
-            // Stale banner
-            let staleHtml = '';
-            if (result.stale) {
-                staleHtml = `
-                    <div class="feed-stale-banner" id="feed-stale-banner">
-                        Cache is stale — <a href="#" onclick="event.preventDefault(); App.refreshFeed()">refresh now</a>
-                    </div>
-                `;
-            }
-
-            // Filter out read items if toggle is on
-            const displayItems = this._hideRead ? items.filter(item => !item.read_at) : items;
-
-            if (displayItems.length === 0) {
-                const emptyMsg = this.counts.feed === 0 && this.counts.following === 0
-                    ? `<h3>Your feed is empty</h3><p>Follow someone to see their posts here. Visit a polis site and click Follow, or add an author below. <a href="https://polis.pub/docs/following" target="_blank" rel="noopener">Learn more</a></p><button class="primary" onclick="App.openFollowPanel()">Follow an author</button>`
-                    : this._hideRead
-                    ? `<h3>All caught up</h3><p>No unread items. Toggle "Hide Read" off to see all items.</p>`
-                    : `<h3>No items</h3><p>${this._feedTypeFilter ? 'No ' + this._feedTypeFilter + 's in the feed.' : 'No items in the feed yet. Click Refresh to check for new content.'}</p>`;
-                container.innerHTML = `${filterHtml}${staleHtml}<div class="content-list"><div class="empty-state">${emptyMsg}</div></div>`;
-
-                // Always background-refresh to pick up new content
-                if (!this._feedRefreshing) {
-                    this._autoRefreshFeed();
-                }
+                if (!this._conversationsRefreshing) this._autoRefreshConversations();
                 return;
             }
 
-            container.innerHTML = `
-                ${filterHtml}
-                ${staleHtml}
+            container.innerHTML = filterHtml + `
                 <div class="content-list">
-                    ${displayItems.map((item, idx) => {
-                        const realIdx = items.indexOf(item);
-                        const typeLabel = item.type === 'comment' ? 'Comment' : 'Post';
-                        const badgeClass = item.type === 'comment' ? 'feed-type-badge comment' : 'feed-type-badge post';
-                        const isUnread = !item.read_at;
-                        const unreadClass = isUnread ? ' feed-item-unread' : '';
-                        const unreadDot = isUnread ? '<span class="unread-dot"></span>' : '';
-                        return `
-                            <div class="content-item feed-item${unreadClass}" onclick="App.openFeedItem(${realIdx})">
-                                <div class="item-info">
-                                    <div class="item-title">${unreadDot}${this.escapeHtml(item.title)}</div>
-                                    <div class="item-path">
-                                        <span class="${badgeClass}">${typeLabel}</span>
-                                        ${this.escapeHtml(item.author_domain)}
-                                    </div>
-                                </div>
-                                <div class="item-date-group">
-                                    <span class="item-date">${this.formatDate(item.published)}</span>
-                                    <span class="item-time">${this.formatTime(item.published)}</span>
-                                </div>
-                                <div class="feed-item-actions">
-                                    <button class="feed-action-btn" onclick="event.stopPropagation(); App.markFeedUnread('${item.id}')">Mark Unread</button>
-                                    <button class="feed-action-btn" onclick="event.stopPropagation(); App.markUnreadFromHere('${item.id}')">Unread From Here</button>
-                                </div>
-                            </div>
-                        `;
+                    ${groups.map(g => this._renderGroupedItem(g)).join('')}
+                </div>
+            `;
+
+            if (!this._conversationsRefreshing) this._autoRefreshConversations();
+        } catch (err) {
+            container.innerHTML = filterHtml + `<div class="content-list"><div class="empty-state"><h3>Failed to load</h3><p>${this.escapeHtml(err.message)}</p></div></div>`;
+        }
+    },
+
+    async _renderActivitySubtab(container, filterHtml) {
+        try {
+            container.innerHTML = filterHtml + '<div class="content-list"><div class="empty-state"><p>Loading activity...</p></div></div>';
+            const result = await this.api('GET', `/api/activity?since=${this._activityCursor}&limit=100`);
+            const events = result.events || [];
+
+            if (events.length > 0) {
+                this._activityEvents = this._activityEvents.concat(events);
+                if (this._activityEvents.length > this._activityMaxEvents) {
+                    this._activityEvents = this._activityEvents.slice(
+                        this._activityEvents.length - this._activityMaxEvents
+                    );
+                }
+                this._activityCursor = result.cursor || this._activityCursor;
+            }
+
+            if (this._activityEvents.length === 0) {
+                container.innerHTML = filterHtml + `<div class="content-list"><div class="empty-state">
+                    <h3>No activity yet</h3>
+                    <p>Follow some authors to see their activity here.</p>
+                </div></div>`;
+                return;
+            }
+
+            const hasMore = result.has_more;
+            container.innerHTML = filterHtml + `
+                <div class="content-list">
+                    ${[...this._activityEvents].reverse().map(evt => this.renderActivityEvent(evt)).join('')}
+                </div>
+                ${hasMore ? '<div class="activity-load-more"><button class="secondary" onclick="App.loadMoreActivity()">Load More</button></div>' : ''}
+                <div style="padding: 0.5rem 1rem; display: flex; gap: 0.5rem;">
+                    <button class="secondary sync-btn" onclick="App.resetActivity()">Reset</button>
+                    <button class="secondary sync-btn" onclick="App.refreshActivity()">Refresh</button>
+                </div>
+            `;
+        } catch (err) {
+            container.innerHTML = filterHtml + `<div class="content-list"><div class="empty-state"><h3>Failed to load activity</h3><p>${this.escapeHtml(err.message)}</p></div></div>`;
+        }
+    },
+
+    async _renderAllSubtab(container, filterHtml) {
+        try {
+            container.innerHTML = filterHtml + '<div class="content-list"><div class="empty-state"><p>Loading...</p></div></div>';
+
+            // Fetch grouped feed and activity in parallel
+            const [groupedResult, activityResult] = await Promise.all([
+                this.api('GET', '/api/feed/grouped'),
+                this.api('GET', `/api/activity?since=${this._activityCursor}&limit=100`),
+            ]);
+
+            const groups = groupedResult.groups || [];
+            this.counts.feedUnread = groupedResult.unread_items || 0;
+            this.updateBadge('feed-count', this.counts.feedUnread, this.counts.feedUnread > 0);
+
+            const activityEvents = activityResult.events || [];
+            if (activityEvents.length > 0) {
+                this._activityEvents = this._activityEvents.concat(activityEvents);
+                if (this._activityEvents.length > this._activityMaxEvents) {
+                    this._activityEvents = this._activityEvents.slice(
+                        this._activityEvents.length - this._activityMaxEvents
+                    );
+                }
+                this._activityCursor = activityResult.cursor || this._activityCursor;
+            }
+
+            // Filter activity events that are already covered by feed groups
+            const feedEventTypes = new Set([
+                'polis.post.published', 'polis.post.republished',
+                'polis.comment.published', 'polis.comment.republished'
+            ]);
+            const filteredActivity = [...this._activityEvents].reverse().filter(
+                evt => !feedEventTypes.has(evt.type)
+            );
+
+            // Build merged timeline entries
+            const entries = [];
+            for (const g of groups) {
+                entries.push({ type: 'group', data: g, timestamp: g.last_activity });
+            }
+            for (const evt of filteredActivity) {
+                entries.push({ type: 'activity', data: evt, timestamp: evt.timestamp });
+            }
+
+            // Sort by timestamp descending
+            entries.sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
+
+            if (entries.length === 0) {
+                const emptyMsg = this.counts.following === 0
+                    ? `<h3>No conversations yet</h3><p>Follow someone to see their activity here.</p><button class="primary" onclick="App.openFollowPanel()">Follow an author</button>`
+                    : `<h3>No activity</h3><p>No items yet. Click Refresh to check for new content.</p>`;
+                container.innerHTML = filterHtml + `<div class="content-list"><div class="empty-state">${emptyMsg}</div></div>`;
+
+                if (!this._conversationsRefreshing) this._autoRefreshConversations();
+                return;
+            }
+
+            container.innerHTML = filterHtml + `
+                <div class="content-list">
+                    ${entries.map(e => {
+                        if (e.type === 'group') return this._renderGroupedItem(e.data);
+                        return this.renderActivityEvent(e.data);
                     }).join('')}
                 </div>
             `;
 
-            // Always background-refresh to pick up new content
-            if (!this._feedRefreshing) {
-                this._autoRefreshFeed();
-            }
+            if (!this._conversationsRefreshing) this._autoRefreshConversations();
         } catch (err) {
-            container.innerHTML = `<div class="content-list"><div class="empty-state"><h3>Failed to load feed</h3><p>${this.escapeHtml(err.message)}</p></div></div>`;
+            container.innerHTML = filterHtml + `<div class="content-list"><div class="empty-state"><h3>Failed to load</h3><p>${this.escapeHtml(err.message)}</p></div></div>`;
         }
     },
 
-    setFeedTypeFilter(type) {
-        this._feedTypeFilter = type;
-        const contentList = document.getElementById('content-list');
-        if (contentList) this.renderFeedList(contentList);
-    },
-
-    toggleHideRead(hideRead) {
-        this._hideRead = hideRead;
-        // Persist to server
-        this.api('POST', '/api/settings/hide-read', { hide_read: hideRead }).catch(err => {
-            console.error('Failed to save hide-read setting:', err);
-        });
-        // Re-render feed
-        const contentList = document.getElementById('content-list');
-        if (contentList && this.currentView === 'feed') {
-            this.renderFeedList(contentList);
-        }
-    },
-
-    async openFeedItem(idx) {
-        const item = this._feedItems && this._feedItems[idx];
-        if (!item) return;
-
-        // Fire-and-forget mark read
-        if (!item.read_at) {
-            item.read_at = new Date().toISOString();
-            this.counts.feedUnread = Math.max(0, this.counts.feedUnread - 1);
-            this.updateBadge('feed-count', this.counts.feedUnread, this.counts.feedUnread > 0);
-
-            // Update DOM optimistically
-            const feedItems = document.querySelectorAll('.feed-item');
-            if (feedItems[idx]) {
-                feedItems[idx].classList.remove('feed-item-unread');
-                const dot = feedItems[idx].querySelector('.unread-dot');
-                if (dot) dot.remove();
-            }
-
-            this.api('POST', '/api/feed/read', { id: item.id }).catch(() => {});
-        }
-
-        this.openRemotePost(item.url, item.author_url, item.title);
-    },
-
-    async refreshFeed() {
-        if (this._feedRefreshing) return;
-        this._feedRefreshing = true;
-        this.showToast('Refreshing feed...', 'info', 3000);
+    async refreshConversations() {
+        if (this._conversationsRefreshing) return;
+        this._conversationsRefreshing = true;
+        this.showToast('Refreshing...', 'info', 3000);
 
         try {
             const result = await this.api('POST', '/api/feed/refresh');
@@ -3376,53 +3696,23 @@ echo "File: $POLIS_PATH"</code>
                 this.showToast('Conversations up to date', 'success');
             }
 
-            // Re-render if still on feed view
-            if (this.currentView === 'feed') {
+            // Re-render if still on conversations view
+            if (this.currentView === 'conversations') {
                 const contentList = document.getElementById('content-list');
-                if (contentList) await this.renderFeedList(contentList);
+                if (contentList) await this.renderConversationsTabbed(contentList);
             }
 
-            // Update bell dot (feed refresh also syncs notifications server-side)
             this.fetchNotificationCount();
         } catch (err) {
             this.showToast('Refresh failed: ' + err.message, 'error');
         } finally {
-            this._feedRefreshing = false;
+            this._conversationsRefreshing = false;
         }
     },
 
-    _feedPollTimer: null,
-
-    initFeedPolling() {
-        this.stopFeedPolling();
-        this._feedPollTimer = setInterval(async () => {
-            try {
-                const counts = await this.api('GET', '/api/feed/counts');
-                const prevUnread = this.counts.feedUnread || 0;
-                this.counts.feed = counts.total || 0;
-                this.counts.feedUnread = counts.unread || 0;
-                this.updateBadge('feed-count', this.counts.feedUnread, this.counts.feedUnread > 0);
-
-                if (this.counts.feedUnread !== prevUnread && this.currentView === 'feed') {
-                    const contentList = document.getElementById('content-list');
-                    if (contentList) await this.renderFeedList(contentList);
-                }
-            } catch (e) {
-                // Silently fail — feed polling is non-critical
-            }
-        }, 60000);
-    },
-
-    stopFeedPolling() {
-        if (this._feedPollTimer) {
-            clearInterval(this._feedPollTimer);
-            this._feedPollTimer = null;
-        }
-    },
-
-    async _autoRefreshFeed() {
-        if (this._feedRefreshing) return;
-        this._feedRefreshing = true;
+    async _autoRefreshConversations() {
+        if (this._conversationsRefreshing) return;
+        this._conversationsRefreshing = true;
 
         try {
             const result = await this.api('POST', '/api/feed/refresh');
@@ -3432,83 +3722,31 @@ echo "File: $POLIS_PATH"</code>
             this.counts.feedUnread = result.unread || 0;
             this.updateBadge('feed-count', this.counts.feedUnread, this.counts.feedUnread > 0);
 
-            // Remove stale banner
-            const banner = document.getElementById('feed-stale-banner');
-            if (banner) banner.remove();
-
             if (newItems > 0) {
                 this.showToast(`${newItems} new item${newItems > 1 ? 's' : ''}`, 'success');
-                // Re-render if still on feed view
-                if (this.currentView === 'feed') {
+                if (this.currentView === 'conversations') {
                     const contentList = document.getElementById('content-list');
-                    if (contentList) await this.renderFeedList(contentList);
+                    if (contentList) await this.renderConversationsTabbed(contentList);
                 }
             }
         } catch (err) {
             console.error('Auto-refresh failed:', err);
         } finally {
-            this._feedRefreshing = false;
+            this._conversationsRefreshing = false;
         }
     },
 
-    async markAllFeedRead() {
+    async markAllConversationsRead() {
         try {
             await this.api('POST', '/api/feed/read', { all: true });
             this.counts.feedUnread = 0;
             this.updateBadge('feed-count', 0);
 
-            // Update all items in memory
-            if (this._feedItems) {
-                const now = new Date().toISOString();
-                this._feedItems.forEach(item => { item.read_at = now; });
-            }
-
-            // Re-render
-            if (this.currentView === 'feed') {
+            if (this.currentView === 'conversations') {
                 const contentList = document.getElementById('content-list');
-                if (contentList) await this.renderFeedList(contentList);
+                if (contentList) await this.renderConversationsTabbed(contentList);
             }
             this.showToast('All items marked as read', 'success');
-        } catch (err) {
-            this.showToast('Failed: ' + err.message, 'error');
-        }
-    },
-
-    async markFeedUnread(id) {
-        try {
-            await this.api('POST', '/api/feed/read', { id, unread: true });
-            this.counts.feedUnread++;
-            this.updateBadge('feed-count', this.counts.feedUnread, true);
-
-            // Update in memory
-            if (this._feedItems) {
-                const item = this._feedItems.find(i => i.id === id);
-                if (item) item.read_at = '';
-            }
-
-            // Re-render
-            if (this.currentView === 'feed') {
-                const contentList = document.getElementById('content-list');
-                if (contentList) await this.renderFeedList(contentList);
-            }
-        } catch (err) {
-            this.showToast('Failed: ' + err.message, 'error');
-        }
-    },
-
-    async markUnreadFromHere(id) {
-        try {
-            await this.api('POST', '/api/feed/read', { from_id: id });
-            // Reload counts since multiple items changed
-            const counts = await this.api('GET', '/api/feed/counts');
-            this.counts.feedUnread = counts.unread || 0;
-            this.updateBadge('feed-count', this.counts.feedUnread, this.counts.feedUnread > 0);
-
-            // Re-render
-            if (this.currentView === 'feed') {
-                const contentList = document.getElementById('content-list');
-                if (contentList) await this.renderFeedList(contentList);
-            }
         } catch (err) {
             this.showToast('Failed: ' + err.message, 'error');
         }
@@ -3517,7 +3755,16 @@ echo "File: $POLIS_PATH"</code>
     async renderFollowingList(container) {
         try {
             const result = await this.api('GET', '/api/following');
-            const follows = result.following || [];
+            let follows = result.following || [];
+
+            // Deduplicate by normalized URL (strip trailing slash)
+            const seen = new Set();
+            follows = follows.filter(f => {
+                const norm = f.url.replace(/\/+$/, '');
+                if (seen.has(norm)) return false;
+                seen.add(norm);
+                return true;
+            });
 
             if (follows.length === 0) {
                 container.innerHTML = `
@@ -3590,16 +3837,60 @@ echo "File: $POLIS_PATH"</code>
         if (panel) panel.classList.add('hidden');
     },
 
+    // Normalize follow input: accept bare domains, follow links, and full URLs.
+    normalizeFollowInput(raw) {
+        let val = raw.trim();
+        // Strip protocol for analysis
+        const bare = val.replace(/^https?:\/\//, '');
+
+        // Detect follow link: polis.pub/f/<handle> or <domain>/f/<handle>
+        const followMatch = bare.match(/^[^/]+\/f\/([a-z0-9][a-z0-9-]*[a-z0-9])$/i);
+        if (followMatch) {
+            return 'https://' + followMatch[1] + '.polis.pub/';
+        }
+
+        // Detect follow page: polis.pub/follow?author=<domain>
+        if (bare.match(/^[^/]+\/follow\?author=/i)) {
+            try {
+                const u = new URL(val.startsWith('http') ? val : 'https://' + val);
+                const author = u.searchParams.get('author');
+                if (author) return 'https://' + author + '/';
+            } catch(e) {}
+        }
+
+        // Bare domain (no protocol, no path or just /): add https://
+        if (!val.startsWith('http://') && !val.startsWith('https://')) {
+            val = 'https://' + val;
+        }
+
+        // Ensure trailing slash
+        if (!val.endsWith('/')) val += '/';
+        return val;
+    },
+
     async submitFollow() {
         const input = document.getElementById('follow-url-input');
-        const url = (input.value || '').trim();
-        if (!url) {
-            this.showToast('Please enter a URL', 'error');
+        const raw = (input.value || '').trim();
+        if (!raw) {
+            this.showToast('Please enter a URL or domain', 'error');
             return;
         }
+
+        const url = this.normalizeFollowInput(raw);
         if (!url.startsWith('https://')) {
-            this.showToast('URL must start with https://', 'error');
+            this.showToast('URL must use HTTPS', 'error');
             return;
+        }
+
+        // Prevent self-follow
+        try {
+            const targetHost = new URL(url).hostname;
+            if (targetHost === window.location.hostname) {
+                this.showToast('You cannot follow your own site', 'error');
+                return;
+            }
+        } catch (e) {
+            // URL parsing failed — let server validate
         }
 
         try {
@@ -3668,116 +3959,20 @@ echo "File: $POLIS_PATH"</code>
             let msg = 'Unfollowed ' + url;
             if (denied > 0) msg += ` (denied ${denied} comment${denied > 1 ? 's' : ''})`;
             this.showToast(msg, 'success');
+
             await this.loadAllCounts();
             await this.loadViewContent();
+
+            // Filter unfollowed author from cached activity data
+            try {
+                const unfollowedDomain = new URL(url).hostname;
+                this._activityEvents = this._activityEvents.filter(evt => evt.actor !== unfollowedDomain);
+            } catch (e) {}
         } catch (err) {
             this.showToast('Failed to unfollow: ' + err.message, 'error');
         }
     },
 
-    async renderSuggestedAuthors(container) {
-        container.innerHTML = '<div class="content-list"><div class="empty-state"><p>Looking for suggestions...</p></div></div>';
-
-        try {
-            // Get who we follow
-            const followingData = await this.api('GET', '/api/following');
-            const ourFollows = followingData.following || [];
-
-            if (ourFollows.length === 0) {
-                container.innerHTML = `<div class="content-list"><div class="empty-state">
-                    <h3>Follow someone first</h3>
-                    <p>Suggested authors are based on who your follows are following. <a href="https://polis.pub/docs/following" target="_blank" rel="noopener">Learn more</a></p>
-                    <button class="primary" onclick="App.openFollowPanel()">Follow an author</button>
-                </div></div>`;
-                return;
-            }
-
-            const ourDomains = new Set(ourFollows.map(f => {
-                try { return new URL(f.url).hostname; } catch(e) { return f.url; }
-            }));
-            // Also exclude our own domain
-            if (this.siteBaseUrl) {
-                try { ourDomains.add(new URL(this.siteBaseUrl).hostname); } catch(e) {}
-            }
-
-            // Fetch each followed author's following.json (friends-of-friends)
-            const suggestions = new Map(); // domain -> { url, recommendedBy: Set }
-            const fetches = ourFollows.slice(0, 10).map(async (follow) => {
-                try {
-                    const followUrl = follow.url.replace(/\/$/, '');
-                    const resp = await fetch(followUrl + '/metadata/following.json', { signal: AbortSignal.timeout(5000) });
-                    if (!resp.ok) return;
-                    const data = await resp.json();
-                    const entries = data.following || [];
-                    const recommenderDomain = new URL(followUrl).hostname;
-
-                    for (const entry of entries) {
-                        let domain;
-                        try { domain = new URL(entry.url || entry.URL || '').hostname; } catch(e) { continue; }
-                        if (ourDomains.has(domain)) continue;
-
-                        if (suggestions.has(domain)) {
-                            suggestions.get(domain).recommendedBy.add(recommenderDomain);
-                        } else {
-                            suggestions.set(domain, {
-                                url: entry.url || entry.URL,
-                                domain: domain,
-                                authorName: entry.author_name || entry.AuthorName || '',
-                                siteTitle: entry.site_title || entry.SiteTitle || '',
-                                recommendedBy: new Set([recommenderDomain]),
-                            });
-                        }
-                    }
-                } catch(e) { /* non-fatal */ }
-            });
-
-            await Promise.all(fetches);
-
-            if (suggestions.size === 0) {
-                container.innerHTML = `<div class="content-list"><div class="empty-state">
-                    <h3>No suggestions yet</h3>
-                    <p>The authors you follow don't follow anyone new. Try following more authors to expand your network.</p>
-                </div></div>`;
-                return;
-            }
-
-            // Sort by number of recommenders (most recommended first)
-            const sorted = [...suggestions.values()].sort((a, b) => b.recommendedBy.size - a.recommendedBy.size);
-
-            container.innerHTML = `
-                <div class="content-list">
-                    ${sorted.map(s => {
-                        const displayName = s.authorName || s.domain;
-                        const recommenders = [...s.recommendedBy].slice(0, 3).join(', ');
-                        const moreCount = s.recommendedBy.size > 3 ? ` +${s.recommendedBy.size - 3} more` : '';
-                        return `
-                            <div class="content-item suggested-author-item">
-                                <div class="item-info">
-                                    <div class="item-title"><a href="${this.escapeHtml(s.url)}" target="_blank" rel="noopener">${this.escapeHtml(displayName)}</a></div>
-                                    <div class="item-path">${this.escapeHtml(s.domain)}${s.siteTitle ? ' — ' + this.escapeHtml(s.siteTitle) : ''}</div>
-                                    <div class="suggested-by">Followed by ${this.escapeHtml(recommenders)}${moreCount}</div>
-                                </div>
-                                <div class="suggested-actions">
-                                    <button class="primary small" onclick="App.quickFollow('${this.escapeHtml(s.domain)}'); this.textContent='Following!'; this.disabled=true;">Follow</button>
-                                </div>
-                            </div>
-                        `;
-                    }).join('')}
-                </div>
-            `;
-        } catch (err) {
-            container.innerHTML = `<div class="content-list"><div class="empty-state">
-                <h3>Failed to load suggestions</h3>
-                <p>${this.escapeHtml(err.message)}</p>
-            </div></div>`;
-        }
-    },
-
-    openRemotePostByIndex(idx) {
-        const item = this._feedItems && this._feedItems[idx];
-        if (!item) return;
-        this.openRemotePost(item.url, item.author_url, item.title);
-    },
 
     async openRemotePost(postUrl, authorUrl, title) {
         const panel = document.getElementById('remote-post-panel');
@@ -3825,7 +4020,6 @@ echo "File: $POLIS_PATH"</code>
         if (panel) panel.classList.add('hidden');
     },
 
-    // Utility: escape HTML
     // ==================== Activity Stream ====================
 
     _activityCursor: '0',
@@ -3859,7 +4053,7 @@ echo "File: $POLIS_PATH"</code>
             const hasMore = result.has_more;
             container.innerHTML = `
                 <div class="content-list">
-                    ${this._activityEvents.map(evt => this.renderActivityEvent(evt)).join('')}
+                    ${[...this._activityEvents].reverse().map(evt => this.renderActivityEvent(evt)).join('')}
                 </div>
                 ${hasMore ? '<div class="activity-load-more"><button class="secondary" onclick="App.loadMoreActivity()">Load More</button></div>' : ''}
             `;
@@ -3887,15 +4081,29 @@ echo "File: $POLIS_PATH"</code>
         if (evt.payload) {
             if (evt.payload.title) {
                 detail = `<span class="activity-detail">${this.escapeHtml(evt.payload.title)}</span>`;
-            } else if (evt.payload.post_url) {
-                detail = `<span class="activity-detail">${this.escapeHtml(evt.payload.post_url)}</span>`;
+            } else if (evt.payload.url) {
+                detail = `<span class="activity-detail">${this.escapeHtml(evt.payload.url)}</span>`;
+            } else if (evt.payload.source_domain && evt.type.includes('blessing')) {
+                // For blessing events, show the comment author (source) since the actor is the granter
+                detail = `<span class="activity-detail">${this.escapeHtml(evt.payload.source_domain)}</span>`;
             } else if (evt.payload.target_domain) {
                 detail = `<span class="activity-detail">${this.escapeHtml(evt.payload.target_domain)}</span>`;
             }
         }
 
+        // Build clickable link for content events (posts/comments with url)
+        let linkUrl = '';
+        if (evt.payload && evt.payload.url) {
+            try {
+                linkUrl = evt.payload.url.replace(/\.md$/, '.html');
+            } catch (e) {}
+        }
+
+        const tag = linkUrl ? 'a' : 'div';
+        const linkAttrs = linkUrl ? ` href="${this.escapeHtml(linkUrl)}" target="_blank" rel="noopener"` : '';
+
         return `
-            <div class="content-item activity-event">
+            <${tag}${linkAttrs} class="content-item activity-event">
                 <div class="item-info">
                     <div class="item-title">
                         <span class="activity-actor">${this.escapeHtml(evt.actor)}</span>
@@ -3910,25 +4118,126 @@ echo "File: $POLIS_PATH"</code>
                     <span class="item-date">${this.formatDate(evt.timestamp)}</span>
                     <span class="item-time">${this.formatTime(evt.timestamp)}</span>
                 </div>
-            </div>
+            </${tag}>
         `;
     },
 
     async refreshActivity() {
         const contentList = document.getElementById('content-list');
-        if (contentList) await this.renderActivityStream(contentList);
+        if (!contentList) return;
+        if (this.currentView === 'conversations') {
+            await this.renderConversationsTabbed(contentList);
+        } else {
+            await this.renderActivityStream(contentList);
+        }
     },
 
     async resetActivity() {
         this._activityCursor = '0';
         this._activityEvents = [];
         const contentList = document.getElementById('content-list');
-        if (contentList) await this.renderActivityStream(contentList);
+        if (!contentList) return;
+        if (this.currentView === 'conversations') {
+            await this.renderConversationsTabbed(contentList);
+        } else {
+            await this.renderActivityStream(contentList);
+        }
     },
 
     async loadMoreActivity() {
         const contentList = document.getElementById('content-list');
-        if (contentList) await this.renderActivityStream(contentList);
+        if (!contentList) return;
+        if (this.currentView === 'conversations') {
+            await this.renderConversationsTabbed(contentList);
+        } else {
+            await this.renderActivityStream(contentList);
+        }
+    },
+
+    // ==================== Community Pulse ====================
+
+    async renderPulse(container) {
+        try {
+            container.innerHTML = '<div class="content-list"><div class="empty-state"><p>Loading pulse...</p></div></div>';
+            const data = await this.api('GET', '/api/pulse');
+
+            // Empty state: no network yet
+            if (data.network.following === 0) {
+                container.innerHTML = `<div class="content-list"><div class="empty-state">
+                    <h3>No network yet</h3>
+                    <p>Follow some authors to see your community pulse.</p>
+                    <button class="primary" onclick="App.openFollowPanel()">Follow Author</button>
+                </div></div>`;
+                return;
+            }
+
+            let html = '<div class="pulse-dashboard">';
+
+            // Card 1: Your Network
+            html += '<div class="pulse-card">';
+            html += '<div class="pulse-card-title">Your Network</div>';
+            html += '<div class="pulse-stats-row">';
+            html += `<div class="pulse-stat"><div class="pulse-stat-value">${data.network.following}</div><div class="pulse-stat-label">Following</div></div>`;
+            html += `<div class="pulse-stat"><div class="pulse-stat-value">${data.network.followers}</div><div class="pulse-stat-label">Followers</div></div>`;
+            html += `<div class="pulse-stat"><div class="pulse-stat-value">${data.network.feed_unread}</div><div class="pulse-stat-label">Unread</div></div>`;
+            if (data.network.incoming_pending > 0) {
+                html += `<div class="pulse-stat"><div class="pulse-stat-value pulse-stat-warning">${data.network.incoming_pending}</div><div class="pulse-stat-label">Pending</div></div>`;
+            }
+            html += '</div></div>';
+
+            // Card 2: Recent from Your Network
+            html += '<div class="pulse-card">';
+            html += '<div class="pulse-card-title">Recent from Your Network</div>';
+            if (data.recent.length === 0) {
+                html += '<div class="pulse-empty">No recent items in the last 7 days.</div>';
+            } else {
+                data.recent.forEach(item => {
+                    const typeBadge = item.type === 'post' ? 'Post' : 'Comment';
+                    const unreadDot = item.unread ? '<span class="pulse-unread-dot"></span>' : '';
+                    html += `<div class="pulse-highlight">
+                        <span class="pulse-type-badge">${typeBadge}</span>
+                        <span class="pulse-highlight-title">${this.escapeHtml(item.title || '(untitled)')}</span>
+                        ${unreadDot}
+                        <span class="pulse-highlight-meta">${this.escapeHtml(item.author_domain)} &middot; ${this.formatDate(item.published)}</span>
+                    </div>`;
+                });
+            }
+            html += '</div>';
+
+            // Card 3: Most Active
+            html += '<div class="pulse-card">';
+            html += '<div class="pulse-card-title">Most Active</div>';
+            if (data.top_authors.length === 0) {
+                html += '<div class="pulse-empty">No activity in the last 30 days.</div>';
+            } else {
+                data.top_authors.forEach(author => {
+                    const parts = [];
+                    if (author.post_count > 0) parts.push(`${author.post_count} post${author.post_count !== 1 ? 's' : ''}`);
+                    if (author.comment_count > 0) parts.push(`${author.comment_count} comment${author.comment_count !== 1 ? 's' : ''}`);
+                    html += `<div class="pulse-author">
+                        <span class="pulse-author-domain">${this.escapeHtml(author.domain)}</span>
+                        <span class="pulse-author-stats">${parts.join(', ')}</span>
+                    </div>`;
+                });
+            }
+            html += '</div>';
+
+            // Card 4: Your Site
+            html += '<div class="pulse-card">';
+            html += '<div class="pulse-card-title">Your Site</div>';
+            html += '<div class="pulse-stats-row">';
+            html += `<div class="pulse-stat"><div class="pulse-stat-value">${data.site.posts}</div><div class="pulse-stat-label">Posts</div></div>`;
+            html += `<div class="pulse-stat"><div class="pulse-stat-value">${data.site.incoming_blessed}</div><div class="pulse-stat-label">Comments</div></div>`;
+            if (data.site.incoming_pending > 0) {
+                html += `<div class="pulse-stat"><div class="pulse-stat-value pulse-stat-warning">${data.site.incoming_pending}</div><div class="pulse-stat-label">Requests</div></div>`;
+            }
+            html += '</div></div>';
+
+            html += '</div>';
+            container.innerHTML = html;
+        } catch (err) {
+            container.innerHTML = `<div class="content-list"><div class="empty-state"><h3>Failed to load pulse</h3><p>${this.escapeHtml(err.message)}</p></div></div>`;
+        }
     },
 
     // ==================== Followers ====================
@@ -3946,7 +4255,7 @@ echo "File: $POLIS_PATH"</code>
             if (followers.length === 0) {
                 container.innerHTML = `<div class="content-list"><div class="empty-state">
                     <h3>No followers yet</h3>
-                    <p>When other polis authors follow you, they'll appear here. <a href="https://polis.pub/docs/following" target="_blank" rel="noopener">How following works</a></p>
+                    <p>When other polis authors follow you, they'll appear here.</p>
                 </div></div>`;
                 return;
             }
@@ -4030,27 +4339,63 @@ echo "File: $POLIS_PATH"</code>
     },
 
     initNotifications() {
-        this.fetchNotificationCount();
-        if (this.notificationState.pollTimer) {
-            clearInterval(this.notificationState.pollTimer);
-        }
-        this.notificationState.pollTimer = setInterval(() => {
-            this.fetchNotificationCount();
-        }, 60000);
+        // Notification count is now updated via SSE (no polling needed).
+        // Just ensure the dot reflects current state.
+        this._updateNotificationDot();
     },
 
     async fetchNotificationCount() {
         try {
             const resp = await this.api('GET', '/api/notifications/count');
             this.notificationState.unreadCount = resp.unread || 0;
-
-            const dot = document.getElementById('notification-dot');
-            if (dot) {
-                dot.classList.toggle('hidden', this.notificationState.unreadCount === 0);
-            }
+            this._updateNotificationDot();
         } catch (e) {
             // Silently fail — notifications are non-critical
         }
+    },
+
+    // Initialize Server-Sent Events for real-time count updates.
+    // Replaces notification polling (30s) and feed polling (60s) with
+    // push-based updates from the unified sync loop.
+    initSSE() {
+        if (this._eventSource) {
+            this._eventSource.close();
+        }
+
+        const sseUrl = '/api/sse';
+
+        this._eventSource = new EventSource(sseUrl);
+
+        this._eventSource.addEventListener('counts', (e) => {
+            try {
+                const counts = JSON.parse(e.data);
+                this._applyCountsFromSSE(counts);
+            } catch (err) {
+                console.error('SSE counts parse error:', err);
+            }
+        });
+
+        this._eventSource.onerror = () => {
+            // Reconnect with backoff. EventSource auto-reconnects,
+            // but if it fails repeatedly we close and retry manually.
+            if (this._eventSource && this._eventSource.readyState === EventSource.CLOSED) {
+                setTimeout(() => this.initSSE(), 5000);
+            }
+        };
+
+        // Polling fallback: refresh counts every 60s regardless of SSE.
+        // Catches local state changes (CLI edits, other tabs) that don't
+        // go through the DS stream, and covers SSE connection gaps.
+        this._startCountsPolling();
+    },
+
+    _startCountsPolling() {
+        if (this._countsPollTimer) {
+            clearInterval(this._countsPollTimer);
+        }
+        this._countsPollTimer = setInterval(() => {
+            this.loadAllCounts();
+        }, 60000);
     },
 
     async toggleNotifications() {
@@ -4069,6 +4414,8 @@ echo "File: $POLIS_PATH"</code>
         document.getElementById('notification-toggle-all').textContent = 'Show All';
         document.getElementById('notification-toggle-all').classList.remove('active');
 
+        // Force an immediate sync + recount when opening the panel
+        await this.fetchNotificationCount();
         await this.loadNotifications(false);
     },
 
@@ -4176,11 +4523,59 @@ echo "File: $POLIS_PATH"</code>
             </div>
         `;
 
-        // Click handler for blessing requests
-        if (ruleId === 'blessing-requested') {
+        // Use the link field from the notification if available, otherwise
+        // fall back to rule-specific handlers for backward compatibility.
+        if (n.link) {
+            div.style.cursor = 'pointer';
             div.onclick = () => {
                 this.closeNotifications();
-                this.switchView('blessing-requests');
+                // Hash links navigate within the SPA
+                if (n.link.startsWith('/_/#') || n.link.startsWith('#')) {
+                    const view = n.link.replace(/^\/_\/#?/, '').replace(/^#/, '');
+                    if (view) this.setActiveView(view);
+                } else if (n.link.startsWith('http')) {
+                    window.open(n.link, '_blank', 'noopener');
+                } else {
+                    // Relative path — navigate within app
+                    window.location.hash = n.link;
+                }
+            };
+        } else if (ruleId === 'blessing-requested' || ruleId === 'new-comment' || ruleId === 'updated-comment') {
+            div.style.cursor = 'pointer';
+            div.onclick = () => {
+                this.closeNotifications();
+                this.setActiveView('blessing-requests');
+            };
+        } else if (ruleId === 'new-post' || ruleId === 'updated-post') {
+            const postUrl = n.payload && (n.payload.url || n.payload.target_url);
+            if (postUrl) {
+                const htmlUrl = postUrl.replace(/\.md$/, '.html');
+                div.style.cursor = 'pointer';
+                div.onclick = () => {
+                    this.closeNotifications();
+                    window.open(htmlUrl, '_blank', 'noopener');
+                };
+            }
+        } else if (ruleId === 'blessing-granted') {
+            div.style.cursor = 'pointer';
+            div.onclick = () => {
+                this.closeNotifications();
+                this._commentsPublishedFilter = 'blessed';
+                this.setActiveView('comments-published');
+            };
+        } else if (ruleId === 'blessing-denied') {
+            div.style.cursor = 'pointer';
+            div.onclick = () => {
+                this.closeNotifications();
+                this._commentsPublishedFilter = 'denied';
+                this.setActiveView('comments-published');
+            };
+        } else if (ruleId === 'new-follower' || ruleId === 'lost-follower') {
+            div.style.cursor = 'pointer';
+            div.onclick = () => {
+                this.closeNotifications();
+                this.setSidebarMode('social');
+                this.setActiveView('followers');
             };
         }
 
@@ -4441,11 +4836,17 @@ git push</pre>
         }
     },
 
-    // Remove intent params from the URL without a page reload.
+    // Remove intent/query params from the URL without a page reload,
+    // preserving the deep-link path.
     cleanIntentURL() {
         const url = new URL(window.location);
-        url.search = '';
-        window.history.replaceState({}, '', url.pathname);
+        url.searchParams.delete('intent');
+        url.searchParams.delete('target');
+        url.searchParams.delete('text');
+        url.searchParams.delete('widget_connect');
+        url.searchParams.delete('return');
+        const clean = url.searchParams.toString() ? url.pathname + '?' + url.searchParams : url.pathname;
+        window.history.replaceState({}, '', clean);
     },
 
     // Handle widget_connect: redirect to API endpoint that issues token
@@ -4476,12 +4877,21 @@ git push</pre>
         document.getElementById('reply-to-url').value = intent.target;
         document.getElementById('comment-input').value = intent.text || '';
         this._intentComment = intent;  // stash for post-action CTAs
+        window.history.replaceState({}, '', this.pathForScreen('newComment'));
         this.showScreen('comment');
     },
 
     // intent=follow: auto-follow the author and show result.
     async processFollowIntent(intent) {
         if (!intent.target) return;
+
+        // Navigate to the following view so the user lands in the right place
+        this.sidebarMode = 'social';
+        this._updateSidebarUI('social');
+        this.currentView = 'following';
+        this._updateSidebarActiveItem('following');
+        await this.loadViewContent();
+        window.history.replaceState({}, '', this.pathForView('following'));
 
         // Normalize: ensure https:// prefix
         let authorURL = intent.target;

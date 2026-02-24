@@ -42,6 +42,9 @@ func SetupRoutes(mux *http.ServeMux, s *Server) {
 	mux.HandleFunc("/api/settings/view-mode", s.handleViewMode)
 	mux.HandleFunc("/api/settings/show-frontmatter", s.handleShowFrontmatter)
 	mux.HandleFunc("/api/settings/hide-read", s.handleHideRead)
+	mux.HandleFunc("/api/settings/site-title", s.handleUpdateSiteTitle)
+	mux.HandleFunc("/api/settings/theme", s.handleThemeSwitch)
+	mux.HandleFunc("/api/download-site", s.handleDownloadSite)
 	mux.HandleFunc("/api/content/", s.handleContent)
 	mux.HandleFunc("/api/automations", s.handleAutomations)
 	mux.HandleFunc("/api/automations/quick", s.handleAutomationsQuick)
@@ -56,6 +59,9 @@ func SetupRoutes(mux *http.ServeMux, s *Server) {
 	mux.HandleFunc("/api/site/deploy-check", s.handleDeployCheck)
 	mux.HandleFunc("/api/site/setup-wizard-dismiss", s.handleSetupWizardDismiss)
 
+	// About page API route
+	mux.HandleFunc("/api/about", s.handleAbout)
+
 	// Snippets API routes
 	mux.HandleFunc("/api/snippets", s.handleSnippets)
 	mux.HandleFunc("/api/snippets/", s.handleSnippet)
@@ -66,6 +72,7 @@ func SetupRoutes(mux *http.ServeMux, s *Server) {
 	mux.HandleFunc("/api/feed/refresh", s.handleFeedRefresh)
 	mux.HandleFunc("/api/feed/read", s.handleFeedRead)
 	mux.HandleFunc("/api/feed/counts", s.handleFeedCounts)
+	mux.HandleFunc("/api/feed/grouped", s.handleFeedGrouped)
 	mux.HandleFunc("/api/remote/post", s.handleRemotePost)
 
 	// Notification API routes
@@ -73,15 +80,22 @@ func SetupRoutes(mux *http.ServeMux, s *Server) {
 	mux.HandleFunc("/api/notifications/count", s.handleNotificationCount)
 	mux.HandleFunc("/api/notifications/read", s.handleNotificationRead)
 
-	// Stream API routes (activity stream and followers)
+	// Social plugin routes
+	mux.HandleFunc("/api/pulse", s.handlePulse)
 	mux.HandleFunc("/api/activity", s.handleActivityStream)
+	mux.HandleFunc("/api/conversations", s.handleConversations)
 	mux.HandleFunc("/api/followers/count", s.handleFollowerCount)
 
 	// Render API routes (for snippet editing workflow)
 	mux.HandleFunc("/api/render-page", s.handleRenderPage)
 
+	// SSE and consolidated counts routes
+	mux.HandleFunc("/api/sse", s.handleSSE)
+	mux.HandleFunc("/api/counts", s.handleCounts)
+
 	// Widget API routes (cross-origin, widget token auth)
 	mux.HandleFunc("/api/widget/publish", s.handleWidgetPublish)
+	mux.HandleFunc("/api/widget/comment", s.handleWidgetComment)
 	mux.HandleFunc("/api/widget/follow", s.handleWidgetFollow)
 	mux.HandleFunc("/api/widget/connect", s.handleWidgetConnect)
 }

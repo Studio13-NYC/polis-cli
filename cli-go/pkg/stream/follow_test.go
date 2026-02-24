@@ -1,6 +1,7 @@
 package stream
 
 import (
+	"encoding/json"
 	"sort"
 	"testing"
 
@@ -34,7 +35,7 @@ func TestFollowHandler_ProcessFollow(t *testing.T) {
 
 	events := []discovery.StreamEvent{
 		{
-			ID:    1,
+			ID:    json.Number("1"),
 			Type:  "polis.follow.announced",
 			Actor: "alice.com",
 			Payload: map[string]interface{}{
@@ -42,7 +43,7 @@ func TestFollowHandler_ProcessFollow(t *testing.T) {
 			},
 		},
 		{
-			ID:    2,
+			ID:    json.Number("2"),
 			Type:  "polis.follow.announced",
 			Actor: "charlie.com",
 			Payload: map[string]interface{}{
@@ -78,7 +79,7 @@ func TestFollowHandler_ProcessUnfollow(t *testing.T) {
 
 	events := []discovery.StreamEvent{
 		{
-			ID:    3,
+			ID:    json.Number("3"),
 			Type:  "polis.follow.removed",
 			Actor: "alice.com",
 			Payload: map[string]interface{}{
@@ -107,7 +108,7 @@ func TestFollowHandler_IgnoresOtherDomains(t *testing.T) {
 
 	events := []discovery.StreamEvent{
 		{
-			ID:    1,
+			ID:    json.Number("1"),
 			Type:  "polis.follow.announced",
 			Actor: "alice.com",
 			Payload: map[string]interface{}{
@@ -134,7 +135,7 @@ func TestFollowHandler_Idempotent(t *testing.T) {
 	// Same actor follows twice
 	events := []discovery.StreamEvent{
 		{
-			ID:    1,
+			ID:    json.Number("1"),
 			Type:  "polis.follow.announced",
 			Actor: "alice.com",
 			Payload: map[string]interface{}{
@@ -142,7 +143,7 @@ func TestFollowHandler_Idempotent(t *testing.T) {
 			},
 		},
 		{
-			ID:    2,
+			ID:    json.Number("2"),
 			Type:  "polis.follow.announced",
 			Actor: "alice.com",
 			Payload: map[string]interface{}{
@@ -194,7 +195,7 @@ func TestFollowHandler_FullCycle(t *testing.T) {
 	// First batch: alice follows
 	events1 := []discovery.StreamEvent{
 		{
-			ID:    1,
+			ID:    json.Number("1"),
 			Type:  "polis.follow.announced",
 			Actor: "alice.com",
 			Payload: map[string]interface{}{
@@ -226,7 +227,7 @@ func TestFollowHandler_FullCycle(t *testing.T) {
 	// Second batch: charlie follows, alice unfollows
 	events2 := []discovery.StreamEvent{
 		{
-			ID:    2,
+			ID:    json.Number("2"),
 			Type:  "polis.follow.announced",
 			Actor: "charlie.com",
 			Payload: map[string]interface{}{
@@ -234,7 +235,7 @@ func TestFollowHandler_FullCycle(t *testing.T) {
 			},
 		},
 		{
-			ID:    3,
+			ID:    json.Number("3"),
 			Type:  "polis.follow.removed",
 			Actor: "alice.com",
 			Payload: map[string]interface{}{

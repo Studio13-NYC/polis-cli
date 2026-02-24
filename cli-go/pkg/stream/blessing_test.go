@@ -1,6 +1,7 @@
 package stream
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/vdibart/polis-cli/cli-go/pkg/discovery"
@@ -32,7 +33,7 @@ func TestBlessingHandler_ProcessRequested_WithTargetDomain(t *testing.T) {
 
 	events := []discovery.StreamEvent{
 		{
-			ID:    1,
+			ID:    json.Number("1"),
 			Type:  "polis.blessing.requested",
 			Actor: "alice.com",
 			Payload: map[string]interface{}{
@@ -68,7 +69,7 @@ func TestBlessingHandler_ProcessRequested_FallbackToTargetURL(t *testing.T) {
 	// No target_domain — should fall back to extracting from target_url
 	events := []discovery.StreamEvent{
 		{
-			ID:    1,
+			ID:    json.Number("1"),
 			Type:  "polis.blessing.requested",
 			Actor: "alice.com",
 			Payload: map[string]interface{}{
@@ -99,7 +100,7 @@ func TestBlessingHandler_ProcessGranted(t *testing.T) {
 
 	events := []discovery.StreamEvent{
 		{
-			ID:    1,
+			ID:    json.Number("1"),
 			Type:  "polis.blessing.granted",
 			Actor: "bob.com",
 			Payload: map[string]interface{}{
@@ -134,7 +135,7 @@ func TestBlessingHandler_ProcessDenied(t *testing.T) {
 
 	events := []discovery.StreamEvent{
 		{
-			ID:    1,
+			ID:    json.Number("1"),
 			Type:  "polis.blessing.denied",
 			Actor: "bob.com",
 			Payload: map[string]interface{}{
@@ -169,7 +170,7 @@ func TestBlessingHandler_IgnoresOtherDomains(t *testing.T) {
 
 	events := []discovery.StreamEvent{
 		{
-			ID:    1,
+			ID:    json.Number("1"),
 			Type:  "polis.blessing.requested",
 			Actor: "alice.com",
 			Payload: map[string]interface{}{
@@ -199,7 +200,7 @@ func TestBlessingHandler_FullLifecycle(t *testing.T) {
 	// Step 1: Request
 	events1 := []discovery.StreamEvent{
 		{
-			ID:    1,
+			ID:    json.Number("1"),
 			Type:  "polis.blessing.requested",
 			Actor: "alice.com",
 			Payload: map[string]interface{}{
@@ -225,7 +226,7 @@ func TestBlessingHandler_FullLifecycle(t *testing.T) {
 	// Step 2: Grant
 	events2 := []discovery.StreamEvent{
 		{
-			ID:    2,
+			ID:    json.Number("2"),
 			Type:  "polis.blessing.granted",
 			Actor: "bob.com",
 			Payload: map[string]interface{}{

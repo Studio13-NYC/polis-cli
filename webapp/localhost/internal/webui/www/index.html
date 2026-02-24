@@ -151,6 +151,12 @@
                         </svg>
                         <span id="notification-dot" class="notification-dot hidden"></span>
                     </button>
+                    <button id="settings-btn" class="notification-bell" onclick="App.toggleSettings()" title="Settings">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <circle cx="12" cy="12" r="3"/>
+                            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                        </svg>
+                    </button>
                 </div>
             </header>
 
@@ -172,9 +178,6 @@
 
                     <!-- My Site mode -->
                     <div id="sidebar-my-site">
-                        <div class="sidebar-section sidebar-write-cta">
-                            <button class="nav-item write-cta-btn" onclick="App.newPost()">Write a post</button>
-                        </div>
                         <div id="sidebar-section-posts" class="sidebar-section">
                             <div class="section-label">
                                 Posts
@@ -193,31 +196,14 @@
                         </div>
                         <div id="sidebar-section-comments" class="sidebar-section">
                             <div class="section-label">
-                                My Comments
+                                Comments
                                 <button class="section-add-btn" onclick="App.newCommentDraft()" title="New Comment">+</button>
                             </div>
                             <nav>
-                                <button class="nav-item" data-view="my-comments-drafts">
-                                    Drafts
-                                    <span id="my-comment-drafts-count" class="badge" style="display: none;">0</span>
+                                <button class="nav-item" data-view="comments-published">
+                                    Published
+                                    <span id="comments-published-count" class="badge" style="display: none;">0</span>
                                 </button>
-                                <button class="nav-item" data-view="my-comments-pending">
-                                    Pending
-                                    <span id="my-pending-count" class="badge warning" style="display: none;">0</span>
-                                </button>
-                                <button class="nav-item" data-view="my-comments-blessed">
-                                    Blessed
-                                    <span id="my-blessed-count" class="badge" style="display: none;">0</span>
-                                </button>
-                                <button class="nav-item" data-view="my-comments-denied">
-                                    Denied
-                                    <span id="my-denied-count" class="badge" style="display: none;">0</span>
-                                </button>
-                            </nav>
-                        </div>
-                        <div id="sidebar-section-on-my-posts" class="sidebar-section">
-                            <div class="section-label">On My Posts</div>
-                            <nav>
                                 <button class="nav-item" data-view="blessing-requests">
                                     Blessing Requests
                                     <span id="incoming-pending-count" class="badge warning" style="display: none;">0</span>
@@ -225,27 +211,9 @@
                             </nav>
                         </div>
                         <div id="sidebar-section-snippets" class="sidebar-section">
-                            <div class="section-label">
-                                Snippets
-                                <button class="section-add-btn" onclick="App.newSnippet()" title="New Snippet">+</button>
-                            </div>
+                            <div class="section-label">Snippets</div>
                             <nav>
-                                <button class="nav-item" data-view="snippets">
-                                    All Snippets
-                                </button>
-                                <button class="nav-item" data-view="snippets-global">
-                                    Global
-                                </button>
-                                <button class="nav-item" data-view="snippets-theme">
-                                    Theme
-                                </button>
-                            </nav>
-                        </div>
-                        <div class="sidebar-footer">
-                            <nav>
-                                <button class="nav-item" data-view="settings">
-                                    Settings
-                                </button>
+                                <button class="nav-item" data-view="about">About</button>
                             </nav>
                         </div>
                     </div>
@@ -254,40 +222,29 @@
                     <div id="sidebar-social" class="hidden">
                         <div id="sidebar-section-discover" class="sidebar-section">
                             <div class="section-label">Discover</div>
-                            <nav>
-                                <button class="nav-item" data-view="feed">
-                                    Conversations
-                                    <span id="feed-count" class="badge" style="display: none;">0</span>
-                                </button>
-                                <button class="nav-item" data-view="activity">
-                                    Activity
-                                </button>
-                                <button class="nav-item" data-view="suggested-authors">
-                                    Suggested Authors
-                                </button>
+                            <nav id="social-plugins-nav">
+                                <!-- Populated by JS from SOCIAL_PLUGINS -->
                             </nav>
-                        </div>
-                        <div id="sidebar-section-authors" class="sidebar-section">
-                            <div class="section-label">
-                                Authors
-                                <button class="section-add-btn" onclick="App.openFollowPanel()" title="Follow Author">+</button>
-                            </div>
                             <nav>
                                 <button class="nav-item" data-view="following">
                                     Following
-                                    <span id="following-count" class="badge" style="display: none;">0</span>
                                 </button>
-                            </nav>
-                        </div>
-                        <div id="sidebar-section-stats" class="sidebar-section">
-                            <div class="section-label">Stats</div>
-                            <nav>
                                 <button class="nav-item" data-view="followers">
                                     Followers
                                     <span id="followers-count" class="badge" style="display: none;">0</span>
                                 </button>
                             </nav>
                         </div>
+                    </div>
+
+                    <div id="sidebar-follow-link" class="sidebar-footer hidden">
+                        <button id="copy-follow-link-btn" onclick="App.copyFollowLink()" title="Copy your follow link to share">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+                                <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+                            </svg>
+                            Copy Follow Link
+                        </button>
                     </div>
                 </aside>
 
@@ -396,6 +353,29 @@ You can use **markdown** formatting."></textarea>
             </div>
         </div>
 
+        <!-- About Editor Screen -->
+        <div id="about-screen" class="screen hidden">
+            <header>
+                <button id="about-back-btn" class="secondary">&larr; Back</button>
+                <div class="about-help-text">Publish the below to update the about section on your homepage.</div>
+                <div class="editor-actions">
+                    <button id="about-publish-btn" class="primary">Publish</button>
+                </div>
+            </header>
+            <div class="editor-container">
+                <div class="editor-pane">
+                    <div class="pane-header">Markdown</div>
+                    <textarea id="about-editor-textarea" placeholder="Write your about section in markdown..."></textarea>
+                </div>
+                <div class="preview-pane">
+                    <div class="pane-header">Preview</div>
+                    <div id="about-editor-preview" class="preview-content">
+                        <p class="empty-state">Start writing to see a preview.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- Comment Detail Panel (slide-out from right) -->
         <div id="comment-detail-panel" class="comment-detail-panel hidden">
             <div class="comment-detail-overlay"></div>
@@ -472,61 +452,6 @@ You can use **markdown** formatting."></textarea>
             </div>
         </div>
 
-        <!-- Snippet Editor Screen -->
-        <div id="snippet-screen" class="screen hidden">
-            <header>
-                <button id="snippet-back-btn" class="secondary">&larr; Back</button>
-                <div class="snippet-path-display">
-                    <span id="snippet-path-label"></span>
-                    <span id="snippet-source-badge" class="snippet-source-badge"></span>
-                </div>
-                <div class="editor-actions">
-                    <button id="save-snippet-btn" class="primary">Save</button>
-                </div>
-            </header>
-            <!-- Warning banner for theme snippets -->
-            <div id="snippet-theme-warning" class="snippet-warning hidden">
-                Warning: You're editing a shared theme file. Changes affect all sites using this theme and may be overwritten on theme updates.
-            </div>
-            <div class="snippet-editor-container">
-                <div class="editor-pane">
-                    <div class="pane-header">Content</div>
-                    <textarea id="snippet-content" placeholder="Enter snippet content..."></textarea>
-                </div>
-                <div class="preview-pane">
-                    <div class="pane-header">Preview</div>
-                    <div id="snippet-preview" class="preview-content"></div>
-                </div>
-            </div>
-        </div>
-
-        <!-- New Snippet Panel -->
-        <div id="new-snippet-panel" class="wizard-panel hidden">
-            <div class="wizard-overlay"></div>
-            <div class="wizard-content">
-                <div class="wizard-header">
-                    <h3>New Snippet</h3>
-                    <button id="new-snippet-close-btn" class="wizard-close">&times;</button>
-                </div>
-                <div class="wizard-body">
-                    <div class="wizard-section">
-                        <label for="new-snippet-name">Filename:</label>
-                        <input type="text" id="new-snippet-name" class="wizard-input" placeholder="my-snippet.html">
-                        <p class="hint">Use .html or .md extension. Include path for subdirectories (e.g., widgets/header.html)</p>
-                    </div>
-                    <div class="wizard-section">
-                        <label for="new-snippet-content">Content:</label>
-                        <textarea id="new-snippet-content" class="wizard-textarea" rows="10" placeholder="<div>...</div>"></textarea>
-                    </div>
-                </div>
-                <div class="wizard-footer">
-                    <button id="new-snippet-cancel-btn" class="secondary">Cancel</button>
-                    <div class="wizard-footer-spacer"></div>
-                    <button id="new-snippet-create-btn" class="primary">Create Snippet</button>
-                </div>
-            </div>
-        </div>
-
         <!-- Follow Author Panel (slide-out from right) -->
         <div id="follow-panel" class="wizard-panel hidden">
             <div class="wizard-overlay" onclick="App.closeFollowPanel()"></div>
@@ -537,9 +462,9 @@ You can use **markdown** formatting."></textarea>
                 </div>
                 <div class="wizard-body">
                     <div class="wizard-section">
-                        <label for="follow-url-input">Author Site URL</label>
-                        <input type="url" id="follow-url-input" class="wizard-input" placeholder="https://author.polis.pub" />
-                        <p class="wizard-hint">Enter the HTTPS URL of the polis site you want to follow. Their pending and denied comments will be automatically blessed.</p>
+                        <label for="follow-url-input">Author URL or Domain</label>
+                        <input type="text" id="follow-url-input" class="wizard-input" placeholder="author.polis.pub" />
+                        <p class="wizard-hint">Enter a domain, URL, or follow link. Examples: author.polis.pub, https://author.polis.pub, polis.pub/f/author</p>
                     </div>
                     <div id="follow-suggestion" class="follow-suggestion hidden">
                         <div class="follow-suggestion-label">Suggested</div>

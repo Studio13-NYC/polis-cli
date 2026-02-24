@@ -2,10 +2,15 @@ package server
 
 import (
 	"encoding/json"
+	"io/fs"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
+	"testing/fstest"
 
+	"github.com/vdibart/polis-cli/cli-go/pkg/discovery"
 	"github.com/vdibart/polis-cli/cli-go/pkg/site"
 )
 
@@ -286,6 +291,243 @@ func TestGetSiteTitle_NoWellKnownPolis_NoConfig(t *testing.T) {
 	}
 }
 
+// ============================================================================
+// Sync Helper Tests
+// ============================================================================
+
+func TestFirstNonEmptyString(t *testing.T) {
+	payload := map[string]interface{}{
+		"comment_url": "https://example.com/comments/20260222/abc.md",
+		"source_url":  "https://fallback.com/comments/20260222/abc.md",
+		"empty_key":   "",
+		"int_key":     42,
+	}
+
+	// Returns first matching key
+	got := firstNonEmptyString(payload, "comment_url", "source_url")
+	if got != "https://example.com/comments/20260222/abc.md" {
+		t.Errorf("expected comment_url value, got %q", got)
+	}
+
+	// Falls back to second key when first is missing
+	got = firstNonEmptyString(payload, "missing_key", "source_url")
+	if got != "https://fallback.com/comments/20260222/abc.md" {
+		t.Errorf("expected source_url fallback, got %q", got)
+	}
+
+	// Falls back when first key is empty string
+	got = firstNonEmptyString(payload, "empty_key", "source_url")
+	if got != "https://fallback.com/comments/20260222/abc.md" {
+		t.Errorf("expected source_url fallback for empty key, got %q", got)
+	}
+
+	// Returns empty when no keys match
+	got = firstNonEmptyString(payload, "no_such_key", "also_missing")
+	if got != "" {
+		t.Errorf("expected empty string, got %q", got)
+	}
+
+	// Skips non-string values
+	got = firstNonEmptyString(payload, "int_key", "source_url")
+	if got != "https://fallback.com/comments/20260222/abc.md" {
+		t.Errorf("expected source_url fallback for non-string, got %q", got)
+	}
+}
+
+func TestExtractPostPathFromURL(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"https://alice.polis.pub/posts/20260127/hello.md", "posts/20260127/hello.md"},
+		{"https://example.com/posts/20260222/test.md", "posts/20260222/test.md"},
+		{"https://example.com/some/path", "https://example.com/some/path"}, // no /posts/ -> returns as-is
+		{"", ""},
+	}
+	for _, tt := range tests {
+		got := extractPostPathFromURL(tt.input)
+		if got != tt.want {
+			t.Errorf("extractPostPathFromURL(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestBlessingSyncHandler_StoresAutoBlessedComment(t *testing.T) {
+	dataDir := t.TempDir()
+
+	// Create required directories
+	os.MkdirAll(filepath.Join(dataDir, ".well-known"), 0755)
+	os.MkdirAll(filepath.Join(dataDir, "metadata"), 0755)
+	os.MkdirAll(filepath.Join(dataDir, "posts", "20260222"), 0755)
+
+	// Create .well-known/polis
+	wellKnown := map[string]string{
+		"subdomain":  "follower1",
+		"base_url":   "https://follower1.polis.pub",
+		"public_key": "ssh-ed25519 test",
+	}
+	wkData, _ := json.Marshal(wellKnown)
+	os.WriteFile(filepath.Join(dataDir, ".well-known", "polis"), wkData, 0644)
+
+	// Start a test HTTP server that serves the comment markdown
+	commentContent := "---\ntitle: Great post!\n---\nI really enjoyed this."
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(commentContent))
+	}))
+	defer ts.Close()
+
+	s := &Server{
+		DataDir: dataDir,
+		BaseURL: "https://follower1.polis.pub",
+	}
+
+	handler := &blessingSyncHandler{server: s}
+
+	// Simulate a polis.blessing.granted event targeting our domain
+	// with comment_url pointing to our test server
+	events := []discovery.StreamEvent{
+		{
+			ID:   json.Number("1"),
+			Type: "polis.blessing.granted",
+			Payload: map[string]interface{}{
+				"target_domain": "follower1.polis.pub",
+				"source_domain": "testpilot.polis.pub",
+				"comment_url":   ts.URL + "/comments/20260222/abc123.md",
+				"in_reply_to":   "https://follower1.polis.pub/posts/20260222/my-post.md",
+			},
+		},
+	}
+
+	result := handler.Process(events)
+	if !result.FilesChanged {
+		t.Error("expected FilesChanged=true after storing auto-blessed comment")
+	}
+
+	// Verify comment file was written
+	commentPath := filepath.Join(dataDir, "comments", "20260222", "abc123.md")
+	data, err := os.ReadFile(commentPath)
+	if err != nil {
+		t.Fatalf("expected comment file at %s, got error: %v", commentPath, err)
+	}
+	if string(data) != commentContent {
+		t.Errorf("comment content = %q, want %q", string(data), commentContent)
+	}
+
+	// Verify blessed-comments.json was updated
+	bcPath := filepath.Join(dataDir, "metadata", "blessed-comments.json")
+	bcData, err := os.ReadFile(bcPath)
+	if err != nil {
+		t.Fatalf("expected blessed-comments.json, got error: %v", err)
+	}
+	var bc map[string]interface{}
+	if err := json.Unmarshal(bcData, &bc); err != nil {
+		t.Fatalf("invalid blessed-comments.json: %v", err)
+	}
+	comments, ok := bc["comments"].([]interface{})
+	if !ok || len(comments) == 0 {
+		t.Error("expected at least one post entry in blessed-comments.json")
+	}
+}
+
+func TestBlessingSyncHandler_SkipsExistingComment(t *testing.T) {
+	dataDir := t.TempDir()
+
+	os.MkdirAll(filepath.Join(dataDir, ".well-known"), 0755)
+	os.MkdirAll(filepath.Join(dataDir, "comments", "20260222"), 0755)
+
+	wellKnown := map[string]string{
+		"subdomain":  "follower1",
+		"base_url":   "https://follower1.polis.pub",
+		"public_key": "ssh-ed25519 test",
+	}
+	wkData, _ := json.Marshal(wellKnown)
+	os.WriteFile(filepath.Join(dataDir, ".well-known", "polis"), wkData, 0644)
+
+	// Pre-create the comment file
+	commentPath := filepath.Join(dataDir, "comments", "20260222", "abc123.md")
+	os.WriteFile(commentPath, []byte("existing content"), 0644)
+
+	// Server that should NOT be called
+	called := false
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.Write([]byte("new content"))
+	}))
+	defer ts.Close()
+
+	s := &Server{
+		DataDir: dataDir,
+		BaseURL: "https://follower1.polis.pub",
+	}
+
+	handler := &blessingSyncHandler{server: s}
+
+	events := []discovery.StreamEvent{
+		{
+			ID:   json.Number("1"),
+			Type: "polis.blessing.granted",
+			Payload: map[string]interface{}{
+				"target_domain": "follower1.polis.pub",
+				"comment_url":   ts.URL + "/comments/20260222/abc123.md",
+				"in_reply_to":   "https://follower1.polis.pub/posts/20260222/my-post.md",
+			},
+		},
+	}
+
+	result := handler.Process(events)
+	if result.FilesChanged {
+		t.Error("expected FilesChanged=false when comment already exists")
+	}
+	if called {
+		t.Error("expected no HTTP fetch when comment file already exists")
+	}
+
+	// Verify original content preserved
+	data, _ := os.ReadFile(commentPath)
+	if string(data) != "existing content" {
+		t.Errorf("existing file was overwritten: got %q", string(data))
+	}
+}
+
+func TestBlessingSyncHandler_IgnoresNonTargetDomain(t *testing.T) {
+	dataDir := t.TempDir()
+
+	os.MkdirAll(filepath.Join(dataDir, ".well-known"), 0755)
+
+	wellKnown := map[string]string{
+		"subdomain":  "follower1",
+		"base_url":   "https://follower1.polis.pub",
+		"public_key": "ssh-ed25519 test",
+	}
+	wkData, _ := json.Marshal(wellKnown)
+	os.WriteFile(filepath.Join(dataDir, ".well-known", "polis"), wkData, 0644)
+
+	s := &Server{
+		DataDir: dataDir,
+		BaseURL: "https://follower1.polis.pub",
+	}
+
+	handler := &blessingSyncHandler{server: s}
+
+	// Event targeting a different domain — should be ignored
+	events := []discovery.StreamEvent{
+		{
+			ID:   json.Number("1"),
+			Type: "polis.blessing.granted",
+			Payload: map[string]interface{}{
+				"target_domain": "someone-else.polis.pub",
+				"comment_url":   "https://testpilot.polis.pub/comments/20260222/abc123.md",
+				"in_reply_to":   "https://someone-else.polis.pub/posts/20260222/post.md",
+			},
+		},
+	}
+
+	result := handler.Process(events)
+	if result.FilesChanged {
+		t.Error("expected FilesChanged=false for events targeting another domain")
+	}
+}
+
 func TestCursorGreater(t *testing.T) {
 	tests := []struct {
 		a, b string
@@ -305,6 +547,73 @@ func TestCursorGreater(t *testing.T) {
 		got := cursorGreater(tt.a, tt.b)
 		if got != tt.want {
 			t.Errorf("cursorGreater(%q, %q) = %v, want %v", tt.a, tt.b, got, tt.want)
+		}
+	}
+}
+
+// ============================================================================
+// SPA Fallback Handler Tests
+// ============================================================================
+
+func newTestFS() fs.FS {
+	return fstest.MapFS{
+		"index.html": &fstest.MapFile{Data: []byte("<html>SPA</html>")},
+		"app.js":     &fstest.MapFile{Data: []byte("// app")},
+		"style.css":  &fstest.MapFile{Data: []byte("body{}")},
+	}
+}
+
+func TestSPAHandler_RootServesIndex(t *testing.T) {
+	handler := spaHandler(newTestFS())
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+	if body := w.Body.String(); body != "<html>SPA</html>" {
+		t.Errorf("expected index.html content, got %q", body)
+	}
+}
+
+func TestSPAHandler_ExistingAsset(t *testing.T) {
+	handler := spaHandler(newTestFS())
+
+	for _, path := range []string{"/app.js", "/style.css"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Errorf("%s: expected 200, got %d", path, w.Code)
+		}
+	}
+}
+
+func TestSPAHandler_DeepLinkFallsBackToIndex(t *testing.T) {
+	handler := spaHandler(newTestFS())
+
+	deepPaths := []string{
+		"/_/posts",
+		"/_/social/feed",
+		"/_/posts/20260218/hello",
+		"/_/posts/drafts/my-draft",
+		"/_/comments/new",
+		"/_/settings",
+		"/_/snippets/global/header.html",
+	}
+
+	for _, path := range deepPaths {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Errorf("%s: expected 200, got %d", path, w.Code)
+		}
+		if body := w.Body.String(); body != "<html>SPA</html>" {
+			t.Errorf("%s: expected index.html content for SPA fallback, got %q", path, body)
 		}
 	}
 }

@@ -6,8 +6,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
+
+// normalizeFollowURL ensures consistent URL comparison by trimming trailing slashes.
+func normalizeFollowURL(u string) string {
+	return strings.TrimRight(u, "/")
+}
 
 // Version is set at init time by cmd package.
 var Version = "dev"
@@ -77,10 +83,11 @@ func Save(path string, f *FollowingFile) error {
 }
 
 // Add adds an author to the following list.
+// URL comparison ignores trailing slashes.
 func (f *FollowingFile) Add(authorURL string) bool {
-	// Check if already following
+	norm := normalizeFollowURL(authorURL)
 	for _, entry := range f.Following {
-		if entry.URL == authorURL {
+		if normalizeFollowURL(entry.URL) == norm {
 			return false // Already following
 		}
 	}
@@ -94,20 +101,29 @@ func (f *FollowingFile) Add(authorURL string) bool {
 }
 
 // Remove removes an author from the following list.
+// Removes ALL matching entries (handles legacy duplicates).
+// URL comparison ignores trailing slashes.
 func (f *FollowingFile) Remove(authorURL string) bool {
-	for i, entry := range f.Following {
-		if entry.URL == authorURL {
-			f.Following = append(f.Following[:i], f.Following[i+1:]...)
-			return true
+	norm := normalizeFollowURL(authorURL)
+	found := false
+	filtered := f.Following[:0]
+	for _, entry := range f.Following {
+		if normalizeFollowURL(entry.URL) == norm {
+			found = true
+		} else {
+			filtered = append(filtered, entry)
 		}
 	}
-	return false // Not found
+	f.Following = filtered
+	return found
 }
 
 // IsFollowing checks if an author is in the following list.
+// URL comparison ignores trailing slashes.
 func (f *FollowingFile) IsFollowing(authorURL string) bool {
+	norm := normalizeFollowURL(authorURL)
 	for _, entry := range f.Following {
-		if entry.URL == authorURL {
+		if normalizeFollowURL(entry.URL) == norm {
 			return true
 		}
 	}
@@ -115,9 +131,11 @@ func (f *FollowingFile) IsFollowing(authorURL string) bool {
 }
 
 // Get retrieves a following entry by URL.
+// URL comparison ignores trailing slashes.
 func (f *FollowingFile) Get(authorURL string) *FollowingEntry {
+	norm := normalizeFollowURL(authorURL)
 	for i := range f.Following {
-		if f.Following[i].URL == authorURL {
+		if normalizeFollowURL(f.Following[i].URL) == norm {
 			return &f.Following[i]
 		}
 	}

@@ -222,3 +222,73 @@ func TestGet(t *testing.T) {
 		t.Error("Expected nil for non-existent entry")
 	}
 }
+
+func TestURLNormalization(t *testing.T) {
+	f := &FollowingFile{
+		Version:   Version,
+		Following: []FollowingEntry{},
+	}
+
+	// Add with trailing slash
+	f.Add("https://example.com/")
+	if f.Count() != 1 {
+		t.Fatalf("Expected count 1, got %d", f.Count())
+	}
+
+	// Duplicate without trailing slash should be detected
+	added := f.Add("https://example.com")
+	if added {
+		t.Error("Expected Add to detect duplicate with different trailing slash")
+	}
+	if f.Count() != 1 {
+		t.Errorf("Expected count still 1, got %d", f.Count())
+	}
+
+	// IsFollowing should match both forms
+	if !f.IsFollowing("https://example.com/") {
+		t.Error("IsFollowing should match with trailing slash")
+	}
+	if !f.IsFollowing("https://example.com") {
+		t.Error("IsFollowing should match without trailing slash")
+	}
+
+	// Get should match both forms
+	if f.Get("https://example.com") == nil {
+		t.Error("Get should find entry without trailing slash")
+	}
+	if f.Get("https://example.com/") == nil {
+		t.Error("Get should find entry with trailing slash")
+	}
+
+	// Remove should match both forms
+	removed := f.Remove("https://example.com") // stored as "https://example.com/"
+	if !removed {
+		t.Error("Remove should match without trailing slash")
+	}
+	if f.Count() != 0 {
+		t.Errorf("Expected count 0 after remove, got %d", f.Count())
+	}
+}
+
+func TestRemoveAllDuplicates(t *testing.T) {
+	f := &FollowingFile{
+		Version: Version,
+		Following: []FollowingEntry{
+			{URL: "https://example.com/", AddedAt: "2025-01-01T00:00:00Z"},
+			{URL: "https://example.com", AddedAt: "2025-01-02T00:00:00Z"},
+			{URL: "https://other.com/", AddedAt: "2025-01-03T00:00:00Z"},
+		},
+	}
+
+	// Remove should remove ALL matching entries (both slash variants)
+	removed := f.Remove("https://example.com")
+	if !removed {
+		t.Error("Expected Remove to return true")
+	}
+	if f.Count() != 1 {
+		t.Errorf("Expected count 1 after removing duplicates, got %d", f.Count())
+	}
+	if f.Following[0].URL != "https://other.com/" {
+		t.Errorf("Expected remaining entry to be other.com, got %s", f.Following[0].URL)
+	}
+}
